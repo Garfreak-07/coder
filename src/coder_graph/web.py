@@ -8,6 +8,7 @@ from typing import Any
 from .graph import build_graph
 from .module_map import build_module_map
 from .project_index import annotate_recommendations, recommend_modules
+from .runtime import RuntimeEventBus
 from .specs import validate_workflow_spec
 from .tools.filesystem import resolve_existing_dir, summarize_project
 
@@ -171,7 +172,12 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
         "approved": False,
         "max_iterations": 3,
     }
+    events = RuntimeEventBus()
+    events.emit("ui", "status", "Workflow requested", status="running", payload={"repo": repo})
+    events.emit("planner", "message", "Planning started", status="running")
     result = build_graph().invoke(state)
+    events.emit("reviewer", "message", "Review completed", status=str(result.get("status", "unknown")))
+    events.emit("ui", "result", "Workflow finished", status=str(result.get("status", "unknown")))
     return {
         "plan": result.get("plan", ""),
         "review": result.get("review_notes", ""),
@@ -181,6 +187,7 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
             "check_passed": result.get("check_passed"),
             "changed_files": result.get("changed_files", []),
         },
+        "events": events.dump(),
     }
 
 
@@ -250,7 +257,7 @@ INDEX_HTML = r"""<!doctype html>
     h3 { margin:0 0 8px; font-size:15px; }
     p { color:#94a3b8; line-height:1.5; }
     main { display:grid; grid-template-rows: 1fr auto; min-height:calc(100vh - 82px); }
-    .workspace { display:grid; grid-template-columns: 300px minmax(360px,1fr) 420px; gap:14px; padding:14px; min-height:0; }
+    .workspace { display:grid; grid-template-columns: 300px minmax(520px,1fr) 360px; gap:14px; padding:14px; min-height:0; }
     .panel { border:1px solid #334155; background:#111827; border-radius:16px; padding:14px; min-height:0; }
     label { display:block; margin-top:12px; color:#cbd5e1; font-size:13px; }
     input, textarea, select { width:100%; margin-top:6px; padding:10px; border-radius:10px; border:1px solid #334155; background:#020617; color:#e5e7eb; }
@@ -279,6 +286,12 @@ INDEX_HTML = r"""<!doctype html>
     .agent-canvas-svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
     .canvas .agent { position:absolute; cursor:pointer; }
     .config { white-space:pre-wrap; background:#020617; border:1px solid #334155; padding:12px; border-radius:12px; max-height:260px; overflow:auto; }
+    .tabs { display:flex; gap:8px; margin-bottom:10px; }
+    .tab { width:auto; margin:0; padding:8px 12px; background:#334155; }
+    .tab.active { background:#2563eb; }
+    .page { display:none; }
+    .page.active { display:block; }
+    .connection-mode { border-color:#f59e0b !important; box-shadow:0 0 0 1px rgba(245,158,11,.35); }
     .bottom { border-top:1px solid #1f2937; background:#111827; padding:14px; display:grid; grid-template-columns: minmax(300px,1fr) 220px 420px; gap:14px; align-items:end; }
     pre { white-space:pre-wrap; background:#020617; border:1px solid #334155; padding:12px; border-radius:12px; max-height:180px; overflow:auto; margin:0; }
   </style>
@@ -307,16 +320,23 @@ INDEX_HTML = r"""<!doctype html>
       </section>
 
       <section class="panel">
-        <h2>项目图谱</h2>
-        <div id="modules" class="modules"></div>
+        <div class="tabs">
+          <button id="projectTab" class="tab active" onclick="switchPage('project')">项目图谱</button>
+          <button id="workflowTab" class="tab" onclick="switchPage('workflow')">当前工作流</button>
+        </div>
+        <div id="projectPage" class="page active">
+          <div id="modules" class="modules"></div>
+        </div>
+        <div id="workflowPage" class="page">
+          <h3>当前工作流画布</h3>
+          <button class="secondary" id="connectButton" onclick="toggleConnectMode()">连接 agent：关闭</button>
+          <div id="agentCanvas" class="canvas" ondragover="event.preventDefault()" ondrop="dropToCanvas(event)"></div>
+        </div>
       </section>
 
       <section class="panel">
-        <h2>Agent 图</h2>
-        <h3>可用 agents</h3>
+        <h2>Agent 库</h2>
         <div id="agentList" class="agent-list" ondragover="event.preventDefault()" ondrop="dropToList(event)"></div>
-        <h3 style="margin-top:14px">当前工作流</h3>
-        <div id="agentCanvas" class="canvas" ondragover="event.preventDefault()" ondrop="dropToCanvas(event)"></div>
         <h3 style="margin-top:14px">Agent 配置 / Skills</h3>
         <pre id="agentConfig" class="config">点击一个 agent 查看配置。</pre>
       </section>
@@ -345,6 +365,10 @@ INDEX_HTML = r"""<!doctype html>
     let agentEdges = [];
     let draggedAgentId = null;
     let selectedAgentForEdge = null;
+    let connectMode = false;
+    let movingAgentId = null;
+    let movingStart = { x: 0, y: 0 };
+    let movingAgentStart = { x: 0, y: 0 };
     let expandedPaths = new Set([""]);
     let graphPan = { x: 40, y: 40 };
     let isPanning = false;
@@ -388,7 +412,27 @@ INDEX_HTML = r"""<!doctype html>
         repo: document.getElementById("repo").value,
         request: document.getElementById("request").value
       });
-      document.getElementById("result").textContent = JSON.stringify(data, null, 2);
+      document.getElementById("result").textContent = formatRunResult(data);
+    }
+
+    function formatRunResult(data) {
+      if (data.error) return data.error;
+      const events = (data.events || []).map(event => `• [${event.source}] ${event.message} (${event.status || event.type})`).join("\n");
+      return `${events}\n\nPLAN\n${data.plan || ""}\n\nREVIEW\n${data.review || ""}\n\nSTATUS\n${JSON.stringify(data.status || {}, null, 2)}`;
+    }
+
+    function switchPage(page) {
+      document.getElementById("projectPage").classList.toggle("active", page === "project");
+      document.getElementById("workflowPage").classList.toggle("active", page === "workflow");
+      document.getElementById("projectTab").classList.toggle("active", page === "project");
+      document.getElementById("workflowTab").classList.toggle("active", page === "workflow");
+    }
+
+    function toggleConnectMode() {
+      connectMode = !connectMode;
+      selectedAgentForEdge = null;
+      document.getElementById("connectButton").textContent = `连接 agent：${connectMode ? "开启，依次点击起点和终点" : "关闭"}`;
+      renderAgents();
     }
 
     async function importWorkflow(event) {
@@ -529,7 +573,7 @@ INDEX_HTML = r"""<!doctype html>
       const list = document.getElementById("agentList");
       const canvas = document.getElementById("agentCanvas");
       const mode = document.getElementById("mode").value;
-      if (mode === "default" && current.workflow) {
+      if (mode === "default" && current.workflow && !canvasAgents.length) {
         canvasAgents = layoutAgents(current.workflow.agents || []);
         agentEdges = defaultAgentEdges(canvasAgents);
       }
@@ -563,7 +607,8 @@ INDEX_HTML = r"""<!doctype html>
       const selected = selectedAgentForEdge === agent.id ? " selected" : "";
       return `
         <article class="agent${selected}" style="left:${agent.x || 20}px; top:${agent.y || 20}px"
-                 onclick="selectAgentNode('${agent.id}', '${encoded}')">
+                 onmousedown="startMoveAgent(event, '${agent.id}')"
+                 onclick="selectAgentNode(event, '${agent.id}', '${encoded}')">
           <strong>${escapeHtml(agent.role || agent.id)}</strong>
           <p>${escapeHtml(agent.goal || "")}</p>
           ${(agent.skills || agent.tools || []).slice(0, 3).map(skill => `<span class="badge low">${escapeHtml(skill)}</span>`).join("")}
@@ -581,8 +626,14 @@ INDEX_HTML = r"""<!doctype html>
         <defs><marker id="agentArrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#38bdf8" /></marker></defs>`;
     }
 
-    function selectAgentNode(id, encoded) {
+    function selectAgentNode(event, id, encoded) {
+      event.stopPropagation();
       showAgent(encoded);
+      if (!connectMode) {
+        selectedAgentForEdge = id;
+        renderAgents();
+        return;
+      }
       if (!selectedAgentForEdge) {
         selectedAgentForEdge = id;
       } else if (selectedAgentForEdge === id) {
@@ -593,6 +644,32 @@ INDEX_HTML = r"""<!doctype html>
         selectedAgentForEdge = null;
       }
       renderAgents();
+    }
+
+    function startMoveAgent(event, id) {
+      if (connectMode) return;
+      event.stopPropagation();
+      movingAgentId = id;
+      movingStart = { x: event.clientX, y: event.clientY };
+      const agent = canvasAgents.find(item => item.id === id);
+      movingAgentStart = { x: agent?.x || 20, y: agent?.y || 20 };
+      document.addEventListener("mousemove", moveAgent);
+      document.addEventListener("mouseup", stopMoveAgent);
+    }
+
+    function moveAgent(event) {
+      if (!movingAgentId) return;
+      const agent = canvasAgents.find(item => item.id === movingAgentId);
+      if (!agent) return;
+      agent.x = Math.max(8, movingAgentStart.x + event.clientX - movingStart.x);
+      agent.y = Math.max(8, movingAgentStart.y + event.clientY - movingStart.y);
+      renderAgents();
+    }
+
+    function stopMoveAgent() {
+      movingAgentId = null;
+      document.removeEventListener("mousemove", moveAgent);
+      document.removeEventListener("mouseup", stopMoveAgent);
     }
 
     function showAgent(encoded) {
