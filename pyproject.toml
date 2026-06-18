@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "langgraph-coder"
+version = "0.1.0"
+description = "A safety-first LangGraph workflow for local coding tasks."
+requires-python = ">=3.10"
+dependencies = [
+  "langgraph>=0.2.0",
+  "langchain-openai>=0.1.0",
+  "python-dotenv>=1.0.0",
+  "pydantic>=2.0.0",
+]
+
+[project.scripts]
+langgraph-coder = "coder_graph.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
