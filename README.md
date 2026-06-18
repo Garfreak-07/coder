@@ -112,6 +112,12 @@ Windows 交互式入口：
 langgraph-coder --repo "D:\projects\some-app" --map-only
 ```
 
+根据需求高亮推荐模块：
+
+```powershell
+langgraph-coder --repo "D:\projects\some-app" --map-only --query "优化聊天记录搜索"
+```
+
 默认会生成：
 
 ```text

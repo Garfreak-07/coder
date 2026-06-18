@@ -30,6 +30,21 @@ load spec → validate spec → show workflow → run only trusted built-in node
 
 Do not immediately execute arbitrary user Python from imported workflows.
 
+## Where RAG fits
+
+RAG should be an optional agent tool, not a required dependency for the module map.
+
+Coder's retrieval ladder:
+
+```text
+1. Project Index: paths, modules, file names, keywords
+2. Lexical Search: zero-token recommendations from the user's goal
+3. File Summaries: cached summaries for larger projects
+4. RAG Tool: optional embeddings/vector search when lexical search is not enough
+```
+
+This keeps the product small while leaving a clean upgrade path. Agents can later call a `retrieve_context` tool, but the first useful map should work without a model, database, or embedding service.
+
 ## Agent spec
 
 ```json
@@ -81,4 +96,3 @@ Built-in templates
 ```
 
 That makes future workflow design faster without turning the product into an unsafe automation box.
-

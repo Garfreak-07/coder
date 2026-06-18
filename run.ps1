@@ -81,9 +81,13 @@ $mapOnlyText = Read-Default "Generate clickable module map only? y/n" "n"
 
 if ($mapOnlyText.ToLowerInvariant() -in @("y", "yes")) {
     $scopeText = Read-Default "Limit scope inside repo, comma-separated. Leave empty for whole repo" ""
+    $query = Read-Default "Optional goal/query to highlight likely modules" ""
     $argsList = @("-m", "coder_graph.cli", "--repo", $repo, "--map-only")
     foreach ($scope in (Split-List $scopeText)) {
         $argsList += @("--scope", $scope)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($query)) {
+        $argsList += @("--query", $query)
     }
     Write-Host ""
     Write-Host "Generating module map..." -ForegroundColor Cyan

@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from .graph import build_graph
 from .module_map import build_module_map, write_module_map
+from .project_index import annotate_recommendations, recommend_modules
 from .specs import load_workflow_spec, summarize_workflow_spec
 from .state import CodingState
 from .tools.filesystem import resolve_existing_dir, summarize_project
@@ -29,6 +30,7 @@ def main() -> None:
     parser.add_argument("--model", help="Override CODER_MODEL for this run.")
     parser.add_argument("--base-url", help="Override CODER_BASE_URL for this run.")
     parser.add_argument("--map-only", action="store_true", help="Generate a clickable module map and exit.")
+    parser.add_argument("--query", default="", help="User goal used to highlight recommended modules in the module map.")
     parser.add_argument("--output-dir", default="outputs", help="Output directory for generated artifacts.")
     parser.add_argument("--workflow-spec", help="Load and validate a declarative workflow JSON spec.")
     parser.add_argument("--describe-workflow", action="store_true", help="Print workflow spec summary and exit.")
@@ -51,7 +53,9 @@ def main() -> None:
         repo_root = resolve_existing_dir(args.repo)
         files = summarize_project(repo_root, args.scope, max_files=800)
         modules = build_module_map(files)
-        json_path, html_path = write_module_map(Path(args.output_dir), modules)
+        recommendations = recommend_modules(args.query, modules, files) if args.query else []
+        modules = annotate_recommendations(modules, recommendations) if recommendations else modules
+        json_path, html_path = write_module_map(Path(args.output_dir), modules, args.query, recommendations)
         print(f"Module map JSON: {json_path}")
         print(f"Module map HTML: {html_path}")
         return

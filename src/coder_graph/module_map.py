@@ -18,6 +18,9 @@ class ModuleInfo(TypedDict):
     importance: str
     risk: str
     reason: str
+    recommended: bool
+    match_score: int
+    match_hits: list[str]
 
 
 HIGH_IMPORTANCE_HINTS = {
@@ -89,22 +92,30 @@ def build_module_map(files: list[FileSummary]) -> list[ModuleInfo]:
                 "importance": importance,
                 "risk": risk,
                 "reason": reason,
+                "recommended": False,
+                "match_score": 0,
+                "match_hits": [],
             }
         )
 
     return modules
 
 
-def write_module_map(outputs_dir: Path, modules: list[ModuleInfo]) -> tuple[Path, Path]:
+def write_module_map(
+    outputs_dir: Path,
+    modules: list[ModuleInfo],
+    query: str = "",
+    recommendations: list[dict] | None = None,
+) -> tuple[Path, Path]:
     outputs_dir.mkdir(parents=True, exist_ok=True)
     json_path = outputs_dir / "module-map.json"
     html_path = outputs_dir / "module-map.html"
 
     json_path.write_text(
-        json.dumps({"modules": modules}, ensure_ascii=False, indent=2),
+        json.dumps({"query": query, "recommendations": recommendations or [], "modules": modules}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    html_path.write_text(_render_html(modules), encoding="utf-8")
+    html_path.write_text(_render_html(modules, query), encoding="utf-8")
     return json_path, html_path
 
 
@@ -163,9 +174,14 @@ def _level(score: int) -> str:
     return "low"
 
 
-def _render_html(modules: list[ModuleInfo]) -> str:
+def _render_html(modules: list[ModuleInfo], query: str = "") -> str:
     cards = "\n".join(_module_card(module) for module in modules)
     data = html.escape(json.dumps(modules, ensure_ascii=False))
+    query_note = (
+        f"<p class=\"hint\">Query: <strong>{html.escape(query)}</strong>. Recommended modules are pinned first.</p>"
+        if query
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -206,6 +222,10 @@ def _render_html(modules: list[ModuleInfo]) -> str:
     .card:hover, .card.selected {{
       border-color: #38bdf8;
       transform: translateY(-1px);
+    }}
+    .card.recommended {{
+      border-color: #22c55e;
+      box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.25);
     }}
     .path {{
       color: #93c5fd;
@@ -269,6 +289,7 @@ def _render_html(modules: list[ModuleInfo]) -> str:
   <header>
     <h1>Coder Module Map</h1>
     <p class="hint">Click a module to inspect it. High-risk modules should ask for confirmation before broad edits.</p>
+    {query_note}
   </header>
   <main>
     <section class="grid">{cards}</section>
@@ -296,7 +317,8 @@ def _render_html(modules: list[ModuleInfo]) -> str:
       document.getElementById("detail-path").textContent = selected.path;
       document.getElementById("detail-meta").textContent =
         `${{selected.file_count}} files · ${{selected.size_bytes}} bytes · importance: ${{selected.importance}} · risk: ${{selected.risk}}`;
-      document.getElementById("detail-reason").textContent = selected.reason;
+      const hits = selected.match_hits && selected.match_hits.length ? ` Match: ${{selected.match_hits.join(", ")}}.` : "";
+      document.getElementById("detail-reason").textContent = selected.reason + hits;
       document.getElementById("command").value =
         `langgraph-coder --repo "YOUR_PROJECT_PATH" --scope "${{selected.path}}" --max-iterations 3`;
     }}
@@ -312,13 +334,21 @@ def _render_html(modules: list[ModuleInfo]) -> str:
 
 
 def _module_card(module: ModuleInfo) -> str:
+    recommended = module.get("recommended", False)
+    recommended_badge = (
+        f'<span class="badge low">recommended · score {module.get("match_score", 0)}</span>'
+        if recommended
+        else ""
+    )
+    card_class = "card recommended" if recommended else "card"
     return f"""
-      <article class="card" data-id="{html.escape(module['id'])}" onclick="selectModule('{html.escape(module['id'])}')">
+      <article class="{card_class}" data-id="{html.escape(module['id'])}" onclick="selectModule('{html.escape(module['id'])}')">
         <h3>{html.escape(module['name'])}</h3>
         <div class="path">{html.escape(module['path'])}</div>
         <div>
           <span class="badge {html.escape(module['importance'])}">importance: {html.escape(module['importance'])}</span>
           <span class="badge {html.escape(module['risk'])}">risk: {html.escape(module['risk'])}</span>
+          {recommended_badge}
         </div>
         <div class="meta">{module['file_count']} files · {module['size_bytes']} bytes</div>
       </article>
