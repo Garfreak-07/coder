@@ -100,4 +100,4 @@ def _scope_roots(root: Path, scopes: list[str]) -> list[Path]:
 
 def _has_ignored_part(file_path: Path, root: Path) -> bool:
     relative_parts = file_path.relative_to(root).parts
-    return any(part in DEFAULT_IGNORE_DIRS for part in relative_parts)
+    return any(part in DEFAULT_IGNORE_DIRS or part.endswith(".egg-info") for part in relative_parts)
