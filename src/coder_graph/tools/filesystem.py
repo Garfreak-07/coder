@@ -15,6 +15,8 @@ DEFAULT_IGNORE_DIRS = {
     ".venv",
     "venv",
     "__pycache__",
+    "outputs",
+    ".coder_history",
 }
 
 TEXT_EXTENSIONS = {

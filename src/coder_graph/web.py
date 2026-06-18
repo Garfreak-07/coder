@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any
 
 from .graph import build_graph
@@ -69,7 +68,7 @@ def run_server(host: str, port: int) -> None:
 
 
 class CoderWebHandler(BaseHTTPRequestHandler):
-    server_version = "CoderWeb/0.1"
+    server_version = "CoderWeb/0.2"
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path in {"/", "/index.html"}:
@@ -83,6 +82,9 @@ class CoderWebHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             body = self._read_json()
+            if self.path == "/api/select-folder":
+                self._send_json({"path": _select_folder()})
+                return
             if self.path == "/api/analyze":
                 self._send_json(_analyze(body))
                 return
@@ -121,13 +123,12 @@ class CoderWebHandler(BaseHTTPRequestHandler):
 def _analyze(body: dict[str, Any]) -> dict[str, Any]:
     repo = str(body.get("repo", "")).strip()
     query = str(body.get("query", "")).strip()
-    scope = _as_list(body.get("scope"))
 
     if not repo:
         return {"repo": "", "modules": [], "recommendations": [], "workflow": validate_workflow_spec(DEFAULT_WORKFLOW)}
 
     repo_root = resolve_existing_dir(repo)
-    files = summarize_project(repo_root, scope, max_files=800)
+    files = summarize_project(repo_root, [], max_files=800)
     modules = build_module_map(files)
     recommendations = recommend_modules(query, modules, files) if query else []
     modules = annotate_recommendations(modules, recommendations) if recommendations else modules
@@ -142,16 +143,15 @@ def _analyze(body: dict[str, Any]) -> dict[str, Any]:
 def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
     repo = str(body.get("repo", "")).strip()
     request = str(body.get("request", "")).strip() or "Analyze this project and propose a safe improvement plan."
-    scope = _as_list(body.get("scope"))
     if not repo:
-        return {"error": "Project path is empty. Enter a project path before running."}
+        return {"error": "Project path is empty. Select a project folder before running."}
 
     state = {
         "user_request": request,
         "repo_root": str(resolve_existing_dir(repo)),
         "reference_roots": [],
-        "target_scope": scope,
-        "allowed_paths": scope,
+        "target_scope": [],
+        "allowed_paths": [],
         "check_command": "",
         "approved": False,
         "max_iterations": 3,
@@ -169,14 +169,19 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _as_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
-    return []
+def _select_folder() -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(title="Select project folder")
+        root.destroy()
+        return selected or ""
+    except Exception as exc:  # pragma: no cover - depends on desktop availability
+        return f"ERROR: {exc}"
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -187,103 +192,154 @@ INDEX_HTML = r"""<!doctype html>
   <title>Coder Local UI</title>
   <style>
     :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
     body { margin:0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; background:#0f172a; color:#e5e7eb; }
-    header { padding:20px 24px; background:#111827; border-bottom:1px solid #1f2937; }
+    header { padding:18px 24px; background:#111827; border-bottom:1px solid #1f2937; }
     h1 { margin:0 0 6px; font-size:24px; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    h3 { margin:0 0 8px; font-size:15px; }
     p { color:#94a3b8; line-height:1.5; }
-    main { display:grid; grid-template-columns: 340px 1fr; min-height:calc(100vh - 82px); }
-    aside { padding:18px; border-right:1px solid #1f2937; background:#111827; }
-    section { padding:18px; }
-    label { display:block; margin-top:14px; color:#cbd5e1; font-size:13px; }
-    input, textarea, select { width:100%; box-sizing:border-box; margin-top:6px; padding:10px; border-radius:10px; border:1px solid #334155; background:#020617; color:#e5e7eb; }
+    main { display:grid; grid-template-rows: 1fr auto; min-height:calc(100vh - 82px); }
+    .workspace { display:grid; grid-template-columns: 300px minmax(360px,1fr) 420px; gap:14px; padding:14px; min-height:0; }
+    .panel { border:1px solid #334155; background:#111827; border-radius:16px; padding:14px; min-height:0; }
+    label { display:block; margin-top:12px; color:#cbd5e1; font-size:13px; }
+    input, textarea, select { width:100%; margin-top:6px; padding:10px; border-radius:10px; border:1px solid #334155; background:#020617; color:#e5e7eb; }
     textarea { min-height:88px; resize:vertical; }
-    button { margin-top:12px; width:100%; border:0; border-radius:10px; padding:11px 12px; background:#2563eb; color:white; cursor:pointer; }
+    button { margin-top:10px; width:100%; border:0; border-radius:10px; padding:10px 12px; background:#2563eb; color:white; cursor:pointer; }
     button.secondary { background:#334155; }
-    .layout { display:grid; grid-template-columns: 1fr 420px; gap:16px; }
-    .panel { border:1px solid #334155; background:#111827; border-radius:16px; padding:14px; }
-    .modules { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:10px; max-height:440px; overflow:auto; }
+    .modules { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; max-height:calc(100vh - 210px); overflow:auto; }
     .module { border:1px solid #334155; border-radius:14px; padding:12px; background:#020617; }
-    .module.recommended { border-color:#22c55e; }
+    .module.recommended { border-color:#22c55e; box-shadow:0 0 0 1px rgba(34,197,94,.22); }
     .badge { display:inline-block; border-radius:999px; padding:3px 7px; margin:6px 4px 0 0; font-size:12px; border:1px solid #475569; }
     .high { background:#7f1d1d; color:#fecaca; } .medium { background:#713f12; color:#fde68a; } .low { background:#064e3b; color:#bbf7d0; }
-    .workflow { display:flex; gap:10px; overflow:auto; padding-bottom:8px; }
-    .node { min-width:150px; border:1px solid #334155; border-radius:14px; padding:12px; background:#020617; }
-    .arrow { align-self:center; color:#38bdf8; }
-    pre { white-space:pre-wrap; background:#020617; border:1px solid #334155; padding:12px; border-radius:12px; max-height:360px; overflow:auto; }
-    .tabs { display:flex; gap:10px; }
-    .tabs button { width:auto; padding:8px 12px; margin-top:0; }
+    .agent-list, .canvas { display:flex; flex-wrap:wrap; gap:10px; align-content:flex-start; min-height:150px; border:1px dashed #334155; border-radius:14px; padding:10px; background:#020617; }
+    .agent { width:150px; min-height:86px; border:1px solid #334155; border-radius:14px; padding:10px; background:#0f172a; cursor:grab; user-select:none; }
+    .agent.selected { border-color:#38bdf8; }
+    .canvas { min-height:210px; margin-top:12px; }
+    .config { white-space:pre-wrap; background:#020617; border:1px solid #334155; padding:12px; border-radius:12px; max-height:260px; overflow:auto; }
+    .bottom { border-top:1px solid #1f2937; background:#111827; padding:14px; display:grid; grid-template-columns: minmax(300px,1fr) 220px 420px; gap:14px; align-items:end; }
+    pre { white-space:pre-wrap; background:#020617; border:1px solid #334155; padding:12px; border-radius:12px; max-height:180px; overflow:auto; margin:0; }
   </style>
 </head>
 <body>
   <header>
     <h1>Coder Local UI</h1>
-    <p>小而精的本地 agent 工作流界面：项目路径可以为空；模块地图常驻；选择默认工作流或自动化组合，最后运行。</p>
+    <p>本地、小巧、模块化的 agent 工作流界面。选择项目 → 查看模块地图 → 搭配 agent → 输入需求 → 运行。</p>
   </header>
   <main>
-    <aside>
-      <label>项目文件夹路径（可为空）</label>
-      <input id="repo" placeholder="F:\bbb\coder 或 D:\projects\app" />
-      <label>需求 / Query</label>
-      <textarea id="request" placeholder="例如：优化聊天记录搜索"></textarea>
-      <label>限制 scope（可选，逗号分隔）</label>
-      <input id="scope" placeholder="src/features/chat" />
-      <button onclick="analyze()">生成/刷新模块地图</button>
-      <button class="secondary" onclick="runWorkflow()">运行当前工作流</button>
-      <label>模式</label>
-      <select id="mode" onchange="renderWorkflow()">
-        <option value="default">默认工作流</option>
-        <option value="automation">自动化：手动组合</option>
-      </select>
-      <p>自动化第一版只做安全预览：可以组合节点，但不会执行任意用户代码。</p>
-    </aside>
-    <section>
-      <div class="layout">
-        <div class="panel">
-          <h2>模块地图</h2>
-          <div id="modules" class="modules"></div>
-        </div>
-        <div class="panel">
-          <h2>Agent 工作流图</h2>
-          <div id="workflow" class="workflow"></div>
-          <h3>运行结果</h3>
-          <pre id="result">等待运行。</pre>
-        </div>
+    <div class="workspace">
+      <section class="panel">
+        <h2>项目</h2>
+        <label>项目文件夹路径（可为空）</label>
+        <input id="repo" placeholder="F:\bbb\coder 或 D:\projects\app" />
+        <button onclick="selectFolder()">选择文件夹</button>
+        <button class="secondary" onclick="analyze()">刷新模块地图</button>
+        <label>模式</label>
+        <select id="mode" onchange="renderAgents()">
+          <option value="default">默认工作流</option>
+          <option value="automation">自动化：自己组合</option>
+        </select>
+        <label>导入 workflow / agent JSON</label>
+        <input id="importFile" type="file" accept=".json,application/json" onchange="importWorkflow(event)" />
+        <p>限制范围不让用户手填。后续由模块选择、Project Index 和 Reviewer Agent 自动生成与审查边界。</p>
+      </section>
+
+      <section class="panel">
+        <h2>模块地图</h2>
+        <div id="modules" class="modules"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Agent 图</h2>
+        <h3>可用 agents</h3>
+        <div id="agentList" class="agent-list" ondragover="event.preventDefault()" ondrop="dropToList(event)"></div>
+        <h3 style="margin-top:14px">当前工作流</h3>
+        <div id="agentCanvas" class="canvas" ondragover="event.preventDefault()" ondrop="dropToCanvas(event)"></div>
+        <h3 style="margin-top:14px">Agent 配置 / Skills</h3>
+        <pre id="agentConfig" class="config">点击一个 agent 查看配置。</pre>
+      </section>
+    </div>
+
+    <div class="bottom">
+      <div>
+        <label>需求 / Query</label>
+        <textarea id="request" placeholder="例如：优化聊天记录搜索"></textarea>
       </div>
-    </section>
+      <div>
+        <button onclick="analyze()">根据需求推荐模块</button>
+        <button class="secondary" onclick="runWorkflow()">运行当前工作流</button>
+      </div>
+      <div>
+        <label>运行结果</label>
+        <pre id="result">等待运行。</pre>
+      </div>
+    </div>
   </main>
+
   <script>
     let current = { modules: [], workflow: null };
-    const automationNodes = ["Project Index", "Module Map", "Planner Agent", "Reviewer Agent", "Human Gate"];
+    let availableAgents = [];
+    let canvasAgents = [];
+    let draggedAgentId = null;
 
-    async function post(url, data) {
+    async function post(url, data = {}) {
       const res = await fetch(url, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(data) });
       return await res.json();
+    }
+
+    async function selectFolder() {
+      const result = await post("/api/select-folder");
+      if (result.path && !String(result.path).startsWith("ERROR:")) {
+        document.getElementById("repo").value = result.path;
+        await analyze();
+      } else if (result.path) {
+        document.getElementById("result").textContent = result.path;
+      }
     }
 
     async function analyze() {
       const repo = document.getElementById("repo").value;
       const query = document.getElementById("request").value;
-      const scope = document.getElementById("scope").value;
-      current = await post("/api/analyze", { repo, query, scope });
+      current = await post("/api/analyze", { repo, query });
+      if (current.workflow) {
+        const agents = current.workflow.agents || [];
+        availableAgents = mergeAgents(availableAgents, agents);
+        if (!canvasAgents.length) canvasAgents = [...agents];
+      }
       renderModules();
-      renderWorkflow();
+      renderAgents();
     }
 
     async function runWorkflow() {
       document.getElementById("result").textContent = "运行中...";
       const data = await post("/api/run", {
         repo: document.getElementById("repo").value,
-        request: document.getElementById("request").value,
-        scope: document.getElementById("scope").value
+        request: document.getElementById("request").value
       });
       document.getElementById("result").textContent = JSON.stringify(data, null, 2);
+    }
+
+    async function importWorkflow(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const text = await file.text();
+      const spec = JSON.parse(text);
+      const agents = spec.agents || (spec.id ? [spec] : []);
+      availableAgents = mergeAgents(availableAgents, agents);
+      renderAgents();
+    }
+
+    function mergeAgents(existing, incoming) {
+      const byId = new Map(existing.map(agent => [agent.id, agent]));
+      incoming.forEach(agent => byId.set(agent.id, agent));
+      return [...byId.values()];
     }
 
     function renderModules() {
       const root = document.getElementById("modules");
       const modules = current.modules || [];
       if (!modules.length) {
-        root.innerHTML = "<p>暂无模块。输入项目路径后点击生成；项目路径也可以先留空。</p>";
+        root.innerHTML = "<p>暂无模块。可以先不选择项目；选择项目后这里会一直显示模块地图。</p>";
         return;
       }
       root.innerHTML = modules.map(m => `
@@ -299,19 +355,48 @@ INDEX_HTML = r"""<!doctype html>
       `).join("");
     }
 
-    function renderWorkflow() {
-      const root = document.getElementById("workflow");
+    function renderAgents() {
+      const list = document.getElementById("agentList");
+      const canvas = document.getElementById("agentCanvas");
       const mode = document.getElementById("mode").value;
-      if (mode === "automation") {
-        root.innerHTML = automationNodes.map((name, i) => `
-          <div class="node"><span class="badge medium">可组合</span><strong>${name}</strong></div>${i < automationNodes.length - 1 ? '<div class="arrow">→</div>' : ''}
-        `).join("");
-        return;
+      if (mode === "default" && current.workflow) {
+        canvasAgents = current.workflow.agents || [];
       }
-      const steps = current.workflow?.steps || [];
-      root.innerHTML = steps.map((s, i) => `
-        <div class="node"><span class="badge ${s.kind === "agent" ? "medium" : "low"}">${s.kind}</span><strong>${s.uses}</strong><p>out: ${s.output_key}</p></div>${i < steps.length - 1 ? '<div class="arrow">→</div>' : ''}
-      `).join("") || "<p>默认工作流等待加载。</p>";
+      list.innerHTML = availableAgents.map(agent => agentCard(agent)).join("");
+      canvas.innerHTML = canvasAgents.map(agent => agentCard(agent)).join("");
+    }
+
+    function agentCard(agent) {
+      const encoded = encodeURIComponent(JSON.stringify(agent));
+      return `
+        <article class="agent" draggable="true" onclick="showAgent('${encoded}')" ondragstart="dragAgent('${agent.id}')">
+          <strong>${escapeHtml(agent.role || agent.id)}</strong>
+          <p>${escapeHtml(agent.goal || "")}</p>
+          ${(agent.tools || []).map(tool => `<span class="badge low">${escapeHtml(tool)}</span>`).join("")}
+        </article>
+      `;
+    }
+
+    function showAgent(encoded) {
+      const agent = JSON.parse(decodeURIComponent(encoded));
+      document.getElementById("agentConfig").textContent = JSON.stringify(agent, null, 2);
+    }
+
+    function dragAgent(id) { draggedAgentId = id; }
+
+    function dropToCanvas(event) {
+      event.preventDefault();
+      const agent = availableAgents.find(item => item.id === draggedAgentId);
+      if (agent && !canvasAgents.find(item => item.id === agent.id)) {
+        canvasAgents.push(agent);
+        renderAgents();
+      }
+    }
+
+    function dropToList(event) {
+      event.preventDefault();
+      canvasAgents = canvasAgents.filter(item => item.id !== draggedAgentId);
+      renderAgents();
     }
 
     function escapeHtml(value) {
