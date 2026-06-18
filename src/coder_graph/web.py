@@ -465,7 +465,7 @@ INDEX_HTML = r"""<!doctype html>
     h3 { margin:0 0 8px; font-size:15px; }
     p { color:#94a3b8; line-height:1.5; }
     main { display:grid; grid-template-rows: 1fr auto; min-height:calc(100vh - 82px); }
-    .workspace { display:grid; grid-template-columns: 300px minmax(620px,1fr) 320px; gap:14px; padding:14px; min-height:0; }
+    .workspace { display:grid; grid-template-columns: 300px minmax(620px,1fr); gap:14px; padding:14px; min-height:0; }
     .panel { border:1px solid #334155; background:#111827; border-radius:16px; padding:14px; min-height:0; }
     label { display:block; margin-top:12px; color:#cbd5e1; font-size:13px; }
     input, textarea, select { width:100%; margin-top:6px; padding:10px; border-radius:10px; border:1px solid #334155; background:#020617; color:#e5e7eb; }
@@ -560,6 +560,7 @@ INDEX_HTML = r"""<!doctype html>
         <select id="mode" onchange="selectWorkflowMode()">
           <option value="default">默认工作流</option>
         </select>
+        <button class="secondary" onclick="resetDefaultWorkflow()">Reset default workflow</button>
         <label>导入 workflow / agent JSON</label>
         <input id="importFile" type="file" accept=".json,application/json" onchange="importWorkflow(event)" />
         <p>默认工作流会自动选择相关范围、检查命令和重试次数。普通用户只需要选择项目并输入需求。</p>
@@ -589,11 +590,6 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>配置</h2>
-        <p>双击当前工作流画布中的 agent，可以查看并编辑 Agent Card。MCP、skills、tools 后续会作为受控能力接入。</p>
-        <pre id="agentConfig" class="config">双击一个 agent 查看配置。</pre>
-      </section>
     </div>
 
     <div class="bottom">
@@ -998,11 +994,7 @@ INDEX_HTML = r"""<!doctype html>
     function selectWorkflowMode() {
       const mode = document.getElementById("mode").value;
       if (mode === "default") {
-        if (current.workflow) {
-          canvasAgents = layoutAgents((current.workflow.agents || []).map(withClaudeCode));
-          agentEdges = defaultAgentEdges(canvasAgents);
-        }
-        renderAgents();
+        resetDefaultWorkflow();
         return;
       }
       const workflow = savedWorkflows.find(item => item.id === mode);
@@ -1010,6 +1002,21 @@ INDEX_HTML = r"""<!doctype html>
       current.workflow = workflow;
       canvasAgents = (workflow.agents || []).map(withClaudeCode);
       agentEdges = (workflow.edges || defaultAgentEdges(canvasAgents)).map(normalizeCanvasEdge);
+      availableAgents = mergeAgents(availableAgents, canvasAgents);
+      renderAgents();
+    }
+
+    function resetDefaultWorkflow() {
+      const workflow = current.workflow;
+      if (!workflow) return;
+      document.getElementById("mode").value = "default";
+      canvasAgents = layoutAgents((workflow.agents || []).map(withClaudeCode));
+      agentEdges = (workflow.edges || defaultAgentEdges(canvasAgents)).map(normalizeCanvasEdge);
+      selectedAgentForEdge = null;
+      connectMode = false;
+      agentPickerOpen = false;
+      const button = document.getElementById("connectButton");
+      if (button) button.textContent = "连接 agent：关闭";
       availableAgents = mergeAgents(availableAgents, canvasAgents);
       renderAgents();
     }
@@ -1253,7 +1260,6 @@ INDEX_HTML = r"""<!doctype html>
 
     function selectAgentNode(event, id, encoded) {
       event.stopPropagation();
-      document.getElementById("agentConfig").textContent = JSON.stringify(canvasAgents.find(agent => agent.id === id) || {}, null, 2);
       if (!connectMode) {
         selectedAgentForEdge = id;
         renderAgents();
@@ -1299,7 +1305,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function showAgent(encoded) {
       const agent = JSON.parse(decodeURIComponent(encoded));
-      document.getElementById("agentConfig").textContent = JSON.stringify(agent, null, 2);
+      console.debug("Selected agent", agent);
     }
 
     function csvToList(value) {
@@ -1428,7 +1434,7 @@ INDEX_HTML = r"""<!doctype html>
           return;
         }
         applyLibrary(data.library || { workflows: savedWorkflows, agents: [data.agent] });
-        document.getElementById("agentConfig").textContent = JSON.stringify(canvasAgents.find(agent => agent.id === editingAgentId), null, 2);
+        console.debug("Saved agent", canvasAgents.find(agent => agent.id === editingAgentId));
         closeAgentEditor();
         renderAgents();
       } catch (error) {
