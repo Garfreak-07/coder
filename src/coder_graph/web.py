@@ -421,10 +421,16 @@ INDEX_HTML = r"""<!doctype html>
     .workbench-card { border:1px solid #334155; border-radius:14px; background:#020617; padding:12px; }
     .workbench-card h3 { margin-bottom:10px; }
     .workbench-card label { margin-top:8px; }
+    .workbench-header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; margin-bottom:12px; }
+    .workbench-header p { margin:6px 0 0; }
+    .workbench-close { width:auto; margin:0; background:#334155; }
     .checkbox-row { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:6px 10px; margin-top:8px; }
     .checkbox-row label { display:flex; align-items:center; gap:6px; margin:0; }
     .checkbox-row input { width:auto; margin:0; }
     .workbench-wide { grid-column: 1 / -1; }
+    details.workbench-card summary { cursor:pointer; font-weight:650; }
+    .agent-workbench-overlay { display:none; position:fixed; inset:18px; z-index:18; overflow:auto; border:1px solid #334155; border-radius:18px; background:#111827; padding:16px; box-shadow:0 24px 80px rgba(0,0,0,.55); }
+    .agent-workbench-overlay.open { display:block; }
     .bottom { border-top:1px solid #1f2937; background:#111827; padding:14px; display:grid; grid-template-columns: minmax(300px,1fr) 220px 420px; gap:14px; align-items:end; }
     pre { white-space:pre-wrap; background:#020617; border:1px solid #334155; padding:12px; border-radius:12px; max-height:180px; overflow:auto; margin:0; }
   </style>
@@ -455,7 +461,6 @@ INDEX_HTML = r"""<!doctype html>
         <div class="tabs">
           <button id="projectTab" class="tab active" onclick="switchPage('project')">项目图谱</button>
           <button id="workflowTab" class="tab" onclick="switchPage('workflow')">当前工作流</button>
-          <button id="agentTab" class="tab" onclick="switchPage('agent')">Agent 工作台</button>
         </div>
         <div id="projectPage" class="page active">
           <div id="modules" class="modules"></div>
@@ -472,70 +477,6 @@ INDEX_HTML = r"""<!doctype html>
             <div id="agentPickerList"></div>
           </div>
           <div id="agentCanvas" class="canvas" ondragover="event.preventDefault()" ondrop="dropToCanvas(event)"></div>
-        </div>
-        <div id="agentPage" class="page">
-          <h2>Claude Code Agent 页面</h2>
-          <p>每个 agent 都有独立工作台：会话、模型、权限、MCP、skills、tools 和 A2A 协议配置。高级 JSON 会同步保存完整 Agent Card。</p>
-          <div class="workbench-grid">
-            <section class="workbench-card">
-              <h3>Agent</h3>
-              <label>ID</label>
-              <input id="agentWorkbenchId" disabled />
-              <label>角色</label>
-              <input id="agentWorkbenchRole" />
-              <label>目标</label>
-              <textarea id="agentWorkbenchGoal"></textarea>
-            </section>
-            <section class="workbench-card">
-              <h3>Claude Code Runtime</h3>
-              <label>Provider</label>
-              <input id="agentWorkbenchProvider" placeholder="anthropic / openai-compatible / local" />
-              <label>Model</label>
-              <input id="agentWorkbenchModel" placeholder="claude / local model name" />
-              <label>Session ID</label>
-              <input id="agentWorkbenchSession" placeholder="保存后可继续同一 agent 会话" />
-            </section>
-            <section class="workbench-card workbench-wide">
-              <h3>权限</h3>
-              <div class="checkbox-row">
-                <label><input id="permReadFiles" type="checkbox" />读文件</label>
-                <label><input id="permEditFiles" type="checkbox" />改文件</label>
-                <label><input id="permRunCommands" type="checkbox" />运行命令</label>
-                <label><input id="permUseNetwork" type="checkbox" />网络</label>
-                <label><input id="permRequiresApproval" type="checkbox" />关键操作需要批准</label>
-              </div>
-            </section>
-            <section class="workbench-card">
-              <h3>MCP / Skills / Tools</h3>
-              <label>MCP Servers JSON</label>
-              <textarea id="agentWorkbenchMcp"></textarea>
-              <label>Skills（逗号分隔）</label>
-              <input id="agentWorkbenchSkills" />
-              <label>Tools（逗号分隔）</label>
-              <input id="agentWorkbenchTools" />
-            </section>
-            <section class="workbench-card">
-              <h3>A2A 协议</h3>
-              <label>Endpoint</label>
-              <input id="agentWorkbenchA2AEndpoint" />
-              <label>Message Types（逗号分隔）</label>
-              <input id="agentWorkbenchA2AMessageTypes" />
-              <label>Subscriptions（逗号分隔）</label>
-              <input id="agentWorkbenchA2ASubscriptions" />
-            </section>
-            <section class="workbench-card workbench-wide">
-              <h3>System Prompt / Instructions</h3>
-              <textarea id="agentWorkbenchPrompt"></textarea>
-            </section>
-            <section class="workbench-card workbench-wide">
-              <h3>高级 Agent Card JSON</h3>
-              <textarea id="agentEditor"></textarea>
-            </section>
-          </div>
-          <div class="modal-actions">
-            <button class="secondary" onclick="closeAgentEditor()">退出</button>
-            <button onclick="saveAgentEditor()">保存并退出</button>
-          </div>
         </div>
       </section>
 
@@ -560,6 +501,77 @@ INDEX_HTML = r"""<!doctype html>
       </div>
     </div>
   </main>
+
+  <div id="agentPage" class="agent-workbench-overlay">
+    <div class="workbench-header">
+      <div>
+        <h2>Claude Code Agent 页面</h2>
+        <p>普通用户只需要配置角色、模型和权限；MCP、A2A 和完整 JSON 放在高级区域，保存后退出回到当前工作流。</p>
+      </div>
+      <button class="workbench-close" onclick="closeAgentEditor()">退出</button>
+    </div>
+    <div class="workbench-grid">
+      <section class="workbench-card">
+        <h3>Agent</h3>
+        <label>ID</label>
+        <input id="agentWorkbenchId" disabled />
+        <label>角色</label>
+        <input id="agentWorkbenchRole" />
+        <label>目标</label>
+        <textarea id="agentWorkbenchGoal"></textarea>
+      </section>
+      <section class="workbench-card">
+        <h3>Claude Code Runtime</h3>
+        <label>Provider</label>
+        <input id="agentWorkbenchProvider" placeholder="anthropic / openai-compatible / local" />
+        <label>Model</label>
+        <input id="agentWorkbenchModel" placeholder="claude / local model name" />
+        <label>Session ID</label>
+        <input id="agentWorkbenchSession" placeholder="保存后可继续同一 agent 会话" />
+      </section>
+      <section class="workbench-card workbench-wide">
+        <h3>权限</h3>
+        <div class="checkbox-row">
+          <label><input id="permReadFiles" type="checkbox" />读文件</label>
+          <label><input id="permEditFiles" type="checkbox" />改文件</label>
+          <label><input id="permRunCommands" type="checkbox" />运行命令</label>
+          <label><input id="permUseNetwork" type="checkbox" />网络</label>
+          <label><input id="permRequiresApproval" type="checkbox" />关键操作需要批准</label>
+        </div>
+      </section>
+      <section class="workbench-card">
+        <h3>能力</h3>
+        <label>MCP Servers JSON</label>
+        <textarea id="agentWorkbenchMcp"></textarea>
+        <label>Skills（逗号分隔）</label>
+        <input id="agentWorkbenchSkills" />
+        <label>Tools（逗号分隔）</label>
+        <input id="agentWorkbenchTools" />
+      </section>
+      <section class="workbench-card">
+        <h3>A2A 协议</h3>
+        <label>Endpoint</label>
+        <input id="agentWorkbenchA2AEndpoint" />
+        <label>Message Types（逗号分隔）</label>
+        <input id="agentWorkbenchA2AMessageTypes" />
+        <label>Subscriptions（逗号分隔）</label>
+        <input id="agentWorkbenchA2ASubscriptions" />
+      </section>
+      <section class="workbench-card workbench-wide">
+        <h3>System Prompt / Instructions</h3>
+        <textarea id="agentWorkbenchPrompt"></textarea>
+      </section>
+      <details class="workbench-card workbench-wide">
+        <summary>高级 Agent Card JSON</summary>
+        <p>仅在需要精确编辑协议字段、runtime memory 或导入外部配置时使用。</p>
+        <textarea id="agentEditor"></textarea>
+      </details>
+    </div>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeAgentEditor()">退出</button>
+      <button onclick="saveAgentEditor()">保存并退出</button>
+    </div>
+  </div>
 
   <script>
     let current = { modules: [], workflow: null };
@@ -637,10 +649,8 @@ INDEX_HTML = r"""<!doctype html>
     function switchPage(page) {
       document.getElementById("projectPage").classList.toggle("active", page === "project");
       document.getElementById("workflowPage").classList.toggle("active", page === "workflow");
-      document.getElementById("agentPage").classList.toggle("active", page === "agent");
       document.getElementById("projectTab").classList.toggle("active", page === "project");
       document.getElementById("workflowTab").classList.toggle("active", page === "workflow");
-      document.getElementById("agentTab").classList.toggle("active", page === "agent");
     }
 
     function toggleConnectMode() {
@@ -1146,12 +1156,12 @@ INDEX_HTML = r"""<!doctype html>
       const agent = canvasAgents.find(item => item.id === id);
       if (!agent) return;
       fillAgentWorkbench(agent);
-      switchPage("agent");
+      document.getElementById("agentPage").classList.add("open");
     }
 
     function closeAgentEditor() {
       editingAgentId = null;
-      switchPage("workflow");
+      document.getElementById("agentPage").classList.remove("open");
     }
 
     async function saveAgentEditor() {
