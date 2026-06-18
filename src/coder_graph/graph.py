@@ -70,9 +70,80 @@ def _with_events(name, fn, event_bus):
         try:
             result = fn(state)
             event_bus.emit(name, "status", f"{name} completed", status=str(result.get("status", "ok")))
+            _emit_a2a_message(name, state, result, event_bus)
             return result
         except Exception as exc:
             event_bus.emit(name, "error", f"{name} failed: {exc}", status="error")
             raise
 
     return wrapped
+
+
+def _emit_a2a_message(name, state, result, event_bus) -> None:
+    if name == "module_map":
+        event_bus.send_message(
+            "module_map",
+            "planner",
+            "context.modules_ready",
+            action="notify",
+            payload={"module_count": len(result.get("modules", []))},
+            metadata={"protocol": "local-a2a-v1", "handoff": "project_context"},
+        )
+        return
+
+    if name == "planner":
+        event_bus.send_message(
+            "planner",
+            "reviewer",
+            "plan.proposed",
+            action="request_review",
+            payload={
+                "status": result.get("status"),
+                "plan": result.get("plan", ""),
+                "proposed_changes": result.get("proposed_changes", []),
+            },
+            metadata={"protocol": "local-a2a-v1", "handoff": "plan_review"},
+        )
+        event_bus.send_message(
+            "planner",
+            "approval",
+            "plan.proposed",
+            action="request_approval",
+            payload={
+                "status": result.get("status"),
+                "proposed_changes": result.get("proposed_changes", []),
+                "needs_human": True,
+            },
+            metadata={"protocol": "local-a2a-v1", "handoff": "human_gate"},
+            requires_user=True,
+        )
+        return
+
+    if name == "check":
+        event_bus.send_message(
+            "check",
+            "reviewer",
+            "check.result",
+            action="notify",
+            payload={
+                "passed": result.get("check_passed"),
+                "output": result.get("check_output", ""),
+            },
+            metadata={"protocol": "local-a2a-v1", "handoff": "validation_result"},
+        )
+        return
+
+    if name == "reviewer":
+        event_bus.send_message(
+            "reviewer",
+            "ui",
+            "review.completed",
+            action="notify",
+            payload={
+                "risk_level": result.get("risk_level"),
+                "next_step": result.get("next_step"),
+                "notes": result.get("review_notes", ""),
+            },
+            metadata={"protocol": "local-a2a-v1", "handoff": "review_result"},
+            requires_user=result.get("next_step") == "blocked",
+        )

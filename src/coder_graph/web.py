@@ -4,12 +4,15 @@ import argparse
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from .graph import build_graph
+from .models import AgentCard
 from .module_map import build_module_map
 from .project_index import annotate_recommendations, recommend_modules
 from .runtime import RuntimeEventBus
 from .specs import validate_workflow_spec
+from .storage import list_saved_agents, list_saved_workflows, save_agent, save_workflow
 from .tools.filesystem import resolve_existing_dir, summarize_project
 
 
@@ -37,7 +40,36 @@ DEFAULT_WORKFLOW = {
             },
             "stop_rules": ["Do not request broad edits", "Ask for approval when dependencies or config must change"],
             "model": None,
-            "tools": [],
+            "tools": ["claude_code"],
+            "runtime": {
+                "enabled": True,
+                "page": "agent_workbench",
+                "session_id": None,
+                "provider": None,
+                "model": None,
+                "system_prompt": "Act as a scoped planning agent. Use tools only within approved project boundaries.",
+                "context_files": [],
+                "mcp_servers": [],
+                "skills": ["read_project_index", "reason_about_scope", "produce_plan"],
+                "tools": ["read", "search", "shell"],
+                "permissions": {
+                    "read_files": True,
+                    "edit_files": False,
+                    "run_commands": False,
+                    "use_network": False,
+                    "requires_approval": True,
+                },
+                "memory": {},
+            },
+            "a2a": {
+                "enabled": True,
+                "endpoint": "local://agent/planner",
+                "protocol_version": "local-a2a-v1",
+                "input_modes": ["application/json"],
+                "output_modes": ["application/json"],
+                "message_types": ["context.modules_ready", "review.retry_requested"],
+                "subscriptions": ["module_map", "reviewer"],
+            },
         },
         {
             "id": "reviewer",
@@ -56,7 +88,36 @@ DEFAULT_WORKFLOW = {
             },
             "stop_rules": ["Block scope escape", "Block high-risk changes without human approval"],
             "model": None,
-            "tools": [],
+            "tools": ["claude_code"],
+            "runtime": {
+                "enabled": True,
+                "page": "agent_workbench",
+                "session_id": None,
+                "provider": None,
+                "model": None,
+                "system_prompt": "Act as a scoped review agent. Validate plans and patches against user intent, risk, and stop rules.",
+                "context_files": [],
+                "mcp_servers": [],
+                "skills": ["detect_scope_escape", "assess_risk", "produce_stop_reasons"],
+                "tools": ["read", "search", "shell"],
+                "permissions": {
+                    "read_files": True,
+                    "edit_files": False,
+                    "run_commands": False,
+                    "use_network": False,
+                    "requires_approval": True,
+                },
+                "memory": {},
+            },
+            "a2a": {
+                "enabled": True,
+                "endpoint": "local://agent/reviewer",
+                "protocol_version": "local-a2a-v1",
+                "input_modes": ["application/json"],
+                "output_modes": ["application/json"],
+                "message_types": ["plan.proposed", "check.result"],
+                "subscriptions": ["planner", "check"],
+            },
         },
     ],
     "steps": [
@@ -86,11 +147,17 @@ class CoderWebHandler(BaseHTTPRequestHandler):
     server_version = "CoderWeb/0.2"
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path in {"/", "/index.html"}:
+        parsed = urlparse(self.path)
+        if parsed.path in {"/", "/index.html"}:
             self._send_html(INDEX_HTML)
             return
-        if self.path == "/api/workflow":
+        if parsed.path == "/api/workflow":
             self._send_json({"workflow": validate_workflow_spec(DEFAULT_WORKFLOW)})
+            return
+        if parsed.path == "/api/library":
+            query = parse_qs(parsed.query)
+            repo = query.get("repo", [""])[0]
+            self._send_json(_load_library(repo))
             return
         self.send_error(404)
 
@@ -105,6 +172,12 @@ class CoderWebHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/run":
                 self._send_json(_run_workflow(body))
+                return
+            if self.path == "/api/save-workflow":
+                self._send_json(_save_workflow(body))
+                return
+            if self.path == "/api/save-agent":
+                self._send_json(_save_agent(body))
                 return
             self.send_error(404)
         except Exception as exc:  # pragma: no cover - defensive web boundary
@@ -140,7 +213,13 @@ def _analyze(body: dict[str, Any]) -> dict[str, Any]:
     query = str(body.get("query", "")).strip()
 
     if not repo:
-        return {"repo": "", "modules": [], "recommendations": [], "workflow": validate_workflow_spec(DEFAULT_WORKFLOW)}
+        return {
+            "repo": "",
+            "modules": [],
+            "recommendations": [],
+            "workflow": validate_workflow_spec(DEFAULT_WORKFLOW),
+            "library": {"workflows": [], "agents": []},
+        }
 
     repo_root = resolve_existing_dir(repo)
     files = summarize_project(repo_root, [], max_files=800)
@@ -153,7 +232,35 @@ def _analyze(body: dict[str, Any]) -> dict[str, Any]:
         "tree": _build_project_tree(files),
         "recommendations": recommendations,
         "workflow": validate_workflow_spec(DEFAULT_WORKFLOW),
+        "library": _load_library(str(repo_root)),
     }
+
+
+def _load_library(repo: str) -> dict[str, Any]:
+    if not repo:
+        return {"workflows": [], "agents": []}
+    return {
+        "workflows": list_saved_workflows(repo),
+        "agents": list_saved_agents(repo),
+    }
+
+
+def _save_workflow(body: dict[str, Any]) -> dict[str, Any]:
+    repo = str(body.get("repo", "")).strip()
+    workflow = body.get("workflow") or {}
+    if not repo:
+        return {"error": "Project path is empty. Select a project folder before saving."}
+    saved = save_workflow(repo, workflow)
+    return {"workflow": saved, "library": _load_library(repo)}
+
+
+def _save_agent(body: dict[str, Any]) -> dict[str, Any]:
+    repo = str(body.get("repo", "")).strip()
+    agent = body.get("agent") or {}
+    if not repo:
+        return {"error": "Project path is empty. Select a project folder before saving."}
+    saved = save_agent(repo, agent)
+    return {"agent": saved, "library": _load_library(repo)}
 
 
 def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
@@ -172,7 +279,8 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
         "approved": False,
         "max_iterations": 3,
     }
-    events = RuntimeEventBus()
+    agents = [AgentCard.model_validate(agent) for agent in DEFAULT_WORKFLOW["agents"]]
+    events = RuntimeEventBus(agents=agents)
     events.emit("ui", "status", "Workflow requested", status="running", payload={"repo": repo})
     result = build_graph(event_bus=events).invoke(state)
     events.emit("ui", "result", "Workflow finished", status=str(result.get("status", "unknown")))
@@ -186,6 +294,8 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
             "changed_files": result.get("changed_files", []),
         },
         "events": events.dump(),
+        "messages": events.dump_messages(),
+        "a2a_queues": events.dump_a2a_queues(),
     }
 
 
@@ -266,7 +376,7 @@ INDEX_HTML = r"""<!doctype html>
     .modules:active { cursor:grabbing; }
     .graph-space { position:absolute; width:2200px; height:1500px; transform-origin:0 0; }
     .graph-lines { position:absolute; inset:0; width:2200px; height:1500px; pointer-events:none; }
-    .graph-node { position:absolute; width:170px; min-height:58px; border:1px solid #334155; border-radius:14px; padding:10px; background:#0f172a; box-shadow:0 10px 26px rgba(0,0,0,.22); cursor:grab; user-select:none; }
+    .graph-node { position:absolute; width:170px; min-height:58px; border:1px solid #334155; border-radius:14px; padding:10px; background:#0f172a; box-shadow:0 10px 26px rgba(0,0,0,.22); cursor:pointer; user-select:none; }
     .graph-node:hover { border-color:#38bdf8; }
     .graph-node.dir { background:#111827; }
     .graph-node.file { opacity:.82; }
@@ -292,6 +402,29 @@ INDEX_HTML = r"""<!doctype html>
     .page { display:none; }
     .page.active { display:block; }
     .connection-mode { border-color:#f59e0b !important; box-shadow:0 0 0 1px rgba(245,158,11,.35); }
+    .agent-picker { display:none; position:absolute; z-index:6; width:320px; max-height:320px; overflow:auto; margin-top:8px; padding:10px; border:1px solid #334155; border-radius:14px; background:#020617; box-shadow:0 18px 50px rgba(0,0,0,.35); }
+    .agent-picker.open { display:block; }
+    .workflow-actions { display:flex; gap:8px; align-items:center; margin:10px 0 8px; }
+    .workflow-actions button { flex:1; width:auto; margin:0; }
+    .agent-option { display:flex; align-items:flex-start; gap:8px; padding:8px; border-radius:10px; }
+    .agent-option:hover { background:#1e293b; }
+    .agent-option input { width:auto; margin-top:3px; }
+    .agent-option strong { display:block; }
+    .agent-option span { display:block; color:#94a3b8; font-size:12px; margin-top:3px; }
+    .modal-backdrop { display:none; position:fixed; inset:0; z-index:20; background:rgba(2,6,23,.72); align-items:center; justify-content:center; }
+    .modal-backdrop.open { display:flex; }
+    .modal { width:min(760px, calc(100vw - 48px)); max-height:calc(100vh - 70px); overflow:auto; border:1px solid #334155; border-radius:18px; background:#111827; padding:16px; box-shadow:0 24px 80px rgba(0,0,0,.45); }
+    .modal textarea { min-height:360px; font-family:ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .modal-actions { display:flex; gap:10px; justify-content:flex-end; }
+    .modal-actions button { width:auto; min-width:90px; }
+    .workbench-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    .workbench-card { border:1px solid #334155; border-radius:14px; background:#020617; padding:12px; }
+    .workbench-card h3 { margin-bottom:10px; }
+    .workbench-card label { margin-top:8px; }
+    .checkbox-row { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:6px 10px; margin-top:8px; }
+    .checkbox-row label { display:flex; align-items:center; gap:6px; margin:0; }
+    .checkbox-row input { width:auto; margin:0; }
+    .workbench-wide { grid-column: 1 / -1; }
     .bottom { border-top:1px solid #1f2937; background:#111827; padding:14px; display:grid; grid-template-columns: minmax(300px,1fr) 220px 420px; gap:14px; align-items:end; }
     pre { white-space:pre-wrap; background:#020617; border:1px solid #334155; padding:12px; border-radius:12px; max-height:180px; overflow:auto; margin:0; }
   </style>
@@ -310,9 +443,8 @@ INDEX_HTML = r"""<!doctype html>
         <button onclick="selectFolder()">选择文件夹</button>
         <button class="secondary" onclick="analyze()">刷新模块地图</button>
         <label>模式</label>
-        <select id="mode" onchange="renderAgents()">
+        <select id="mode" onchange="selectWorkflowMode()">
           <option value="default">默认工作流</option>
-          <option value="automation">自动化：自己组合</option>
         </select>
         <label>导入 workflow / agent JSON</label>
         <input id="importFile" type="file" accept=".json,application/json" onchange="importWorkflow(event)" />
@@ -323,23 +455,94 @@ INDEX_HTML = r"""<!doctype html>
         <div class="tabs">
           <button id="projectTab" class="tab active" onclick="switchPage('project')">项目图谱</button>
           <button id="workflowTab" class="tab" onclick="switchPage('workflow')">当前工作流</button>
+          <button id="agentTab" class="tab" onclick="switchPage('agent')">Agent 工作台</button>
         </div>
         <div id="projectPage" class="page active">
           <div id="modules" class="modules"></div>
         </div>
         <div id="workflowPage" class="page">
-        <h3>当前工作流画布</h3>
-        <p>拖动 agent 调整位置。点击“连接 agent”后，依次点击起点和终点创建箭头。点击箭头可删除。</p>
-        <button class="secondary" id="connectButton" onclick="toggleConnectMode()">连接 agent：关闭</button>
+          <h3>当前工作流画布</h3>
+          <p>拖动 agent 调整位置。点击“连接 agent”后，依次点击起点和终点创建箭头。点击箭头可删除。</p>
+          <div class="workflow-actions">
+            <button class="secondary" onclick="toggleAgentPicker()">选择 Agent</button>
+            <button class="secondary" id="connectButton" onclick="toggleConnectMode()">连接 agent：关闭</button>
+            <button class="secondary" onclick="saveCurrentWorkflow()">保存工作流</button>
+          </div>
+          <div id="agentPicker" class="agent-picker">
+            <div id="agentPickerList"></div>
+          </div>
           <div id="agentCanvas" class="canvas" ondragover="event.preventDefault()" ondrop="dropToCanvas(event)"></div>
+        </div>
+        <div id="agentPage" class="page">
+          <h2>Claude Code Agent 页面</h2>
+          <p>每个 agent 都有独立工作台：会话、模型、权限、MCP、skills、tools 和 A2A 协议配置。高级 JSON 会同步保存完整 Agent Card。</p>
+          <div class="workbench-grid">
+            <section class="workbench-card">
+              <h3>Agent</h3>
+              <label>ID</label>
+              <input id="agentWorkbenchId" disabled />
+              <label>角色</label>
+              <input id="agentWorkbenchRole" />
+              <label>目标</label>
+              <textarea id="agentWorkbenchGoal"></textarea>
+            </section>
+            <section class="workbench-card">
+              <h3>Claude Code Runtime</h3>
+              <label>Provider</label>
+              <input id="agentWorkbenchProvider" placeholder="anthropic / openai-compatible / local" />
+              <label>Model</label>
+              <input id="agentWorkbenchModel" placeholder="claude / local model name" />
+              <label>Session ID</label>
+              <input id="agentWorkbenchSession" placeholder="保存后可继续同一 agent 会话" />
+            </section>
+            <section class="workbench-card workbench-wide">
+              <h3>权限</h3>
+              <div class="checkbox-row">
+                <label><input id="permReadFiles" type="checkbox" />读文件</label>
+                <label><input id="permEditFiles" type="checkbox" />改文件</label>
+                <label><input id="permRunCommands" type="checkbox" />运行命令</label>
+                <label><input id="permUseNetwork" type="checkbox" />网络</label>
+                <label><input id="permRequiresApproval" type="checkbox" />关键操作需要批准</label>
+              </div>
+            </section>
+            <section class="workbench-card">
+              <h3>MCP / Skills / Tools</h3>
+              <label>MCP Servers JSON</label>
+              <textarea id="agentWorkbenchMcp"></textarea>
+              <label>Skills（逗号分隔）</label>
+              <input id="agentWorkbenchSkills" />
+              <label>Tools（逗号分隔）</label>
+              <input id="agentWorkbenchTools" />
+            </section>
+            <section class="workbench-card">
+              <h3>A2A 协议</h3>
+              <label>Endpoint</label>
+              <input id="agentWorkbenchA2AEndpoint" />
+              <label>Message Types（逗号分隔）</label>
+              <input id="agentWorkbenchA2AMessageTypes" />
+              <label>Subscriptions（逗号分隔）</label>
+              <input id="agentWorkbenchA2ASubscriptions" />
+            </section>
+            <section class="workbench-card workbench-wide">
+              <h3>System Prompt / Instructions</h3>
+              <textarea id="agentWorkbenchPrompt"></textarea>
+            </section>
+            <section class="workbench-card workbench-wide">
+              <h3>高级 Agent Card JSON</h3>
+              <textarea id="agentEditor"></textarea>
+            </section>
+          </div>
+          <div class="modal-actions">
+            <button class="secondary" onclick="closeAgentEditor()">退出</button>
+            <button onclick="saveAgentEditor()">保存并退出</button>
+          </div>
         </div>
       </section>
 
       <section class="panel">
-        <h2>Agent 库</h2>
-        <div id="agentList" class="agent-list" ondragover="event.preventDefault()" ondrop="dropToList(event)"></div>
-        <h3 style="margin-top:14px">Agent 配置 / Skills</h3>
-        <pre id="agentConfig" class="config">点击一个 agent 查看配置。</pre>
+        <h2>配置</h2>
+        <p>双击当前工作流画布中的 agent，可以查看并编辑 Agent Card。MCP、skills、tools 后续会作为受控能力接入。</p>
+        <pre id="agentConfig" class="config">双击一个 agent 查看配置。</pre>
       </section>
     </div>
 
@@ -349,7 +552,6 @@ INDEX_HTML = r"""<!doctype html>
         <textarea id="request" placeholder="例如：优化聊天记录搜索"></textarea>
       </div>
       <div>
-        <button onclick="analyze()">根据需求推荐模块</button>
         <button class="secondary" onclick="runWorkflow()">运行当前工作流</button>
       </div>
       <div>
@@ -361,12 +563,15 @@ INDEX_HTML = r"""<!doctype html>
 
   <script>
     let current = { modules: [], workflow: null };
+    let savedWorkflows = [];
     let availableAgents = [];
     let canvasAgents = [];
     let agentEdges = [];
     let draggedAgentId = null;
     let selectedAgentForEdge = null;
     let connectMode = false;
+    let agentPickerOpen = false;
+    let editingAgentId = null;
     let movingAgentId = null;
     let movingStart = { x: 0, y: 0 };
     let movingAgentStart = { x: 0, y: 0 };
@@ -378,6 +583,11 @@ INDEX_HTML = r"""<!doctype html>
 
     async function post(url, data = {}) {
       const res = await fetch(url, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(data) });
+      return await res.json();
+    }
+
+    async function getJson(url) {
+      const res = await fetch(url);
       return await res.json();
     }
 
@@ -396,13 +606,14 @@ INDEX_HTML = r"""<!doctype html>
       const query = document.getElementById("request").value;
       current = await post("/api/analyze", { repo, query });
       if (current.workflow) {
-        const agents = current.workflow.agents || [];
+        const agents = (current.workflow.agents || []).map(withClaudeCode);
         availableAgents = mergeAgents(availableAgents, agents);
         if (!canvasAgents.length) {
           canvasAgents = layoutAgents(agents);
           agentEdges = defaultAgentEdges(canvasAgents);
         }
       }
+      applyLibrary(current.library || { workflows: [], agents: [] });
       renderProjectTree();
       renderAgents();
     }
@@ -419,14 +630,17 @@ INDEX_HTML = r"""<!doctype html>
     function formatRunResult(data) {
       if (data.error) return data.error;
       const events = (data.events || []).map(event => `• [${event.source}] ${event.message} (${event.status || event.type})`).join("\n");
-      return `${events}\n\nPLAN\n${data.plan || ""}\n\nREVIEW\n${data.review || ""}\n\nSTATUS\n${JSON.stringify(data.status || {}, null, 2)}`;
+      const messages = (data.messages || []).map(message => `→ [${message.sender} -> ${message.recipient}] ${message.type}`).join("\n");
+      return `${events}\n\nA2A MESSAGES\n${messages || "No messages"}\n\nA2A QUEUES\n${JSON.stringify(data.a2a_queues || {}, null, 2)}\n\nPLAN\n${data.plan || ""}\n\nREVIEW\n${data.review || ""}\n\nSTATUS\n${JSON.stringify(data.status || {}, null, 2)}`;
     }
 
     function switchPage(page) {
       document.getElementById("projectPage").classList.toggle("active", page === "project");
       document.getElementById("workflowPage").classList.toggle("active", page === "workflow");
+      document.getElementById("agentPage").classList.toggle("active", page === "agent");
       document.getElementById("projectTab").classList.toggle("active", page === "project");
       document.getElementById("workflowTab").classList.toggle("active", page === "workflow");
+      document.getElementById("agentTab").classList.toggle("active", page === "agent");
     }
 
     function toggleConnectMode() {
@@ -436,20 +650,158 @@ INDEX_HTML = r"""<!doctype html>
       renderAgents();
     }
 
+    function toggleAgentPicker() {
+      agentPickerOpen = !agentPickerOpen;
+      renderAgents();
+    }
+
     async function importWorkflow(event) {
       const file = event.target.files[0];
       if (!file) return;
       const text = await file.text();
       const spec = JSON.parse(text);
       const agents = spec.agents || (spec.id ? [spec] : []);
-      availableAgents = mergeAgents(availableAgents, agents);
+      availableAgents = mergeAgents(availableAgents, agents.map(withClaudeCode));
       renderAgents();
     }
 
     function mergeAgents(existing, incoming) {
       const byId = new Map(existing.map(agent => [agent.id, agent]));
-      incoming.forEach(agent => byId.set(agent.id, agent));
+      incoming.filter(Boolean).forEach(agent => byId.set(agent.id, withClaudeCode(agent)));
       return [...byId.values()];
+    }
+
+    function withClaudeCode(agent) {
+      const skills = new Set(agent.skills || []);
+      const tools = new Set(agent.tools || []);
+      tools.add("claude_code");
+      const runtimeTools = new Set(agent.runtime?.tools || ["read", "search", "edit", "shell"]);
+      const runtimeSkills = new Set(agent.runtime?.skills || agent.skills || []);
+      return {
+        ...agent,
+        skills: [...skills],
+        tools: [...tools],
+        runtime: {
+          enabled: true,
+          page: "agent_workbench",
+          session_id: null,
+          provider: null,
+          model: agent.model || null,
+          system_prompt: agent.instructions || "",
+          context_files: [],
+          mcp_servers: [],
+          skills: [...runtimeSkills],
+          tools: [...runtimeTools],
+          permissions: {
+            read_files: true,
+            edit_files: false,
+            run_commands: false,
+            use_network: false,
+            requires_approval: true,
+            ...(agent.runtime?.permissions || {})
+          },
+          memory: {},
+          ...(agent.runtime || {})
+        },
+        a2a: {
+          enabled: true,
+          endpoint: `local://agent/${agent.id}`,
+          protocol_version: "local-a2a-v1",
+          input_modes: ["application/json"],
+          output_modes: ["application/json"],
+          message_types: [],
+          subscriptions: [],
+          ...(agent.a2a || {})
+        }
+      };
+    }
+
+    function applyLibrary(library) {
+      savedWorkflows = library.workflows || [];
+      availableAgents = mergeAgents(availableAgents, library.agents || []);
+      renderWorkflowModes();
+    }
+
+    function renderWorkflowModes() {
+      const select = document.getElementById("mode");
+      const selected = select.value || "default";
+      select.innerHTML = `<option value="default">默认工作流</option>` + savedWorkflows
+        .map(workflow => `<option value="${escapeAttr(workflow.id)}">${escapeHtml(workflow.name)}</option>`)
+        .join("");
+      select.value = savedWorkflows.some(workflow => workflow.id === selected) ? selected : "default";
+    }
+
+    function normalizeCanvasEdge(edge) {
+      return {
+        from: edge.from || edge.source,
+        to: edge.to || edge.target,
+        condition: edge.condition || null
+      };
+    }
+
+    function workflowSpecEdge(edge) {
+      const normalized = normalizeCanvasEdge(edge);
+      return {
+        source: normalized.from,
+        target: normalized.to,
+        condition: normalized.condition
+      };
+    }
+
+    function selectWorkflowMode() {
+      const mode = document.getElementById("mode").value;
+      if (mode === "default") {
+        if (current.workflow) {
+          canvasAgents = layoutAgents((current.workflow.agents || []).map(withClaudeCode));
+          agentEdges = defaultAgentEdges(canvasAgents);
+        }
+        renderAgents();
+        return;
+      }
+      const workflow = savedWorkflows.find(item => item.id === mode);
+      if (!workflow) return;
+      current.workflow = workflow;
+      canvasAgents = (workflow.agents || []).map(withClaudeCode);
+      agentEdges = (workflow.edges || defaultAgentEdges(canvasAgents)).map(normalizeCanvasEdge);
+      availableAgents = mergeAgents(availableAgents, canvasAgents);
+      renderAgents();
+    }
+
+    function currentWorkflowSpec(name) {
+      const base = current.workflow || {};
+      const selectedMode = document.getElementById("mode").value;
+      const workflowId = selectedMode && selectedMode !== "default" ? selectedMode : `workflow-${Date.now()}`;
+      return {
+        ...base,
+        id: workflowId,
+        name,
+        description: base.description || "User-composed workflow",
+        agents: canvasAgents.map(withClaudeCode),
+        edges: agentEdges.map(workflowSpecEdge),
+        steps: canvasAgents.map(agent => ({
+          id: agent.id,
+          kind: "agent",
+          uses: agent.id,
+          input_keys: agent.input_keys || [],
+          output_key: `${agent.id}_result`
+        }))
+      };
+    }
+
+    async function saveCurrentWorkflow() {
+      const name = window.prompt("请输入工作流名称", document.getElementById("mode").selectedOptions[0]?.textContent || "我的工作流");
+      if (!name || !name.trim()) return;
+      const workflow = currentWorkflowSpec(name.trim());
+      const data = await post("/api/save-workflow", { repo: document.getElementById("repo").value, workflow });
+      if (data.error) {
+        alert(data.error);
+        return;
+      }
+      applyLibrary(data.library || { workflows: [data.workflow], agents: [] });
+      renderWorkflowModes();
+      document.getElementById("mode").value = data.workflow.id;
+      current.workflow = data.workflow;
+      renderAgents();
     }
 
     function renderProjectTree() {
@@ -514,8 +866,10 @@ INDEX_HTML = r"""<!doctype html>
 
     function graphNode(node) {
       const icon = node.type === "dir" ? "📁" : node.type === "file" ? "📄" : "⋯";
+      const title = node.type === "file" ? escapeAttr(node.path) : "Click to expand";
       return `
         <div class="graph-node ${node.type}" style="left:${node.x}px; top:${node.y}px"
+             title="${title}"
              onclick="selectGraphNode('${escapeAttr(node.path)}', '${node.type}')">
           <div class="name">${icon} ${escapeHtml(node.name)}</div>
           <div class="meta">${node.type === "file" ? escapeHtml(node.path) : `${node.file_count || 0} files`}</div>
@@ -571,19 +925,21 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function renderAgents() {
-      const list = document.getElementById("agentList");
+      const list = document.getElementById("agentPickerList");
       const canvas = document.getElementById("agentCanvas");
+      const picker = document.getElementById("agentPicker");
       const mode = document.getElementById("mode").value;
       if (mode === "default" && current.workflow && !canvasAgents.length) {
-        canvasAgents = layoutAgents(current.workflow.agents || []);
+        canvasAgents = layoutAgents((current.workflow.agents || []).map(withClaudeCode));
         agentEdges = defaultAgentEdges(canvasAgents);
       }
-      list.innerHTML = availableAgents.map(agent => agentLibraryCard(agent)).join("");
+      if (picker) picker.classList.toggle("open", agentPickerOpen);
+      if (list) list.innerHTML = availableAgents.map(agent => agentPickerOption(agent)).join("");
       canvas.innerHTML = `<svg class="agent-canvas-svg">${agentEdges.map(edge => agentEdge(edge)).join("")}</svg>` + canvasAgents.map(agent => agentCanvasNode(agent)).join("");
     }
 
     function layoutAgents(agents) {
-      return agents.map((agent, index) => ({ ...agent, x: 24 + index * 180, y: 78 + (index % 2) * 28 }));
+      return agents.map((agent, index) => ({ ...withClaudeCode(agent), x: 24 + index * 180, y: 78 + (index % 2) * 28 }));
     }
 
     function defaultAgentEdges(agents) {
@@ -592,15 +948,30 @@ INDEX_HTML = r"""<!doctype html>
       return edges;
     }
 
-    function agentLibraryCard(agent) {
-      const encoded = encodeURIComponent(JSON.stringify(agent));
+    function agentPickerOption(agent) {
+      const checked = canvasAgents.some(item => item.id === agent.id) ? "checked" : "";
       return `
-        <article class="agent" draggable="true" onclick="showAgent('${encoded}')" ondragstart="dragAgent('${agent.id}')">
-          <strong>${escapeHtml(agent.role || agent.id)}</strong>
-          <p>${escapeHtml(agent.goal || "")}</p>
-          ${(agent.tools || []).map(tool => `<span class="badge low">${escapeHtml(tool)}</span>`).join("")}
-        </article>
+        <label class="agent-option">
+          <input type="checkbox" ${checked} onchange="toggleCanvasAgent('${agent.id}', this.checked)" />
+          <span>
+            <strong>${escapeHtml(agent.role || agent.id)}</strong>
+            <span>${escapeHtml(agent.goal || "")}</span>
+          </span>
+        </label>
       `;
+    }
+
+    function toggleCanvasAgent(id, checked) {
+      const exists = canvasAgents.find(agent => agent.id === id);
+      if (checked && !exists) {
+        const source = availableAgents.find(agent => agent.id === id);
+        if (source) canvasAgents.push({ ...withClaudeCode(source), x: 36 + canvasAgents.length * 180, y: 80 + (canvasAgents.length % 2) * 55 });
+      }
+      if (!checked) {
+        canvasAgents = canvasAgents.filter(agent => agent.id !== id);
+        agentEdges = agentEdges.filter(edge => edge.from !== id && edge.to !== id);
+      }
+      renderAgents();
     }
 
     function agentCanvasNode(agent) {
@@ -609,7 +980,8 @@ INDEX_HTML = r"""<!doctype html>
       return `
         <article class="agent${selected}" style="left:${agent.x || 20}px; top:${agent.y || 20}px"
                  onmousedown="startMoveAgent(event, '${agent.id}')"
-                 onclick="selectAgentNode(event, '${agent.id}', '${encoded}')">
+                 onclick="selectAgentNode(event, '${agent.id}', '${encoded}')"
+                 ondblclick="openAgentEditor(event, '${agent.id}')">
           <strong>${escapeHtml(agent.role || agent.id)}</strong>
           <p>${escapeHtml(agent.goal || "")}</p>
           ${(agent.skills || agent.tools || []).slice(0, 3).map(skill => `<span class="badge low">${escapeHtml(skill)}</span>`).join("")}
@@ -634,7 +1006,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function selectAgentNode(event, id, encoded) {
       event.stopPropagation();
-      showAgent(encoded);
+      document.getElementById("agentConfig").textContent = JSON.stringify(canvasAgents.find(agent => agent.id === id) || {}, null, 2);
       if (!connectMode) {
         selectedAgentForEdge = id;
         renderAgents();
@@ -683,6 +1055,125 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("agentConfig").textContent = JSON.stringify(agent, null, 2);
     }
 
+    function csvToList(value) {
+      return String(value || "").split(",").map(item => item.trim()).filter(Boolean);
+    }
+
+    function listToCsv(value) {
+      return (value || []).join(", ");
+    }
+
+    function setChecked(id, value) {
+      document.getElementById(id).checked = Boolean(value);
+    }
+
+    function fillAgentWorkbench(agent) {
+      const normalized = withClaudeCode(agent);
+      const runtime = normalized.runtime || {};
+      const permissions = runtime.permissions || {};
+      const a2a = normalized.a2a || {};
+
+      document.getElementById("agentWorkbenchId").value = normalized.id || "";
+      document.getElementById("agentWorkbenchRole").value = normalized.role || "";
+      document.getElementById("agentWorkbenchGoal").value = normalized.goal || "";
+      document.getElementById("agentWorkbenchProvider").value = runtime.provider || "";
+      document.getElementById("agentWorkbenchModel").value = runtime.model || normalized.model || "";
+      document.getElementById("agentWorkbenchSession").value = runtime.session_id || "";
+      document.getElementById("agentWorkbenchMcp").value = JSON.stringify(runtime.mcp_servers || [], null, 2);
+      document.getElementById("agentWorkbenchSkills").value = listToCsv(runtime.skills || normalized.skills || []);
+      document.getElementById("agentWorkbenchTools").value = listToCsv(runtime.tools || []);
+      document.getElementById("agentWorkbenchA2AEndpoint").value = a2a.endpoint || `local://agent/${normalized.id}`;
+      document.getElementById("agentWorkbenchA2AMessageTypes").value = listToCsv(a2a.message_types || []);
+      document.getElementById("agentWorkbenchA2ASubscriptions").value = listToCsv(a2a.subscriptions || []);
+      document.getElementById("agentWorkbenchPrompt").value = runtime.system_prompt || normalized.instructions || "";
+      setChecked("permReadFiles", permissions.read_files);
+      setChecked("permEditFiles", permissions.edit_files);
+      setChecked("permRunCommands", permissions.run_commands);
+      setChecked("permUseNetwork", permissions.use_network);
+      setChecked("permRequiresApproval", permissions.requires_approval);
+      document.getElementById("agentEditor").value = JSON.stringify(normalized, null, 2);
+    }
+
+    function readAgentWorkbench() {
+      const base = JSON.parse(document.getElementById("agentEditor").value);
+      const mcpServers = JSON.parse(document.getElementById("agentWorkbenchMcp").value || "[]");
+      const skills = csvToList(document.getElementById("agentWorkbenchSkills").value);
+      const runtimeTools = csvToList(document.getElementById("agentWorkbenchTools").value);
+      const updated = {
+        ...base,
+        id: editingAgentId,
+        role: document.getElementById("agentWorkbenchRole").value,
+        goal: document.getElementById("agentWorkbenchGoal").value,
+        instructions: document.getElementById("agentWorkbenchPrompt").value,
+        skills,
+        model: document.getElementById("agentWorkbenchModel").value || null,
+        runtime: {
+          ...(base.runtime || {}),
+          enabled: true,
+          page: "agent_workbench",
+          provider: document.getElementById("agentWorkbenchProvider").value || null,
+          model: document.getElementById("agentWorkbenchModel").value || null,
+          session_id: document.getElementById("agentWorkbenchSession").value || null,
+          system_prompt: document.getElementById("agentWorkbenchPrompt").value,
+          mcp_servers: mcpServers,
+          skills,
+          tools: runtimeTools,
+          permissions: {
+            read_files: document.getElementById("permReadFiles").checked,
+            edit_files: document.getElementById("permEditFiles").checked,
+            run_commands: document.getElementById("permRunCommands").checked,
+            use_network: document.getElementById("permUseNetwork").checked,
+            requires_approval: document.getElementById("permRequiresApproval").checked,
+          }
+        },
+        a2a: {
+          ...(base.a2a || {}),
+          enabled: true,
+          endpoint: document.getElementById("agentWorkbenchA2AEndpoint").value || `local://agent/${editingAgentId}`,
+          protocol_version: "local-a2a-v1",
+          input_modes: ["application/json"],
+          output_modes: ["application/json"],
+          message_types: csvToList(document.getElementById("agentWorkbenchA2AMessageTypes").value),
+          subscriptions: csvToList(document.getElementById("agentWorkbenchA2ASubscriptions").value),
+        }
+      };
+      return withClaudeCode(updated);
+    }
+
+    function openAgentEditor(event, id) {
+      event.stopPropagation();
+      editingAgentId = id;
+      const agent = canvasAgents.find(item => item.id === id);
+      if (!agent) return;
+      fillAgentWorkbench(agent);
+      switchPage("agent");
+    }
+
+    function closeAgentEditor() {
+      editingAgentId = null;
+      switchPage("workflow");
+    }
+
+    async function saveAgentEditor() {
+      if (!editingAgentId) return;
+      try {
+        const updated = readAgentWorkbench();
+        canvasAgents = canvasAgents.map(agent => agent.id === editingAgentId ? withClaudeCode({ ...agent, ...updated, id: editingAgentId }) : agent);
+        availableAgents = mergeAgents(availableAgents, [canvasAgents.find(agent => agent.id === editingAgentId)]);
+        const data = await post("/api/save-agent", { repo: document.getElementById("repo").value, agent: canvasAgents.find(agent => agent.id === editingAgentId) });
+        if (data.error) {
+          alert(data.error);
+          return;
+        }
+        applyLibrary(data.library || { workflows: savedWorkflows, agents: [data.agent] });
+        document.getElementById("agentConfig").textContent = JSON.stringify(canvasAgents.find(agent => agent.id === editingAgentId), null, 2);
+        closeAgentEditor();
+        renderAgents();
+      } catch (error) {
+        alert(`JSON 格式错误：${error}`);
+      }
+    }
+
     function dragAgent(id) { draggedAgentId = id; }
 
     function dropToCanvas(event) {
@@ -709,6 +1200,7 @@ INDEX_HTML = r"""<!doctype html>
       return escapeHtml(value).replace(/`/g, "&#096;");
     }
 
+    renderWorkflowModes();
     analyze();
   </script>
 </body>

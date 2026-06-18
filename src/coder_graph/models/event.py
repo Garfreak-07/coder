@@ -18,10 +18,14 @@ class A2AMessage(BaseModel):
 
     id: str
     task_id: str
+    protocol: str = "local-a2a-v1"
     sender: str
     recipient: str
     type: str
+    action: str | None = None
+    correlation_id: str | None = None
     payload: dict = Field(default_factory=dict)
+    metadata: dict = Field(default_factory=dict)
     requires_user: bool = False
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -37,4 +41,3 @@ class RuntimeEvent(BaseModel):
     message: str = ""
     payload: dict = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
