@@ -6,8 +6,11 @@
   "agents": [
     {
       "id": "planner",
+      "name": "Planner",
       "role": "Planner Agent",
       "goal": "Create a short, scoped implementation plan.",
+      "instructions": "Use project context and selected constraints. Return compact JSON. Do not write code.",
+      "skills": ["read_project_index", "reason_about_scope", "produce_plan"],
       "input_keys": ["user_request", "modules", "allowed_paths", "repo_files"],
       "output_schema": {
         "summary": "string",
@@ -17,13 +20,17 @@
         "checks": "list[string]",
         "needs_human": "boolean"
       },
+      "stop_rules": ["Do not request broad edits", "Ask for approval when dependencies or config must change"],
       "model": null,
       "tools": []
     },
     {
       "id": "reviewer",
+      "name": "Reviewer",
       "role": "Reviewer Agent",
       "goal": "Reject scope escape, high risk, and unclear plans.",
+      "instructions": "Review plans and future patches against scope, risk, and stop rules. Return compact JSON.",
+      "skills": ["detect_scope_escape", "assess_risk", "produce_stop_reasons"],
       "input_keys": ["user_request", "planner_result", "allowed_paths", "modules", "changed_files", "check_output"],
       "output_schema": {
         "approved": "boolean",
@@ -32,6 +39,7 @@
         "stop_reasons": "list[string]",
         "notes": "string"
       },
+      "stop_rules": ["Block scope escape", "Block high-risk changes without human approval"],
       "model": null,
       "tools": []
     }

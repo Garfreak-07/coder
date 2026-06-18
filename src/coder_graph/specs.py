@@ -7,10 +7,14 @@ from typing import Any, Literal, TypedDict
 
 class AgentSpec(TypedDict):
     id: str
+    name: str
     role: str
     goal: str
+    instructions: str
+    skills: list[str]
     input_keys: list[str]
     output_schema: dict[str, str]
+    stop_rules: list[str]
     model: str | None
     tools: list[str]
 
@@ -102,10 +106,14 @@ def _validate_agent_spec(data: dict[str, Any], source: str) -> AgentSpec:
 
     return {
         "id": str(data["id"]),
+        "name": str(data.get("name", data["id"])),
         "role": str(data["role"]),
         "goal": str(data["goal"]),
+        "instructions": str(data.get("instructions", "")),
+        "skills": [str(item) for item in data.get("skills", [])],
         "input_keys": [str(item) for item in data["input_keys"]],
         "output_schema": {str(key): str(value) for key, value in data["output_schema"].items()},
+        "stop_rules": [str(item) for item in data.get("stop_rules", [])],
         "model": str(data["model"]) if data.get("model") else None,
         "tools": [str(item) for item in data["tools"]],
     }
@@ -128,4 +136,3 @@ def _validate_step_spec(data: dict[str, Any], source: str) -> WorkflowStepSpec:
         "input_keys": [str(item) for item in data["input_keys"]],
         "output_key": str(data["output_key"]),
     }
-
