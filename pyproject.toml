@@ -7,6 +7,7 @@ name = "langgraph-coder"
 version = "0.1.0"
 description = "A safety-first LangGraph workflow for local coding tasks."
 requires-python = ">=3.10"
+license = "MIT"
 dependencies = [
   "langgraph>=0.2.0",
   "langchain-openai>=0.1.0",

@@ -1,5 +1,9 @@
 # Coder
 
+Copyright (c) 2026 Garfreak-07. Released under the MIT License.
+
+Do not commit API keys or local secrets. See `SECURITY.md` and `docs/security.md`.
+
 一个小巧、保守、可扩展的 LangGraph 代码协同工作流。
 
 目标不是做一个“随便改代码的超级 Agent”，而是做一个任何人都能安全使用的闭环工具：
