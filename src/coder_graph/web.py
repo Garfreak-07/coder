@@ -135,6 +135,7 @@ def _analyze(body: dict[str, Any]) -> dict[str, Any]:
     return {
         "repo": str(repo_root),
         "modules": modules,
+        "tree": _build_project_tree(files),
         "recommendations": recommendations,
         "workflow": validate_workflow_spec(DEFAULT_WORKFLOW),
     }
@@ -184,6 +185,41 @@ def _select_folder() -> str:
         return f"ERROR: {exc}"
 
 
+def _build_project_tree(files: list[dict]) -> dict[str, Any]:
+    root: dict[str, Any] = {"name": ".", "path": "", "type": "dir", "children": {}, "file_count": 0}
+    for item in files:
+        parts = item["path"].replace("\\", "/").split("/")
+        node = root
+        node["file_count"] += 1
+        current_path: list[str] = []
+        for index, part in enumerate(parts):
+            current_path.append(part)
+            is_file = index == len(parts) - 1
+            children = node.setdefault("children", {})
+            if part not in children:
+                children[part] = {
+                    "name": part,
+                    "path": "/".join(current_path),
+                    "type": "file" if is_file else "dir",
+                    "children": {},
+                    "file_count": 0,
+                }
+            node = children[part]
+            node["file_count"] = int(node.get("file_count", 0)) + 1
+    return _sort_tree(root)
+
+
+def _sort_tree(node: dict[str, Any]) -> dict[str, Any]:
+    children = node.get("children", {})
+    if isinstance(children, dict):
+        sorted_children = sorted(
+            (_sort_tree(child) for child in children.values()),
+            key=lambda child: (child["type"] == "file", child["name"].lower()),
+        )
+        node["children"] = sorted_children
+    return node
+
+
 INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -207,9 +243,14 @@ INDEX_HTML = r"""<!doctype html>
     textarea { min-height:88px; resize:vertical; }
     button { margin-top:10px; width:100%; border:0; border-radius:10px; padding:10px 12px; background:#2563eb; color:white; cursor:pointer; }
     button.secondary { background:#334155; }
-    .modules { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:10px; max-height:calc(100vh - 210px); overflow:auto; }
-    .module { border:1px solid #334155; border-radius:14px; padding:12px; background:#020617; }
-    .module.recommended { border-color:#22c55e; box-shadow:0 0 0 1px rgba(34,197,94,.22); }
+    .modules { max-height:calc(100vh - 210px); overflow:auto; border:1px solid #1f2937; border-radius:14px; padding:10px; background:#020617; }
+    .tree-row { display:flex; align-items:center; gap:8px; min-height:28px; border-radius:8px; padding:4px 7px; cursor:pointer; }
+    .tree-row:hover { background:#1e293b; }
+    .tree-row.focused { background:#1d4ed8; }
+    .tree-children { margin-left:18px; border-left:1px solid #1f2937; padding-left:8px; }
+    .tree-meta { color:#94a3b8; font-size:12px; margin-left:auto; }
+    .breadcrumb { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+    .crumb { border:1px solid #334155; border-radius:999px; padding:4px 8px; background:#0f172a; cursor:pointer; color:#cbd5e1; }
     .badge { display:inline-block; border-radius:999px; padding:3px 7px; margin:6px 4px 0 0; font-size:12px; border:1px solid #475569; }
     .high { background:#7f1d1d; color:#fecaca; } .medium { background:#713f12; color:#fde68a; } .low { background:#064e3b; color:#bbf7d0; }
     .agent-list, .canvas { display:flex; flex-wrap:wrap; gap:10px; align-content:flex-start; min-height:150px; border:1px dashed #334155; border-radius:14px; padding:10px; background:#020617; }
@@ -245,7 +286,7 @@ INDEX_HTML = r"""<!doctype html>
       </section>
 
       <section class="panel">
-        <h2>模块地图</h2>
+        <h2>项目树</h2>
         <div id="modules" class="modules"></div>
       </section>
 
@@ -281,6 +322,7 @@ INDEX_HTML = r"""<!doctype html>
     let availableAgents = [];
     let canvasAgents = [];
     let draggedAgentId = null;
+    let focusedTreePath = "";
 
     async function post(url, data = {}) {
       const res = await fetch(url, { method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(data) });
@@ -306,7 +348,7 @@ INDEX_HTML = r"""<!doctype html>
         availableAgents = mergeAgents(availableAgents, agents);
         if (!canvasAgents.length) canvasAgents = [...agents];
       }
-      renderModules();
+      renderProjectTree();
       renderAgents();
     }
 
@@ -335,24 +377,70 @@ INDEX_HTML = r"""<!doctype html>
       return [...byId.values()];
     }
 
-    function renderModules() {
+    function renderProjectTree() {
       const root = document.getElementById("modules");
-      const modules = current.modules || [];
-      if (!modules.length) {
-        root.innerHTML = "<p>暂无模块。可以先不选择项目；选择项目后这里会一直显示模块地图。</p>";
+      if (!current.tree || !current.tree.children || !current.tree.children.length) {
+        root.innerHTML = "<p>暂无项目树。可以先不选择项目；选择项目后这里会显示至少两层目录。</p>";
         return;
       }
-      root.innerHTML = modules.map(m => `
-        <article class="module ${m.recommended ? "recommended" : ""}">
-          <strong>${escapeHtml(m.path)}</strong>
-          <div>
-            <span class="badge ${m.importance}">重要 ${m.importance}</span>
-            <span class="badge ${m.risk}">风险 ${m.risk}</span>
-            ${m.recommended ? `<span class="badge low">推荐 ${m.match_score}</span>` : ""}
-          </div>
-          <p>${m.file_count} files · ${m.size_bytes} bytes</p>
-        </article>
-      `).join("");
+      const focused = findTreeNode(current.tree, focusedTreePath) || current.tree;
+      root.innerHTML = renderBreadcrumb(focused.path || "") + renderTreeNode(focused, 0, 2);
+    }
+
+    function renderBreadcrumb(path) {
+      const parts = path ? path.split("/") : [];
+      let acc = "";
+      const crumbs = [`<span class="crumb" onclick="focusTree('')">root</span>`];
+      for (const part of parts) {
+        acc = acc ? `${acc}/${part}` : part;
+        crumbs.push(`<span class="crumb" onclick="focusTree('${escapeAttr(acc)}')">${escapeHtml(part)}</span>`);
+      }
+      return `<div class="breadcrumb">${crumbs.join("")}</div>`;
+    }
+
+    function renderTreeNode(node, depth, autoDepth) {
+      const icon = node.type === "dir" ? "📁" : "📄";
+      const draggable = node.type === "dir" ? "true" : "false";
+      const children = node.children || [];
+      const row = `
+        <div class="tree-row ${node.path === focusedTreePath ? "focused" : ""}" draggable="${draggable}"
+             onclick="treeClick('${escapeAttr(node.path)}', '${node.type}')"
+             ondragstart="dragTree('${escapeAttr(node.path)}')"
+             ondragover="event.preventDefault()"
+             ondrop="dropTree(event)">
+          <span>${icon}</span>
+          <span>${escapeHtml(node.name || ".")}</span>
+          <span class="tree-meta">${node.type === "dir" ? `${node.file_count || 0} files` : ""}</span>
+        </div>`;
+      if (node.type !== "dir" || !children.length || depth >= autoDepth) return row;
+      return row + `<div class="tree-children">${children.map(child => renderTreeNode(child, depth + 1, autoDepth)).join("")}</div>`;
+    }
+
+    function treeClick(path, type) {
+      if (type === "dir") focusTree(path);
+    }
+
+    function focusTree(path) {
+      focusedTreePath = path || "";
+      renderProjectTree();
+    }
+
+    function dragTree(path) {
+      focusedTreePath = path || "";
+    }
+
+    function dropTree(event) {
+      event.preventDefault();
+      renderProjectTree();
+    }
+
+    function findTreeNode(node, path) {
+      if (!path || node.path === path) return node;
+      for (const child of node.children || []) {
+        const found = findTreeNode(child, path);
+        if (found) return found;
+      }
+      return null;
     }
 
     function renderAgents() {
@@ -401,6 +489,10 @@ INDEX_HTML = r"""<!doctype html>
 
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replace(/`/g, "&#096;");
     }
 
     analyze();
