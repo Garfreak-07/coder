@@ -52,13 +52,17 @@ This keeps the product small while leaving a clean upgrade path. Agents can late
 ```json
 {
   "id": "planner",
+  "name": "Planner",
   "role": "Planner Agent",
   "goal": "Create a short, scoped implementation plan.",
+  "instructions": "Return compact JSON. Do not write code.",
+  "skills": ["read_project_index", "reason_about_scope"],
   "input_keys": ["user_request", "modules", "allowed_paths"],
   "output_schema": {
     "summary": "string",
     "steps": "list[string]"
   },
+  "stop_rules": ["Ask for approval before dependency or config changes"],
   "model": null,
   "tools": []
 }

@@ -81,6 +81,24 @@
       "output_key": "approved"
     }
   ],
+  "edges": [
+    {
+      "source": "scan",
+      "target": "map"
+    },
+    {
+      "source": "map",
+      "target": "plan"
+    },
+    {
+      "source": "plan",
+      "target": "review"
+    },
+    {
+      "source": "review",
+      "target": "approve"
+    }
+  ],
   "stop_conditions": [
     "scope_escape",
     "risk_level == high",

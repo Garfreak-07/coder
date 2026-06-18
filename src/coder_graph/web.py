@@ -65,6 +65,12 @@ DEFAULT_WORKFLOW = {
         {"id": "review", "kind": "agent", "uses": "reviewer", "input_keys": ["planner_result"], "output_key": "reviewer_result"},
         {"id": "approve", "kind": "human_gate", "uses": "approval_node", "input_keys": ["planner_result", "reviewer_result"], "output_key": "approved"},
     ],
+    "edges": [
+        {"source": "scan", "target": "map"},
+        {"source": "map", "target": "plan"},
+        {"source": "plan", "target": "review"},
+        {"source": "review", "target": "approve"},
+    ],
     "stop_conditions": ["scope_escape", "risk_level == high", "max_loops reached"],
 }
 
