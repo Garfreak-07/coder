@@ -26,6 +26,7 @@ Understand → Plan → Human approval → Patch → Check → Review → Retry 
 
 - Trust before power.
 - Small before complete.
+- Fewer tokens before bigger context.
 - Explicit approval before mutation.
 - Deterministic checks before LLM judgment when possible.
 - Multi-model by design, but dependency-light.
@@ -46,4 +47,3 @@ Coder should differentiate by being:
 - safe by default.
 
 The product should feel less like a magic developer replacement and more like a careful AI coding workflow runner.
-

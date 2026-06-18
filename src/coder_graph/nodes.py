@@ -158,7 +158,7 @@ def route_after_review(state: CodingState) -> str:
 
 
 def _fallback_plan(state: CodingState) -> str:
-    files = state.get("repo_files", [])[:30]
+    files = _candidate_files(state, limit=20)
     file_list = "\n".join(f"- {item['path']} ({item['kind']})" for item in files)
     return (
         "LLM planning is disabled because no model credentials are configured.\n\n"
@@ -172,7 +172,7 @@ def _fallback_plan(state: CodingState) -> str:
 def _planning_prompt(state: CodingState) -> str:
     repo_files = "\n".join(
         f"- {item['path']} ({item['kind']}, {item['size_bytes']} bytes)"
-        for item in state.get("repo_files", [])[:120]
+        for item in _candidate_files(state, limit=40)
     )
     references = []
     for root, files in state.get("reference_files", {}).items():
@@ -180,7 +180,8 @@ def _planning_prompt(state: CodingState) -> str:
         references.append(f"Reference root: {root}\n{lines}")
 
     return f"""
-You are a cautious coding workflow planner.
+You are a terse, cautious coding workflow planner.
+Use as few words as possible while preserving useful decisions.
 
 Goal:
 {state['user_request']}
@@ -201,12 +202,12 @@ Reference projects:
 {chr(10).join(references) if references else 'None'}
 
 Produce a conservative implementation plan. Do not produce code yet.
-Include:
-1. files likely relevant
-2. proposed small steps
-3. risk notes
-4. checks to run
-5. questions that require human approval
+Return only:
+1. Scope: files/modules likely relevant
+2. Steps: up to 5 small steps
+3. Risks: only real risks
+4. Checks: commands to run
+5. Stop-if: conditions requiring human approval
 """
 
 
@@ -220,5 +221,19 @@ def _module_lines(state: CodingState) -> str:
         return "None"
     return "\n".join(
         f"- {module['path']} (importance={module['importance']}, risk={module['risk']}, files={module['file_count']})"
-        for module in modules[:80]
+        for module in modules[:40]
     )
+
+
+def _candidate_files(state: CodingState, limit: int) -> list[dict]:
+    files = state.get("repo_files", [])
+    allowed = state.get("allowed_paths", [])
+    if allowed:
+        scoped = [
+            item
+            for item in files
+            if any(item["path"] == path or item["path"].startswith(f"{path}/") for path in allowed)
+        ]
+        if scoped:
+            return scoped[:limit]
+    return files[:limit]

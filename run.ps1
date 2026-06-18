@@ -77,6 +77,22 @@ if ($Setup) {
 }
 
 $repo = Read-Default "Target project path" "."
+$mapOnlyText = Read-Default "Generate clickable module map only? y/n" "n"
+
+if ($mapOnlyText.ToLowerInvariant() -in @("y", "yes")) {
+    $scopeText = Read-Default "Limit scope inside repo, comma-separated. Leave empty for whole repo" ""
+    $argsList = @("-m", "coder_graph.cli", "--repo", $repo, "--map-only")
+    foreach ($scope in (Split-List $scopeText)) {
+        $argsList += @("--scope", $scope)
+    }
+    Write-Host ""
+    Write-Host "Generating module map..." -ForegroundColor Cyan
+    & $python @argsList
+    Write-Host ""
+    Write-Host "Open outputs\module-map.html to view the clickable map." -ForegroundColor Green
+    exit 0
+}
+
 $request = Read-Default "What do you want Coder to do?" "Analyze this project and propose a safe improvement plan."
 $scopeText = Read-Default "Limit scope inside repo, comma-separated. Leave empty for whole repo" ""
 $referenceText = Read-Default "Reference project paths, comma-separated. Leave empty for none" ""
