@@ -133,6 +133,12 @@ outputs/module-map.html
 langgraph-coder --repo . --workflow-spec examples/workflows/coding-review.json --describe-workflow
 ```
 
+生成默认 agent 工作流图：
+
+```powershell
+langgraph-coder --repo . --workflow-spec examples/workflows/coding-review.json --graph-only
+```
+
 当前只支持加载和校验工作流 spec。执行任意导入工作流会在安全模型稳定后再开放。
 
 分析当前项目：

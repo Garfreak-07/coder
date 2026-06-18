@@ -13,6 +13,7 @@ from .project_index import annotate_recommendations, recommend_modules
 from .specs import load_workflow_spec, summarize_workflow_spec
 from .state import CodingState
 from .tools.filesystem import resolve_existing_dir, summarize_project
+from .workflow_graph import write_workflow_graph
 
 
 def main() -> None:
@@ -34,6 +35,7 @@ def main() -> None:
     parser.add_argument("--output-dir", default="outputs", help="Output directory for generated artifacts.")
     parser.add_argument("--workflow-spec", help="Load and validate a declarative workflow JSON spec.")
     parser.add_argument("--describe-workflow", action="store_true", help="Print workflow spec summary and exit.")
+    parser.add_argument("--graph-only", action="store_true", help="Generate a workflow graph HTML from a workflow spec and exit.")
     args = parser.parse_args()
 
     if args.provider:
@@ -48,6 +50,10 @@ def main() -> None:
         if args.describe_workflow:
             print(summarize_workflow_spec(spec))
             return
+        if args.graph_only:
+            html_path = write_workflow_graph(Path(args.output_dir), spec)
+            print(f"Workflow graph HTML: {html_path}")
+            return
 
     if args.map_only:
         repo_root = resolve_existing_dir(args.repo)
@@ -55,7 +61,7 @@ def main() -> None:
         modules = build_module_map(files)
         recommendations = recommend_modules(args.query, modules, files) if args.query else []
         modules = annotate_recommendations(modules, recommendations) if recommendations else modules
-        json_path, html_path = write_module_map(Path(args.output_dir), modules, args.query, recommendations)
+        json_path, html_path = write_module_map(Path(args.output_dir), modules, args.query, recommendations, str(repo_root))
         print(f"Module map JSON: {json_path}")
         print(f"Module map HTML: {html_path}")
         return

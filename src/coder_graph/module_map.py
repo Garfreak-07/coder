@@ -106,6 +106,7 @@ def write_module_map(
     modules: list[ModuleInfo],
     query: str = "",
     recommendations: list[dict] | None = None,
+    repo_path: str = "YOUR_PROJECT_PATH",
 ) -> tuple[Path, Path]:
     outputs_dir.mkdir(parents=True, exist_ok=True)
     json_path = outputs_dir / "module-map.json"
@@ -115,7 +116,7 @@ def write_module_map(
         json.dumps({"query": query, "recommendations": recommendations or [], "modules": modules}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    html_path.write_text(_render_html(modules, query), encoding="utf-8")
+    html_path.write_text(_render_html(modules, query, repo_path), encoding="utf-8")
     return json_path, html_path
 
 
@@ -174,9 +175,11 @@ def _level(score: int) -> str:
     return "low"
 
 
-def _render_html(modules: list[ModuleInfo], query: str = "") -> str:
+def _render_html(modules: list[ModuleInfo], query: str = "", repo_path: str = "YOUR_PROJECT_PATH") -> str:
     cards = "\n".join(_module_card(module) for module in modules)
     data = html.escape(json.dumps(modules, ensure_ascii=False))
+    repo_json = json.dumps(repo_path)
+    query_json = json.dumps(query)
     query_note = (
         f"<p class=\"hint\">Query: <strong>{html.escape(query)}</strong>. Recommended modules are pinned first.</p>"
         if query
@@ -307,6 +310,8 @@ def _render_html(modules: list[ModuleInfo], query: str = "") -> str:
   <script type="application/json" id="module-data">{data}</script>
   <script>
     const modules = JSON.parse(document.getElementById("module-data").textContent);
+    const repoPath = {repo_json};
+    const initialRequest = {query_json};
     let selected = null;
 
     function selectModule(id) {{
@@ -320,7 +325,7 @@ def _render_html(modules: list[ModuleInfo], query: str = "") -> str:
       const hits = selected.match_hits && selected.match_hits.length ? ` Match: ${{selected.match_hits.join(", ")}}.` : "";
       document.getElementById("detail-reason").textContent = selected.reason + hits;
       document.getElementById("command").value =
-        `langgraph-coder --repo "YOUR_PROJECT_PATH" --scope "${{selected.path}}" --max-iterations 3`;
+        `langgraph-coder --repo "${{repoPath}}" --scope "${{selected.path}}" --request "${{initialRequest || "Describe your change"}}" --max-iterations 3`;
     }}
 
     function copyCommand() {{

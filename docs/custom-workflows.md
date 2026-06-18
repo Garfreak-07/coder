@@ -28,6 +28,8 @@ Early versions should support:
 load spec → validate spec → show workflow → run only trusted built-in nodes
 ```
 
+The first visual layer is a read-only agent graph generated from the workflow spec. Editing and drag-and-drop should come later, after the safety model is stable.
+
 Do not immediately execute arbitrary user Python from imported workflows.
 
 ## Where RAG fits

@@ -77,6 +77,23 @@ if ($Setup) {
 }
 
 $repo = Read-Default "Target project path" "."
+$workflowGraphText = Read-Default "Generate default workflow agent graph only? y/n" "n"
+
+if ($workflowGraphText.ToLowerInvariant() -in @("y", "yes")) {
+    $argsList = @(
+        "-m", "coder_graph.cli",
+        "--repo", $repo,
+        "--workflow-spec", "examples\workflows\coding-review.json",
+        "--graph-only"
+    )
+    Write-Host ""
+    Write-Host "Generating default workflow graph..." -ForegroundColor Cyan
+    & $python @argsList
+    Write-Host ""
+    Write-Host "Open outputs\workflow-graph.html to view the default agent graph." -ForegroundColor Green
+    exit 0
+}
+
 $mapOnlyText = Read-Default "Generate clickable module map only? y/n" "n"
 
 if ($mapOnlyText.ToLowerInvariant() -in @("y", "yes")) {
