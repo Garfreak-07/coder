@@ -491,10 +491,10 @@ INDEX_HTML = r"""<!doctype html>
     .agent { width:150px; min-height:86px; border:1px solid #334155; border-radius:14px; padding:10px; background:#0f172a; cursor:grab; user-select:none; }
     .agent.selected { border-color:#38bdf8; }
     .canvas { position:relative; height:calc(100vh - 205px); margin-top:12px; border:1px dashed #334155; border-radius:14px; padding:10px; background:#020617; overflow:hidden; }
-    .agent-canvas-svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; }
+    .agent-canvas-svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:auto; z-index:1; }
     .agent-edge { cursor:pointer; pointer-events:stroke; }
     .agent-edge:hover { stroke:#ef4444; stroke-width:4; }
-    .canvas .agent { position:absolute; cursor:pointer; }
+    .canvas .agent { position:absolute; cursor:pointer; z-index:2; }
     .config { white-space:pre-wrap; background:#020617; border:1px solid #334155; padding:12px; border-radius:12px; max-height:260px; overflow:auto; }
     .tabs { display:flex; gap:8px; margin-bottom:10px; }
     .tab { width:auto; margin:0; padding:8px 12px; background:#334155; }
@@ -560,7 +560,6 @@ INDEX_HTML = r"""<!doctype html>
         <select id="mode" onchange="selectWorkflowMode()">
           <option value="default">默认工作流</option>
         </select>
-        <button class="secondary" onclick="resetDefaultWorkflow()">Reset default workflow</button>
         <label>导入 workflow / agent JSON</label>
         <input id="importFile" type="file" accept=".json,application/json" onchange="importWorkflow(event)" />
         <p>默认工作流会自动选择相关范围、检查命令和重试次数。普通用户只需要选择项目并输入需求。</p>
@@ -692,6 +691,7 @@ INDEX_HTML = r"""<!doctype html>
     let recommendedCapabilityIds = new Set();
     let canvasAgents = [];
     let agentEdges = [];
+    let workflowDirty = false;
     let draggedAgentId = null;
     let selectedAgentForEdge = null;
     let connectMode = false;
@@ -947,10 +947,21 @@ INDEX_HTML = r"""<!doctype html>
     function renderWorkflowModes() {
       const select = document.getElementById("mode");
       const selected = select.value || "default";
-      select.innerHTML = `<option value="default">默认工作流</option>` + savedWorkflows
+      const dirtyOption = workflowDirty ? `<option value="__dirty">Current modified workflow</option>` : "";
+      select.innerHTML = `<option value="default">Default workflow</option>${dirtyOption}` + savedWorkflows
         .map(workflow => `<option value="${escapeAttr(workflow.id)}">${escapeHtml(workflow.name)}</option>`)
         .join("");
-      select.value = savedWorkflows.some(workflow => workflow.id === selected) ? selected : "default";
+      if (workflowDirty) {
+        select.value = "__dirty";
+      } else {
+        select.value = savedWorkflows.some(workflow => workflow.id === selected) ? selected : "default";
+      }
+    }
+
+    function markWorkflowDirty() {
+      if (workflowDirty) return;
+      workflowDirty = true;
+      renderWorkflowModes();
     }
 
     function normalizeCanvasEdge(edge) {
@@ -1003,12 +1014,16 @@ INDEX_HTML = r"""<!doctype html>
       canvasAgents = (workflow.agents || []).map(withClaudeCode);
       agentEdges = (workflow.edges || defaultAgentEdges(canvasAgents)).map(normalizeCanvasEdge);
       availableAgents = mergeAgents(availableAgents, canvasAgents);
+      workflowDirty = false;
+      selectedAgentForEdge = null;
+      connectMode = false;
       renderAgents();
     }
 
     function resetDefaultWorkflow() {
       const workflow = current.workflow;
       if (!workflow) return;
+      workflowDirty = false;
       document.getElementById("mode").value = "default";
       canvasAgents = layoutAgents((workflow.agents || []).map(withClaudeCode));
       agentEdges = (workflow.edges || defaultAgentEdges(canvasAgents)).map(normalizeCanvasEdge);
@@ -1052,6 +1067,7 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       applyLibrary(data.library || { workflows: [data.workflow], agents: [] });
+      workflowDirty = false;
       renderWorkflowModes();
       document.getElementById("mode").value = data.workflow.id;
       current.workflow = data.workflow;
@@ -1219,11 +1235,15 @@ INDEX_HTML = r"""<!doctype html>
       const exists = canvasAgents.find(agent => agent.id === id);
       if (checked && !exists) {
         const source = availableAgents.find(agent => agent.id === id);
-        if (source) canvasAgents.push({ ...withClaudeCode(source), x: 36 + canvasAgents.length * 180, y: 80 + (canvasAgents.length % 2) * 55 });
+        if (source) {
+          canvasAgents.push({ ...withClaudeCode(source), x: 36 + canvasAgents.length * 180, y: 80 + (canvasAgents.length % 2) * 55 });
+          markWorkflowDirty();
+        }
       }
       if (!checked) {
         canvasAgents = canvasAgents.filter(agent => agent.id !== id);
         agentEdges = agentEdges.filter(edge => edge.from !== id && edge.to !== id);
+        markWorkflowDirty();
       }
       renderAgents();
     }
@@ -1255,6 +1275,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function deleteAgentEdge(from, to) {
       agentEdges = agentEdges.filter(edge => !(edge.from === from && edge.to === to));
+      markWorkflowDirty();
       renderAgents();
     }
 
@@ -1271,7 +1292,10 @@ INDEX_HTML = r"""<!doctype html>
         selectedAgentForEdge = null;
       } else {
         const exists = agentEdges.find(edge => edge.from === selectedAgentForEdge && edge.to === id);
-        if (!exists) agentEdges.push({ from: selectedAgentForEdge, to: id });
+        if (!exists) {
+          agentEdges.push({ from: selectedAgentForEdge, to: id });
+          markWorkflowDirty();
+        }
         selectedAgentForEdge = null;
       }
       renderAgents();
@@ -1294,6 +1318,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!agent) return;
       agent.x = Math.max(8, movingAgentStart.x + event.clientX - movingStart.x);
       agent.y = Math.max(8, movingAgentStart.y + event.clientY - movingStart.y);
+      markWorkflowDirty();
       renderAgents();
     }
 
@@ -1422,6 +1447,7 @@ INDEX_HTML = r"""<!doctype html>
       try {
         const updated = readAgentWorkbench();
         canvasAgents = canvasAgents.map(agent => agent.id === editingAgentId ? withClaudeCode({ ...agent, ...updated, id: editingAgentId }) : agent);
+        markWorkflowDirty();
         availableAgents = mergeAgents(availableAgents, [canvasAgents.find(agent => agent.id === editingAgentId)]);
         const savedAgent = canvasAgents.find(agent => agent.id === editingAgentId);
         const data = await post("/api/save-agent", {
@@ -1450,6 +1476,7 @@ INDEX_HTML = r"""<!doctype html>
       if (agent && !canvasAgents.find(item => item.id === agent.id)) {
         const rect = event.currentTarget.getBoundingClientRect();
         canvasAgents.push({ ...agent, x: Math.max(12, event.clientX - rect.left - 75), y: Math.max(12, event.clientY - rect.top - 40) });
+        markWorkflowDirty();
         renderAgents();
       }
     }
@@ -1457,6 +1484,7 @@ INDEX_HTML = r"""<!doctype html>
     function dropToList(event) {
       event.preventDefault();
       canvasAgents = canvasAgents.filter(item => item.id !== draggedAgentId);
+      markWorkflowDirty();
       renderAgents();
     }
 
