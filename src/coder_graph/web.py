@@ -283,6 +283,11 @@ def _save_agent(body: dict[str, Any]) -> dict[str, Any]:
 def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
     repo = str(body.get("repo", "")).strip()
     request = str(body.get("request", "")).strip() or "Analyze this project and propose a safe improvement plan."
+    target_scope = _coerce_string_list(body.get("target_scope"))
+    allowed_paths = _coerce_string_list(body.get("allowed_paths")) or target_scope
+    check_command = str(body.get("check_command", "")).strip()
+    approved = bool(body.get("approved", False))
+    max_iterations = int(body.get("max_iterations", 2) or 2)
     if not repo:
         return {"error": "Project path is empty. Select a project folder before running."}
 
@@ -290,11 +295,11 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
         "user_request": request,
         "repo_root": str(resolve_existing_dir(repo)),
         "reference_roots": [],
-        "target_scope": [],
-        "allowed_paths": [],
-        "check_command": "",
-        "approved": False,
-        "max_iterations": 3,
+        "target_scope": target_scope,
+        "allowed_paths": allowed_paths,
+        "check_command": check_command,
+        "approved": approved,
+        "max_iterations": max(1, min(max_iterations, 5)),
     }
     agents = [AgentCard.model_validate(agent) for agent in DEFAULT_WORKFLOW["agents"]]
     events = RuntimeEventBus(agents=agents)
@@ -314,6 +319,16 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
         "messages": events.dump_messages(),
         "a2a_queues": events.dump_a2a_queues(),
     }
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
 
 
 def _select_folder() -> str:
@@ -479,6 +494,17 @@ INDEX_HTML = r"""<!doctype html>
         </select>
         <label>导入 workflow / agent JSON</label>
         <input id="importFile" type="file" accept=".json,application/json" onchange="importWorkflow(event)" />
+        <label>Target scope (comma-separated)</label>
+        <input id="targetScope" placeholder="src, docs" />
+        <label>Allowed write paths (defaults to scope)</label>
+        <input id="allowedPaths" placeholder="src/coder_graph" />
+        <label>Check command</label>
+        <input id="checkCommand" placeholder="python -m compileall src" />
+        <label>Max iterations</label>
+        <input id="maxIterations" type="number" min="1" max="5" value="2" />
+        <div class="checkbox-row" style="margin-top:12px">
+          <label><input id="approveRun" type="checkbox" />Approve dry-run execution</label>
+        </div>
         <p>限制范围不让用户手填。后续由模块选择、Project Index 和 Reviewer Agent 自动生成与审查边界。</p>
       </section>
 
@@ -674,7 +700,12 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("result").textContent = "运行中...";
       const data = await post("/api/run", {
         repo: document.getElementById("repo").value,
-        request: document.getElementById("request").value
+        request: document.getElementById("request").value,
+        target_scope: csvToList(document.getElementById("targetScope").value),
+        allowed_paths: csvToList(document.getElementById("allowedPaths").value),
+        check_command: document.getElementById("checkCommand").value,
+        approved: document.getElementById("approveRun").checked,
+        max_iterations: Number(document.getElementById("maxIterations").value || 2)
       });
       document.getElementById("result").textContent = formatRunResult(data);
     }
