@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 langgraph-coder = "coder_graph.cli:main"
+coder-ui = "coder_graph.web:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
