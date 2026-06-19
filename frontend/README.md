@@ -7,7 +7,7 @@ React + TypeScript + Vite frontend for the v2 workflow workbench.
 Start the existing API:
 
 ```powershell
-coder-v2-api --host 127.0.0.1 --port 8876
+coder-api --host 127.0.0.1 --port 8876
 ```
 
 Install frontend dependencies and start Vite:
@@ -33,7 +33,7 @@ After building:
 ```powershell
 npm run build
 cd ..
-coder-v2-api --host 127.0.0.1 --port 8876
+coder-api --host 127.0.0.1 --port 8876
 ```
 
 If `frontend/dist` exists, the v2 API serves it at:
@@ -45,5 +45,5 @@ http://127.0.0.1:8876
 You can override the directory explicitly:
 
 ```powershell
-coder-v2-api --frontend-dist F:\bbb\coder\frontend\dist
+coder-api --frontend-dist F:\bbb\coder\frontend\dist
 ```

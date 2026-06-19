@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol
 
-from coder_graph.config import load_runtime_config
-from coder_graph.llm import create_chat_model
-from coder_graph_v2.core import AgentSpec
+from coder_workbench.core import AgentSpec
+from coder_workbench.config import load_runtime_config
+from coder_workbench.llm import create_chat_model
 
 
 class AgentExecutor(Protocol):
@@ -25,7 +25,7 @@ class DefaultAgentExecutor:
         config = load_runtime_config()
         if agent.provider:
             # Keep provider overrides explicit for future adapters. The current
-            # v2 slice still uses the project's global OpenAI-compatible adapter.
+            # The current runtime uses the project's global OpenAI-compatible adapter.
             pass
         if not config.has_llm_credentials:
             return self._mock(agent, context)

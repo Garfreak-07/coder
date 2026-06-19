@@ -1,10 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
 
-from .module_map import ModuleInfo
-from .state import FileSummary
+from .module_map import FileSummary, ModuleInfo
 
 
 STOPWORDS = {
@@ -17,8 +16,13 @@ STOPWORDS = {
     "that",
     "into",
     "your",
+    "my",
+    "our",
+    "change",
+    "improve",
+    "implement",
+    "feature",
     "我的",
-    "一个",
     "这个",
     "那个",
     "修改",

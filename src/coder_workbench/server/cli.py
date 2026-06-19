@@ -9,10 +9,10 @@ from .app import create_app
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the Coder v2 runtime API")
+    parser = argparse.ArgumentParser(description="Run the Coder runtime API")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8876)
-    parser.add_argument("--store-root", default=".coder_v2")
+    parser.add_argument("--store-root", default=".coder")
     parser.add_argument(
         "--frontend-dist",
         default=None,

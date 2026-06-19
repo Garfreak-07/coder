@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from coder_graph_v2.core import WorkflowSpec
-from coder_graph_v2.executors import AgentExecutor, DefaultAgentExecutor
-from coder_graph_v2.runtime.conditions import evaluate_condition
-from coder_graph_v2.runtime.context import build_agent_context, estimate_tokens
-from coder_graph_v2.runtime.state import RunEvent, RunResult, RunState
-from coder_graph_v2.tools import ToolRegistry, default_tool_registry
+from coder_workbench.core import WorkflowSpec
+from coder_workbench.executors import AgentExecutor, DefaultAgentExecutor
+from coder_workbench.runtime.conditions import evaluate_condition
+from coder_workbench.runtime.context import build_agent_context, estimate_tokens
+from coder_workbench.runtime.state import RunEvent, RunResult, RunState
+from coder_workbench.tools import ToolRegistry, default_tool_registry
 
 
 class WorkflowRunner:

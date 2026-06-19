@@ -6,9 +6,9 @@ from threading import Lock, Thread
 from typing import Any, Literal
 from uuid import uuid4
 
-from coder_graph_v2.core import WorkflowSpec
-from coder_graph_v2.runtime import RunEvent, RunResult, run_workflow
-from coder_graph_v2.server.storage import RunStore
+from coder_workbench.core import WorkflowSpec
+from coder_workbench.runtime import RunEvent, RunResult, run_workflow
+from coder_workbench.server.storage import RunStore
 
 
 LiveStatus = Literal["queued", "running", "completed", "blocked", "failed"]

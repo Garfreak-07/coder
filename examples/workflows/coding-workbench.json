@@ -1,6 +1,6 @@
 {
-  "id": "coding-workbench-v2",
-  "version": "0.2",
+  "id": "coding-workbench",
+  "version": "0.1",
   "name": "Token-Conscious Coding Workbench",
   "description": "A JSON-driven workflow where canvas edges determine execution. Agents receive compact state summaries by default.",
   "max_steps": 20,
@@ -34,7 +34,7 @@
     {
       "id": "executor",
       "role": "Implementation Agent",
-      "goal": "Prepare a scoped patch plan without mutating files in this first v2 slice.",
+      "goal": "Prepare a scoped patch plan without mutating files in this safety-first slice.",
       "instructions": "Follow the approved plan. Keep output compact. Do not request broad edits.",
       "tools": ["dry_run_patch"],
       "output_key": "execution",

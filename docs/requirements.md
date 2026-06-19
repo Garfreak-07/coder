@@ -4,14 +4,11 @@
 
 Coder is a local-first agent workflow workbench for controlled coding tasks.
 
-The product is no longer centered on a fixed LangGraph coding flow. The core
-requirement is that users can create agents, draw workflow edges, save the
-workflow, and run it with visible state, approvals, token controls, and audit
-events.
+The core requirement is that users can create agents, draw workflow edges, save
+the workflow, and run it with visible state, approvals, token controls, and
+audit events.
 
-The old LangGraph prototype can remain as a compatibility path while v2 is
-implemented, but future product behavior should be driven by workflow JSON, not
-by hard-coded Python graph changes.
+Product behavior is driven by workflow JSON, not by hard-coded graph changes.
 
 ## Target user
 
@@ -97,7 +94,7 @@ Rules:
 
 ### Runtime execution
 
-The v2 runtime is a workflow interpreter:
+The runtime is a workflow interpreter:
 
 ```text
 load workflow
@@ -111,8 +108,8 @@ load workflow
   -> pause / finish / block / fail
 ```
 
-LangGraph, AutoGen, CrewAI, OpenAI Agents SDK, MCP tools, and local tools can
-all be adapters below this layer. They should not define the product contract.
+OpenAI Agents SDK, MCP tools, external agent adapters, and local tools can all
+sit below this layer. They should not define the product contract.
 
 ### App backend
 
@@ -141,12 +138,10 @@ GET  /api/v2/live-runs/{run_id}/events
 Use synchronous runs for CLI/debug cases. Use live runs and Server-Sent Events
 for the app.
 
-Run creation accepts optional repo-relative `scopes`; v2 tools must reject paths
+Run creation accepts optional repo-relative `scopes`; tools must reject paths
 that escape the selected project or selected scopes.
 
 ### Frontend
-
-The old single-file web UI should be replaced.
 
 Recommended stack:
 
@@ -193,16 +188,7 @@ Required gates:
 Default behavior must be conservative. Real file mutation should arrive only
 after patch preview, approval, and rollback support are implemented.
 
-## Framework alternatives
-
-### LangGraph
-
-Status: not recommended as the main product contract.
-
-LangGraph is useful for code-defined graphs and stateful agent flows, but it is
-not a good fit as the direct representation of a user-edited app canvas. It can
-remain as an optional runner or compatibility path, but the product should not
-require Python graph edits when users add agents or edges.
+## Framework references
 
 ### Flowise Agentflow
 
@@ -272,7 +258,7 @@ patch review, file scope controls, or model context budgeting.
 
 Decision: reference only.
 
-## Current implemented v2 slice
+## Current implemented slice
 
 Implemented:
 
@@ -297,25 +283,25 @@ Implemented:
   - `POST /api/v2/live-runs/{run_id}/approve`
   - resumes the same paused run instead of starting a fresh approved run
 - approval-required resume action in the run timeline
-- project scope selection for v2 runs
-- path guard enforcement for scoped v2 tools
+- project scope selection for runs
+- path guard enforcement for scoped tools
 - built-in tools:
   - `project_index`
   - `recommend_modules`
   - `dry_run_patch`
   - `run_check`
-- CLI v2 execution:
+- CLI execution:
 
 ```powershell
-python -m coder_graph.cli --repo . --v2-workflow examples\workflows_v2\coding-workbench.json --request "refactor runtime"
+python -m coder_workbench.cli --repo . --workflow examples\workflows\coding-workbench.json --request "refactor runtime"
 ```
 
-- FastAPI v2 runtime API
+- FastAPI runtime API
 - live background runs
 - SSE event streaming
 - file-backed run storage
 - local workflow/agent library storage
-- optional serving of built `frontend/dist` from the v2 API
+- optional serving of built `frontend/dist` from the API
 
 ## Near-term roadmap
 
@@ -323,5 +309,5 @@ python -m coder_graph.cli --repo . --v2-workflow examples\workflows_v2\coding-wo
 2. Add patch/diff panel and rollback UI.
 3. Add provider-specific executor adapters.
 4. Add MCP tool adapter.
-5. Migrate the default coding workflow fully to v2.
-6. Retire the old fixed LangGraph path when v2 reaches parity.
+5. Expand the default coding workflow into real patch execution when safety
+   gates are complete.

@@ -3,13 +3,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "langgraph-coder"
+name = "coder-workbench"
 version = "0.1.0"
-description = "A safety-first LangGraph workflow for local coding tasks."
+description = "Local-first agent workflow workbench for controlled coding tasks."
 requires-python = ">=3.10"
 license = "MIT"
 dependencies = [
-  "langgraph>=0.2.0",
   "langchain-openai>=0.1.0",
   "python-dotenv>=1.0.0",
   "pydantic>=2.0.0",
@@ -18,9 +17,8 @@ dependencies = [
 ]
 
 [project.scripts]
-langgraph-coder = "coder_graph.cli:main"
-coder-ui = "coder_graph.web:main"
-coder-v2-api = "coder_graph_v2.server.cli:main"
+coder = "coder_workbench.cli:main"
+coder-api = "coder_workbench.server.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

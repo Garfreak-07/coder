@@ -9,13 +9,13 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from coder_graph.tools.filesystem import normalize_scope_paths, resolve_existing_dir
-from coder_graph_v2.core import WorkflowSpec, load_workflow
-from coder_graph_v2.runtime import run_workflow
-from coder_graph_v2.server.library import LibraryStore
-from coder_graph_v2.server.manager import RunManager
-from coder_graph_v2.server.storage import RunStore
-from coder_graph_v2.tools import default_tool_registry
+from coder_workbench.core import WorkflowSpec, load_workflow
+from coder_workbench.runtime import run_workflow
+from coder_workbench.server.library import LibraryStore
+from coder_workbench.server.manager import RunManager
+from coder_workbench.server.storage import RunStore
+from coder_workbench.tools import default_tool_registry
+from coder_workbench.tools.filesystem import normalize_scope_paths, resolve_existing_dir
 
 
 class RunRequest(BaseModel):
@@ -37,8 +37,8 @@ class ApprovalRequest(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
-def create_app(store_root: str | Path = ".coder_v2", frontend_dist: str | Path | None = None) -> FastAPI:
-    app = FastAPI(title="Coder v2 Runtime API", version="0.1.0")
+def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | None = None) -> FastAPI:
+    app = FastAPI(title="Coder Runtime API", version="0.1.0")
     store = RunStore(store_root)
     library = LibraryStore(Path(store_root) / "library")
     manager = RunManager(store)

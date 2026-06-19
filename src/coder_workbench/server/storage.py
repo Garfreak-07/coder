@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from coder_graph_v2.runtime import RunResult
+from coder_workbench.runtime import RunResult
 
 
 class StoredRun(BaseModel):
@@ -22,7 +22,7 @@ class StoredRun(BaseModel):
 
 
 class RunStore:
-    """Small file-backed store for v2 runs.
+    """Small file-backed store for workflow runs.
 
     This is intentionally simple. It gives the upcoming app a stable run/event
     API without committing to a database before the frontend shape is settled.

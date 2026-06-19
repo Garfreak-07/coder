@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from coder_graph_v2.core import AgentSpec, ContextPolicy
-from coder_graph_v2.runtime.state import RunState, summarize_value
+from coder_workbench.core import AgentSpec, ContextPolicy
+from coder_workbench.runtime.state import RunState, summarize_value
 
 
 def build_agent_context(agent: AgentSpec, state: RunState) -> dict[str, Any]:

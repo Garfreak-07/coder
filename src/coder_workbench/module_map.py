@@ -6,7 +6,11 @@ from collections import defaultdict
 from pathlib import Path
 from typing import TypedDict
 
-from .state import FileSummary
+
+class FileSummary(TypedDict):
+    path: str
+    size_bytes: int
+    kind: str
 
 
 class ModuleInfo(TypedDict):

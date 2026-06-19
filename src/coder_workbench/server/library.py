@@ -5,7 +5,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Literal
 
-from coder_graph_v2.core import AgentSpec, WorkflowSpec
+from coder_workbench.core import AgentSpec, WorkflowSpec
 
 
 LibraryKind = Literal["agents", "workflows"]

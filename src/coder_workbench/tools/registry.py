@@ -4,9 +4,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
-from coder_graph.module_map import build_module_map
-from coder_graph.project_index import annotate_recommendations, recommend_modules
-from coder_graph.tools.filesystem import resolve_scoped_path, summarize_project
+from coder_workbench.module_map import build_module_map
+from coder_workbench.project_index import annotate_recommendations, recommend_modules
+from coder_workbench.tools.filesystem import resolve_scoped_path, summarize_project
 
 
 ToolFn = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -57,7 +57,7 @@ def _recommend_modules(args: dict[str, Any], runtime_context: dict[str, Any]) ->
 def _dry_run_patch(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
     return {
         "status": "dry_run",
-        "message": "Patch generation is intentionally disabled in the first v2 runtime slice.",
+        "message": "Patch generation is intentionally disabled until patch approval and rollback are implemented.",
         "requested_changes": args.get("changes", []),
     }
 
@@ -69,7 +69,7 @@ def _run_check(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[st
     if not bool(args.get("approved", False)):
         return {
             "passed": False,
-            "output": f"Check command requires explicit approval in v2 runtime: {command}",
+            "output": f"Check command requires explicit approval: {command}",
             "blocked": True,
         }
     repo_root = Path(runtime_context["repo_root"]).resolve()
