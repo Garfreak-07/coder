@@ -92,6 +92,7 @@ export function subscribeRunEvents(url: string, onEvent: (event: RunEvent) => vo
     "tool.called",
     "agent.called",
     "approval.required",
+    "approval.recorded",
     "edge.selected",
     "budget.warning",
     "run.completed",

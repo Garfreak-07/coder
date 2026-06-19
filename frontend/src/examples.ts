@@ -109,7 +109,7 @@ export const codingWorkbenchWorkflow: WorkflowSpec = {
       output_key: "patch_approval"
     },
     { id: "apply_patch", type: "tool", tool: "apply_patch", input: { patch: "$patch_preview" }, output_key: "patch_apply" },
-    { id: "check", type: "tool", tool: "run_check", input: { command: "", approved: "$approved" }, output_key: "check_result" },
+    { id: "check", type: "tool", tool: "run_check", input: { command: "" }, output_key: "check_result" },
     { id: "review", type: "agent", agent_id: "reviewer", output_key: "review" },
     { id: "finish", type: "end" }
   ],

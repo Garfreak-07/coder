@@ -332,6 +332,34 @@ label {
   color: #fca5a5;
 }
 
+.approval-card {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.approval-card pre {
+  background: #07111f;
+  border-radius: 8px;
+  color: #d1d5db;
+  font-size: 11px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+.approval-record {
+  color: #cbd5e1;
+  display: grid;
+  font-size: 12px;
+  gap: 4px;
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
 .diff-block pre,
 .patch-panel pre {
   background: #07111f;

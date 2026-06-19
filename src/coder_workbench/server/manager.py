@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from queue import Empty, Queue
 from threading import Lock, Thread
 from typing import Any, Literal
@@ -41,8 +42,9 @@ class RunManager:
             workflow=workflow,
             repo_root=repo_root,
             request=request,
-            initial_data=initial_data,
+            initial_data=dict(initial_data),
         )
+        live.initial_data["run_id"] = live.id
         with self._lock:
             self._runs[live.id] = live
         thread = Thread(target=self._execute, args=(live,), daemon=True)
@@ -58,6 +60,15 @@ class RunManager:
         checkpoint_data = dict(checkpoint.get("data", {}))
         checkpoint_data[f"{run.result.blocked_node_id}_approved"] = approved
         checkpoint_data.update(data or {})
+        approval_record = self._approval_record(run, checkpoint_data, approved)
+        if approval_record["approval_type"] == "command" and approval_record.get("approval_key"):
+            command_approvals = dict(checkpoint_data.get("command_approvals", {}))
+            command_approvals[str(approval_record["approval_key"])] = approved
+            checkpoint_data["command_approvals"] = command_approvals
+
+        approval_audit = list(checkpoint_data.get("approval_audit", []))
+        approval_audit.append(approval_record)
+        checkpoint_data["approval_audit"] = approval_audit
 
         blocked_node = run.workflow.node_by_id().get(run.result.blocked_node_id)
         if blocked_node and blocked_node.type == "human_gate":
@@ -72,7 +83,16 @@ class RunManager:
         run.status = "queued"
         run.error = None
         run.queue = Queue()
-        thread = Thread(target=self._execute, args=(run, checkpoint, run.result.blocked_node_id, list(run.events)), daemon=True)
+        approval_event = RunEvent(
+            type="approval.recorded",
+            node_id=run.result.blocked_node_id,
+            message=f"Approval recorded for {approval_record['approval_type']}",
+            payload=approval_record,
+        )
+        run.events.append(approval_event)
+        run.queue.put(approval_event)
+        prior_events = list(run.events)
+        thread = Thread(target=self._execute, args=(run, checkpoint, run.result.blocked_node_id, prior_events), daemon=True)
         thread.start()
         return run
 
@@ -153,3 +173,27 @@ class RunManager:
             run.error = str(exc)
         finally:
             run.queue.put(None)
+
+    def _approval_record(self, run: LiveRun, checkpoint_data: dict[str, Any], approved: bool) -> dict[str, Any]:
+        blocked_node_id = run.result.blocked_node_id if run.result else None
+        blocked_value = checkpoint_data.get(blocked_node_id or "")
+        if not isinstance(blocked_value, dict) and run.result and blocked_node_id:
+            blocked_node = run.workflow.node_by_id().get(blocked_node_id)
+            if blocked_node:
+                blocked_value = checkpoint_data.get(blocked_node.output_key or blocked_node.id)
+        if not isinstance(blocked_value, dict):
+            blocked_value = {}
+
+        approval_type = str(blocked_value.get("approval_type") or "human_gate")
+        return {
+            "run_id": run.id,
+            "node_id": blocked_node_id,
+            "approval_type": approval_type,
+            "approved": approved,
+            "approval_key": blocked_value.get("approval_key"),
+            "command": blocked_value.get("command"),
+            "cwd": blocked_value.get("cwd"),
+            "reason": blocked_value.get("reason") or blocked_value.get("message"),
+            "actor": "local_user",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }

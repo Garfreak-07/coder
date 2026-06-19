@@ -148,8 +148,7 @@
       "type": "tool",
       "tool": "run_check",
       "input": {
-        "command": "",
-        "approved": "$approved"
+        "command": ""
       },
       "output_key": "check_result"
     },

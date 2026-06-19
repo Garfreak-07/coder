@@ -62,11 +62,12 @@ class WorkflowRunner:
             state.set_event_sink(self.event_sink)
         state.emit("run.started", f"Workflow {self.workflow.id} {'resumed' if resume_after_node else 'started'}")
 
-        queue = (
-            self._next_nodes(state, resume_after_node)
-            if resume_after_node
-            else [node.id for node in self.workflow.nodes if node.type == "start"]
-        )
+        if resume_after_node and self.nodes[resume_after_node].type == "human_gate":
+            queue = self._next_nodes(state, resume_after_node)
+        elif resume_after_node:
+            queue = [resume_after_node]
+        else:
+            queue = [node.id for node in self.workflow.nodes if node.type == "start"]
         try:
             while queue and state.status == "running":
                 if sum(state.visited_nodes.values()) >= self.workflow.max_steps:
@@ -168,9 +169,21 @@ class WorkflowRunner:
                 "request": state.request,
                 "data": state.data,
                 "scopes": state.data.get("scopes", []),
+                "node_id": node_id,
+                "run_id": state.data.get("run_id"),
             },
         )
         state.set_value(node.output_key or node.id, result)
+        if result.get("blocked"):
+            approval_payload = dict(result)
+            approval_payload.pop("message", None)
+            state.emit(
+                "approval.required",
+                str(result.get("message") or result.get("output") or "Tool requires approval"),
+                node_id=node_id,
+                **approval_payload,
+            )
+            self._block(state, str(result.get("message") or "tool approval required"))
         return result
 
     def _run_human_gate(self, state: RunState, node_id: str) -> dict[str, Any]:
@@ -183,6 +196,7 @@ class WorkflowRunner:
         result = {
             "approved": approved,
             "reason": node.approval_reason or "Human approval gate",
+            "approval_type": "human_gate",
         }
         state.set_value(node.output_key or node.id, result)
         if not approved:

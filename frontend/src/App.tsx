@@ -646,6 +646,9 @@ function RunSummary({ events, onApproveAndRun }: { events: RunEvent[]; onApprove
   const toolCalls = events.filter((event) => event.type === "tool.called").length;
   const selectedEdges = events.filter((event) => event.type === "edge.selected").length;
   const needsApproval = events.some((event) => event.type === "approval.required");
+  const approvalRequests = events.filter((event) => event.type === "approval.required");
+  const approvalRecords = events.filter((event) => event.type === "approval.recorded");
+  const latestApproval = approvalRequests.at(-1);
   const isBlocked = latest?.type === "run.blocked";
 
   if (events.length === 0) return null;
@@ -663,6 +666,29 @@ function RunSummary({ events, onApproveAndRun }: { events: RunEvent[]; onApprove
       </div>
       {needsApproval && isBlocked && (
         <button onClick={onApproveAndRun}>Approve and resume</button>
+      )}
+      {latestApproval && isBlocked && (
+        <div className="approval-card">
+          <div className="panel-subtitle">Pending Approval</div>
+          <div className="summary-grid">
+            <span>{String(latestApproval.payload?.approval_type ?? "human_gate")}</span>
+            <span>{latestApproval.node_id ?? "unknown node"}</span>
+          </div>
+          {typeof latestApproval.payload?.command !== "undefined" && <pre>{String(latestApproval.payload.command)}</pre>}
+          {typeof latestApproval.payload?.reason !== "undefined" && <div className="muted">{String(latestApproval.payload.reason)}</div>}
+        </div>
+      )}
+      {approvalRecords.length > 0 && (
+        <div className="approval-card">
+          <div className="panel-subtitle">Approval Audit</div>
+          {approvalRecords.map((event) => (
+            <div className="approval-record" key={event.id}>
+              <span>{String(event.payload?.approval_type ?? "approval")}</span>
+              <span>{event.payload?.approved ? "approved" : "rejected"}</span>
+              <span>{String(event.payload?.node_id ?? event.node_id ?? "unknown node")}</span>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
