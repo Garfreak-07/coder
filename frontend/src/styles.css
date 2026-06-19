@@ -312,6 +312,26 @@ label {
   padding-top: 8px;
 }
 
+.patch-errors {
+  display: grid;
+  gap: 8px;
+}
+
+.patch-error {
+  background: rgba(127, 29, 29, 0.35);
+  border: 1px solid #7f1d1d;
+  border-radius: 8px;
+  color: #fecaca;
+  display: grid;
+  font-size: 12px;
+  gap: 4px;
+  padding: 8px;
+}
+
+.patch-error code {
+  color: #fca5a5;
+}
+
 .diff-block pre,
 .patch-panel pre {
   background: #07111f;

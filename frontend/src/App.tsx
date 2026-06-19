@@ -553,6 +553,7 @@ function PatchPanel({
   const check = latestToolResult(events, "check");
   const files = Array.isArray(patch?.files) ? patch.files : [];
   const snapshotId = typeof apply?.snapshot_id === "string" ? apply.snapshot_id : null;
+  const applyErrors = Array.isArray(apply?.errors) ? apply.errors : [];
 
   async function rollback() {
     if (!snapshotId) return;
@@ -597,6 +598,21 @@ function PatchPanel({
             <span>{String(apply.status ?? "unknown")}</span>
             {snapshotId && <span>snapshot {snapshotId.slice(0, 8)}</span>}
           </div>
+          {typeof apply.message !== "undefined" && <div className="muted">{String(apply.message)}</div>}
+          {applyErrors.length > 0 && (
+            <div className="patch-errors">
+              {applyErrors.map((error, index) => {
+                const item = error as Record<string, unknown>;
+                return (
+                  <div className="patch-error" key={`${String(item.path ?? "unknown")}-${index}`}>
+                    <strong>{String(item.path ?? "unknown")}</strong>
+                    <code>{String(item.code ?? "error")}</code>
+                    <span>{String(item.message ?? "Patch apply rejected.")}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           {snapshotId && <button onClick={rollback}>Rollback snapshot</button>}
         </div>
       )}
