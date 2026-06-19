@@ -6,7 +6,7 @@ from typing import Any, Callable
 
 from coder_graph.module_map import build_module_map
 from coder_graph.project_index import annotate_recommendations, recommend_modules
-from coder_graph.tools.filesystem import summarize_project
+from coder_graph.tools.filesystem import resolve_scoped_path, summarize_project
 
 
 ToolFn = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -39,10 +39,10 @@ def default_tool_registry() -> ToolRegistry:
 
 def _project_index(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
     repo_root = Path(runtime_context["repo_root"]).resolve()
-    scope = args.get("scope") or []
+    scope = _list_value(args.get("scope")) or _list_value(runtime_context.get("scopes"))
     files = summarize_project(repo_root, scope, max_files=int(args.get("max_files", 800)))
     modules = build_module_map(files)
-    return {"files": files, "modules": modules, "file_count": len(files)}
+    return {"files": files, "modules": modules, "file_count": len(files), "scopes": scope}
 
 
 def _recommend_modules(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
@@ -72,9 +72,13 @@ def _run_check(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[st
             "output": f"Check command requires explicit approval in v2 runtime: {command}",
             "blocked": True,
         }
+    repo_root = Path(runtime_context["repo_root"]).resolve()
+    scopes = _list_value(runtime_context.get("scopes"))
+    default_cwd = scopes[0] if scopes else "."
+    cwd = resolve_scoped_path(repo_root, str(args.get("cwd") or default_cwd), scopes)
     completed = subprocess.run(
         command,
-        cwd=runtime_context["repo_root"],
+        cwd=cwd,
         shell=True,
         text=True,
         capture_output=True,
@@ -83,5 +87,16 @@ def _run_check(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[st
     return {
         "passed": completed.returncode == 0,
         "returncode": completed.returncode,
+        "cwd": cwd.relative_to(repo_root).as_posix() if cwd != repo_root else ".",
         "output": (completed.stdout + completed.stderr)[-8000:],
     }
+
+
+def _list_value(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]

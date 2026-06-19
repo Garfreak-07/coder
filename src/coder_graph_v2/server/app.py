@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from coder_graph.tools.filesystem import resolve_existing_dir
+from coder_graph.tools.filesystem import normalize_scope_paths, resolve_existing_dir
 from coder_graph_v2.core import WorkflowSpec, load_workflow
 from coder_graph_v2.runtime import run_workflow
 from coder_graph_v2.server.library import LibraryStore
@@ -26,6 +26,7 @@ class RunRequest(BaseModel):
     workflow_path: str | None = None
     workflow: dict[str, Any] | None = None
     approved: bool = False
+    scopes: list[str] = Field(default_factory=list)
     initial_data: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -90,8 +91,7 @@ def create_app(store_root: str | Path = ".coder_v2", frontend_dist: str | Path |
     def create_run(body: RunRequest) -> dict[str, Any]:
         workflow = _load_workflow_from_request(body)
         repo_root = resolve_existing_dir(body.repo)
-        initial_data = {"request": body.request, "approved": body.approved}
-        initial_data.update(body.initial_data)
+        initial_data = _initial_data_from_request(body, repo_root)
         result = run_workflow(
             workflow=workflow,
             request=body.request,
@@ -117,8 +117,7 @@ def create_app(store_root: str | Path = ".coder_v2", frontend_dist: str | Path |
     def create_live_run(body: RunRequest) -> dict[str, Any]:
         workflow = _load_workflow_from_request(body)
         repo_root = resolve_existing_dir(body.repo)
-        initial_data = {"request": body.request, "approved": body.approved}
-        initial_data.update(body.initial_data)
+        initial_data = _initial_data_from_request(body, repo_root)
         live = manager.start(
             workflow=workflow,
             repo_root=str(repo_root),
@@ -216,3 +215,13 @@ def _load_workflow_from_request(body: RunRequest) -> WorkflowSpec:
     if body.workflow_path:
         return load_workflow(body.workflow_path)
     raise HTTPException(status_code=400, detail="workflow or workflow_path is required")
+
+
+def _initial_data_from_request(body: RunRequest, repo_root: Path) -> dict[str, Any]:
+    try:
+        scopes = normalize_scope_paths(repo_root, body.scopes)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    initial_data = dict(body.initial_data)
+    initial_data.update({"request": body.request, "approved": body.approved, "scopes": scopes})
+    return initial_data

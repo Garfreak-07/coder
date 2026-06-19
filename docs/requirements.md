@@ -141,6 +141,9 @@ GET  /api/v2/live-runs/{run_id}/events
 Use synchronous runs for CLI/debug cases. Use live runs and Server-Sent Events
 for the app.
 
+Run creation accepts optional repo-relative `scopes`; v2 tools must reject paths
+that escape the selected project or selected scopes.
+
 ### Frontend
 
 The old single-file web UI should be replaced.
@@ -294,6 +297,8 @@ Implemented:
   - `POST /api/v2/live-runs/{run_id}/approve`
   - resumes the same paused run instead of starting a fresh approved run
 - approval-required resume action in the run timeline
+- project scope selection for v2 runs
+- path guard enforcement for scoped v2 tools
 - built-in tools:
   - `project_index`
   - `recommend_modules`
@@ -314,10 +319,9 @@ python -m coder_graph.cli --repo . --v2-workflow examples\workflows_v2\coding-wo
 
 ## Near-term roadmap
 
-1. Add project scope selection and path guard enforcement in v2 tools.
-2. Add real patch proposal/apply/rollback tools.
-3. Add patch/diff panel and rollback UI.
-4. Add provider-specific executor adapters.
-5. Add MCP tool adapter.
-6. Migrate the default coding workflow fully to v2.
-7. Retire the old fixed LangGraph path when v2 reaches parity.
+1. Add real patch proposal/apply/rollback tools.
+2. Add patch/diff panel and rollback UI.
+3. Add provider-specific executor adapters.
+4. Add MCP tool adapter.
+5. Migrate the default coding workflow fully to v2.
+6. Retire the old fixed LangGraph path when v2 reaches parity.

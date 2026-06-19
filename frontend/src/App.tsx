@@ -29,6 +29,7 @@ export function App() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>("start");
   const [status, setStatus] = useState("Ready");
   const [repo, setRepo] = useState(".");
+  const [scopesText, setScopesText] = useState("");
   const [request, setRequest] = useState("Inspect this project and propose the next safe step.");
   const [approved, setApproved] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -280,7 +281,13 @@ export function App() {
     setStatus(approvedOverride ? "Starting approved live run..." : "Starting live run...");
     try {
       const parsed = JSON.parse(jsonText) as WorkflowSpec;
-      const run = await startLiveRun({ repo, request, workflow: parsed, approved: approvedOverride });
+      const run = await startLiveRun({
+        repo,
+        request,
+        workflow: parsed,
+        approved: approvedOverride,
+        scopes: linesToList(scopesText)
+      });
       setActiveRunId(run.run_id);
       setStatus(`Live run ${run.run_id}: ${run.status}`);
       subscribeToRun(run.run_id, run.events_url);
@@ -362,6 +369,15 @@ export function App() {
           <label>
             Repo
             <input value={repo} onChange={(event) => setRepo(event.target.value)} />
+          </label>
+          <label>
+            Scopes
+            <textarea
+              placeholder="Optional repo-relative paths, one per line"
+              value={scopesText}
+              onChange={(event) => setScopesText(event.target.value)}
+              rows={3}
+            />
           </label>
           <label>
             Request
@@ -918,6 +934,13 @@ function upsertAgent(agents: AgentSpec[], next: AgentSpec): AgentSpec[] {
 function csvToList(value: string): string[] {
   return value
     .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function linesToList(value: string): string[] {
+  return value
+    .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
 }

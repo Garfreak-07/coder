@@ -94,10 +94,38 @@ def normalize_allowed_paths(root: Path, paths: list[str]) -> list[str]:
     return normalized
 
 
+def normalize_scope_paths(root: Path, scopes: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    for item in scopes or []:
+        scope = item.strip()
+        if not scope or scope in {".", "./"}:
+            continue
+        candidate = (root / scope).resolve()
+        if not is_relative_to(candidate, root):
+            raise ValueError(f"Scope escapes repo root: {scope}")
+        if not candidate.exists():
+            raise FileNotFoundError(f"Scope does not exist: {scope}")
+        if not candidate.is_dir():
+            raise NotADirectoryError(f"Scope is not a directory: {scope}")
+        normalized.append(candidate.relative_to(root.resolve()).as_posix())
+    return normalized
+
+
+def resolve_scoped_path(root: Path, path: str, scopes: list[str] | None = None) -> Path:
+    candidate = (root / path).resolve()
+    if not is_relative_to(candidate, root):
+        raise ValueError(f"Path escapes repo root: {path}")
+    allowed_scopes = normalize_scope_paths(root, scopes)
+    if allowed_scopes and not any(is_relative_to(candidate, (root / scope).resolve()) for scope in allowed_scopes):
+        raise ValueError(f"Path is outside allowed scopes: {path}")
+    return candidate
+
+
 def _scope_roots(root: Path, scopes: list[str]) -> list[Path]:
-    if not scopes:
+    normalized = normalize_scope_paths(root, scopes)
+    if not normalized:
         return [root]
-    return [(root / scope).resolve() for scope in scopes]
+    return [(root / scope).resolve() for scope in normalized]
 
 
 def _has_ignored_part(file_path: Path, root: Path) -> bool:

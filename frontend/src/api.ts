@@ -50,6 +50,7 @@ export async function startLiveRun(input: {
   request: string;
   workflow: WorkflowSpec;
   approved: boolean;
+  scopes: string[];
 }): Promise<{ run_id: string; status: string; events_url: string; result_url: string }> {
   return requestJson("/api/v2/live-runs", {
     method: "POST",

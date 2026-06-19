@@ -161,6 +161,7 @@ class WorkflowRunner:
                 "repo_root": state.repo_root,
                 "request": state.request,
                 "data": state.data,
+                "scopes": state.data.get("scopes", []),
             },
         )
         state.set_value(node.output_key or node.id, result)
