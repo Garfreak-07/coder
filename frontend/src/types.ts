@@ -141,6 +141,13 @@ export interface StoredRunDetail {
   result: RunResult;
 }
 
+export interface RunEventsPage {
+  events: RunEvent[];
+  cursor: number;
+  next_cursor: number;
+  has_more: boolean;
+}
+
 export interface LiveRunDetail {
   id: string;
   workflow_id: string;

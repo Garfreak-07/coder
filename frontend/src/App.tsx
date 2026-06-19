@@ -21,6 +21,7 @@ import {
   getLiveRun,
   getLiveRuns,
   getRun,
+  getRunEvents,
   getRuns,
   getWorkflow,
   rollbackPatch,
@@ -111,14 +112,26 @@ export function App() {
   async function openStoredRun(runId: string) {
     setStatus(`Loading stored run ${runId}...`);
     try {
-      const detail = await getRun(runId);
+      const detail = await getRun(runId, false);
+      const eventPage = await getRunEvents(runId);
+      const hydrated = {
+        ...detail,
+        result: {
+          ...detail.result,
+          events: eventPage.events
+        }
+      };
       setSelectedRunKind("stored");
-      setSelectedRunDetail(detail);
+      setSelectedRunDetail(hydrated);
       setActiveRunId(null);
-      setEvents(detail.result.events);
+      setEvents(eventPage.events);
       setRepo(detail.repo_root);
       setRequest(detail.request);
-      setStatus(`Stored run ${runId}: ${detail.result.status}`);
+      setStatus(
+        eventPage.has_more
+          ? `Stored run ${runId}: ${detail.result.status} (${eventPage.events.length}+ events)`
+          : `Stored run ${runId}: ${detail.result.status}`
+      );
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
