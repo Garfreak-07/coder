@@ -96,7 +96,13 @@ class WorkflowRunner:
                 else:  # pragma: no cover - pydantic prevents this
                     raise ValueError(f"Unsupported node type: {node.type}")
 
-                state.emit("node.completed", f"Node {node_id} completed", node_id=node_id, result_summary=str(result)[:800])
+                state.emit(
+                    "node.completed",
+                    f"Node {node_id} completed",
+                    node_id=node_id,
+                    result=result,
+                    result_summary=str(result)[:800],
+                )
 
                 if state.status != "running":
                     break
@@ -169,7 +175,11 @@ class WorkflowRunner:
 
     def _run_human_gate(self, state: RunState, node_id: str) -> dict[str, Any]:
         node = self.nodes[node_id]
-        approved = bool(state.data.get("approved", False) or node.input.get("auto_approve", False))
+        approved = bool(
+            state.data.get(f"{node_id}_approved", False)
+            or state.data.get("preapprove_all", False)
+            or node.input.get("auto_approve", False)
+        )
         result = {
             "approved": approved,
             "reason": node.approval_reason or "Human approval gate",

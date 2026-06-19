@@ -16,6 +16,7 @@ from coder_workbench.server.manager import RunManager
 from coder_workbench.server.storage import RunStore
 from coder_workbench.tools import default_tool_registry
 from coder_workbench.tools.filesystem import normalize_scope_paths, resolve_existing_dir
+from coder_workbench.tools.patching import rollback_patch
 
 
 class RunRequest(BaseModel):
@@ -35,6 +36,14 @@ class ApprovalRequest(BaseModel):
 
     approved: bool = True
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class RollbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    snapshot_id: str
+    scopes: list[str] = Field(default_factory=list)
 
 
 def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | None = None) -> FastAPI:
@@ -146,6 +155,19 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "result_url": f"/api/v2/live-runs/{live.id}",
         }
 
+    @app.post("/api/v2/patches/rollback")
+    def rollback_patch_endpoint(body: RollbackRequest) -> dict[str, Any]:
+        repo_root = resolve_existing_dir(body.repo)
+        try:
+            scopes = normalize_scope_paths(repo_root, body.scopes)
+            result = rollback_patch(
+                {"snapshot_id": body.snapshot_id},
+                {"repo_root": str(repo_root), "scopes": scopes, "data": {}},
+            )
+        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"rollback": result}
+
     @app.get("/api/v2/runs/{run_id}")
     def get_run(run_id: str) -> dict[str, Any]:
         try:
@@ -223,5 +245,10 @@ def _initial_data_from_request(body: RunRequest, repo_root: Path) -> dict[str, A
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     initial_data = dict(body.initial_data)
-    initial_data.update({"request": body.request, "approved": body.approved, "scopes": scopes})
+    initial_data.update({
+        "request": body.request,
+        "approved": body.approved,
+        "preapprove_all": body.approved,
+        "scopes": scopes,
+    })
     return initial_data

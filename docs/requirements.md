@@ -289,7 +289,14 @@ Implemented:
   - `project_index`
   - `recommend_modules`
   - `dry_run_patch`
+  - `propose_patch`
+  - `apply_patch`
+  - `rollback_patch`
   - `run_check`
+- patch proposal, scoped patch apply, snapshot, and rollback primitives
+- patch/diff, apply, check, and rollback display in the UI run panel
+- gate-specific approval resume so separate human gates can be approved
+  independently
 - CLI execution:
 
 ```powershell
@@ -305,9 +312,9 @@ python -m coder_workbench.cli --repo . --workflow examples\workflows\coding-work
 
 ## Near-term roadmap
 
-1. Add real patch proposal/apply/rollback tools.
-2. Add patch/diff panel and rollback UI.
-3. Add provider-specific executor adapters.
-4. Add MCP tool adapter.
-5. Expand the default coding workflow into real patch execution when safety
-   gates are complete.
+1. Harden patch apply with richer conflict detection and binary-file handling.
+2. Add command-specific approval and persisted approval audit records.
+3. Add MCP tool adapter.
+4. Expand provider-specific executor adapters beyond the OpenAI-compatible
+   executor configuration.
+5. Add durable run recovery for long background runs.

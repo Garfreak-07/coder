@@ -67,6 +67,18 @@ export async function approveLiveRun(runId: string): Promise<{ run_id: string; s
   });
 }
 
+export async function rollbackPatch(input: {
+  repo: string;
+  snapshot_id: string;
+  scopes: string[];
+}): Promise<{ rollback: Record<string, unknown> }> {
+  return requestJson("/api/v2/patches/rollback", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input)
+  });
+}
+
 export function subscribeRunEvents(url: string, onEvent: (event: RunEvent) => void, onError: (error: Event) => void) {
   const source = new EventSource(url);
   source.onmessage = (message) => {

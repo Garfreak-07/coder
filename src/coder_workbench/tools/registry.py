@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from coder_workbench.module_map import build_module_map
 from coder_workbench.project_index import annotate_recommendations, recommend_modules
+from coder_workbench.tools.patching import apply_patch, propose_patch, rollback_patch
 from coder_workbench.tools.filesystem import resolve_scoped_path, summarize_project
 
 
@@ -33,6 +34,9 @@ def default_tool_registry() -> ToolRegistry:
     registry.register("project_index", _project_index)
     registry.register("recommend_modules", _recommend_modules)
     registry.register("dry_run_patch", _dry_run_patch)
+    registry.register("propose_patch", propose_patch)
+    registry.register("apply_patch", apply_patch)
+    registry.register("rollback_patch", rollback_patch)
     registry.register("run_check", _run_check)
     return registry
 
@@ -55,10 +59,9 @@ def _recommend_modules(args: dict[str, Any], runtime_context: dict[str, Any]) ->
 
 
 def _dry_run_patch(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
-    return {
+    return propose_patch(args, runtime_context) | {
         "status": "dry_run",
-        "message": "Patch generation is intentionally disabled until patch approval and rollback are implemented.",
-        "requested_changes": args.get("changes", []),
+        "message": "Patch preview generated without applying files.",
     }
 
 

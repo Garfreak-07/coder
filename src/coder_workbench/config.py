@@ -18,11 +18,11 @@ class RuntimeConfig:
         return bool(self.api_key)
 
 
-def load_runtime_config() -> RuntimeConfig:
-    provider = os.getenv("CODER_PROVIDER", "openai").strip().lower()
+def load_runtime_config(provider_override: str | None = None, model_override: str | None = None) -> RuntimeConfig:
+    provider = (provider_override or os.getenv("CODER_PROVIDER", "openai")).strip().lower()
     return RuntimeConfig(
         provider=provider,
-        model=os.getenv("CODER_MODEL", "gpt-4.1-mini"),
+        model=model_override or os.getenv("CODER_MODEL", "gpt-4.1-mini"),
         api_key=_api_key_for_provider(provider),
         base_url=_base_url_for_provider(provider),
     )

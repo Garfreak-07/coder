@@ -13,7 +13,17 @@ import {
   type Node as FlowNode,
   type NodeChange
 } from "@xyflow/react";
-import { approveLiveRun, getAgent, getLibrary, getWorkflow, saveAgent, saveWorkflow, startLiveRun, subscribeRunEvents } from "./api";
+import {
+  approveLiveRun,
+  getAgent,
+  getLibrary,
+  getWorkflow,
+  rollbackPatch,
+  saveAgent,
+  saveWorkflow,
+  startLiveRun,
+  subscribeRunEvents
+} from "./api";
 import { codingWorkbenchWorkflow } from "./examples";
 import { workflowTemplate } from "./template";
 import type { AgentSpec, EdgeSpec, LibraryIndex, NodeSpec, NodeType, RunEvent, WorkflowSpec } from "./types";
@@ -499,6 +509,12 @@ export function App() {
         <section className="panel events-panel">
           <div className="panel-title">Run Events</div>
           <RunSummary events={events} onApproveAndRun={approveAndResumeRun} />
+          <PatchPanel
+            events={events}
+            repo={repo}
+            scopes={linesToList(scopesText)}
+            onStatus={setStatus}
+          />
           {events.length === 0 ? (
             <div className="muted">No events yet.</div>
           ) : (
@@ -519,6 +535,93 @@ export function App() {
       </aside>
     </div>
   );
+}
+
+function PatchPanel({
+  events,
+  repo,
+  scopes,
+  onStatus
+}: {
+  events: RunEvent[];
+  repo: string;
+  scopes: string[];
+  onStatus: (status: string) => void;
+}) {
+  const patch = latestToolResult(events, "propose_patch") ?? latestToolResult(events, "dry_patch");
+  const apply = latestToolResult(events, "apply_patch");
+  const check = latestToolResult(events, "check");
+  const files = Array.isArray(patch?.files) ? patch.files : [];
+  const snapshotId = typeof apply?.snapshot_id === "string" ? apply.snapshot_id : null;
+
+  async function rollback() {
+    if (!snapshotId) return;
+    onStatus(`Rolling back snapshot ${snapshotId}...`);
+    try {
+      const result = await rollbackPatch({ repo, snapshot_id: snapshotId, scopes });
+      onStatus(String(result.rollback.message ?? `Rolled back ${snapshotId}`));
+    } catch (error) {
+      onStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (!patch && !apply && !check) return null;
+
+  return (
+    <div className="patch-panel">
+      {patch && (
+        <div>
+          <div className="panel-subtitle">Patch Preview</div>
+          {files.length === 0 ? (
+            <div className="muted">No file changes proposed.</div>
+          ) : (
+            files.map((file, index) => {
+              const item = file as Record<string, unknown>;
+              return (
+                <div className="diff-block" key={`${String(item.path)}-${index}`}>
+                  <div className="event-heading">
+                    <strong>{String(item.path ?? "unknown")}</strong>
+                    <code>{String(item.action ?? "update")}</code>
+                  </div>
+                  <pre>{String(item.diff ?? "")}</pre>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+      {apply && (
+        <div>
+          <div className="panel-subtitle">Patch Apply</div>
+          <div className="summary-grid">
+            <span>{String(apply.status ?? "unknown")}</span>
+            {snapshotId && <span>snapshot {snapshotId.slice(0, 8)}</span>}
+          </div>
+          {snapshotId && <button onClick={rollback}>Rollback snapshot</button>}
+        </div>
+      )}
+      {check && (
+        <div>
+          <div className="panel-subtitle">Check Result</div>
+          <div className="summary-grid">
+            <span>{check.passed ? "passed" : "not passed"}</span>
+            {typeof check.returncode === "number" && <span>exit {check.returncode}</span>}
+          </div>
+          {typeof check.output !== "undefined" && <pre>{String(check.output)}</pre>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function latestToolResult(events: RunEvent[], nodeId: string): Record<string, unknown> | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "node.completed" || event.node_id !== nodeId) continue;
+    const result = event.payload?.result;
+    if (result && typeof result === "object" && !Array.isArray(result)) return result as Record<string, unknown>;
+  }
+  return null;
 }
 
 function RunSummary({ events, onApproveAndRun }: { events: RunEvent[]; onApproveAndRun: () => void }) {

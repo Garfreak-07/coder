@@ -56,7 +56,7 @@ class RunManager:
 
         checkpoint = dict(run.result.resume_checkpoint)
         checkpoint_data = dict(checkpoint.get("data", {}))
-        checkpoint_data["approved"] = approved
+        checkpoint_data[f"{run.result.blocked_node_id}_approved"] = approved
         checkpoint_data.update(data or {})
 
         blocked_node = run.workflow.node_by_id().get(run.result.blocked_node_id)
