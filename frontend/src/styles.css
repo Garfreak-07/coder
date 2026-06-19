@@ -360,6 +360,11 @@ label {
   grid-template-columns: 1fr 1fr 1fr;
 }
 
+.approval-actions {
+  display: grid;
+  gap: 8px;
+}
+
 .diff-block pre,
 .patch-panel pre {
   background: #07111f;

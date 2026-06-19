@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from coder_workbench.module_map import build_module_map
 from coder_workbench.project_index import annotate_recommendations, recommend_modules
+from coder_workbench.tools.mcp import call_mcp_tool
 from coder_workbench.tools.patching import apply_patch, propose_patch, rollback_patch
 from coder_workbench.tools.filesystem import resolve_scoped_path, summarize_project
 
@@ -39,6 +40,7 @@ def default_tool_registry() -> ToolRegistry:
     registry.register("apply_patch", apply_patch)
     registry.register("rollback_patch", rollback_patch)
     registry.register("run_check", _run_check)
+    registry.register("mcp_call", call_mcp_tool)
     return registry
 
 

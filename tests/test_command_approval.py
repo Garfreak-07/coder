@@ -88,6 +88,41 @@ class CommandApprovalTests(unittest.TestCase):
             stored = manager.store.get(run.stored_run_id)
             self.assertEqual(stored.result.data["approval_audit"][0]["approval_type"], "command")
 
+    def test_live_run_reject_records_audit_and_stops(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store_root = Path(tmp) / ".coder"
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            command = f'"{sys.executable}" -c "print(789)"'
+            manager = RunManager(RunStore(store_root))
+            run = manager.start(_command_workflow(command), str(repo), "run check", {"scopes": []})
+
+            _wait_for_status(run, "blocked")
+            manager.approve(run.id, approved=False, reason="not safe")
+            _wait_for_status(run, "failed")
+
+            self.assertEqual(run.error, "not safe")
+            audit = run.initial_data["approval_audit"]
+            self.assertEqual(audit[0]["approval_type"], "command")
+            self.assertFalse(audit[0]["approved"])
+            self.assertEqual(audit[0]["reason"], "not safe")
+
+    def test_live_run_snapshots_can_be_loaded_by_new_manager(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / ".coder")
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            command = f'"{sys.executable}" -c "print(999)"'
+            manager = RunManager(store)
+            run = manager.start(_command_workflow(command), str(repo), "run check", {"scopes": []})
+            _wait_for_status(run, "blocked")
+
+            restored = RunManager(store).get(run.id)
+
+            self.assertEqual(restored.status, "blocked")
+            self.assertEqual(restored.workflow.id, "command-approval-test")
+            self.assertGreaterEqual(len(restored.events), 1)
+
 
 def _wait_for_status(run, status: str, timeout: float = 5.0) -> None:
     deadline = time.time() + timeout

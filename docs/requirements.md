@@ -283,6 +283,10 @@ Implemented:
   - `POST /api/v2/live-runs/{run_id}/approve`
   - resumes the same paused run instead of starting a fresh approved run
 - approval-required resume action in the run timeline
+- command-specific approval keyed by command and working directory
+- persisted approval audit records for human gates, command approvals, and MCP
+  approvals
+- approval rejection path for live runs
 - project scope selection for runs
 - path guard enforcement for scoped tools
 - built-in tools:
@@ -293,8 +297,15 @@ Implemented:
   - `apply_patch`
   - `rollback_patch`
   - `run_check`
+- basic MCP stdio JSON-RPC adapter through `mcp_tool` workflow nodes
+- expanded OpenAI-compatible provider presets for Groq, OpenRouter, Together,
+  Mistral, Perplexity, xAI, Gemini-compatible, DeepSeek, Moonshot/Kimi,
+  DashScope/Qwen, and Ollama
 - patch proposal, scoped patch apply, snapshot, and rollback primitives
+- stale-base detection and binary-file rejection before patch apply
 - patch/diff, apply, check, and rollback display in the UI run panel
+- approval request and approval audit display in the UI
+- runtime summary panel with health, tool count, live runs, and stored runs
 - gate-specific approval resume so separate human gates can be approved
   independently
 - CLI execution:
@@ -305,6 +316,8 @@ python -m coder_workbench.cli --repo . --workflow examples\workflows\coding-work
 
 - FastAPI runtime API
 - live background runs
+- live run snapshots persisted under the local run store so blocked/completed
+  live runs can be listed after API restart
 - SSE event streaming
 - file-backed run storage
 - local workflow/agent library storage
@@ -312,9 +325,15 @@ python -m coder_workbench.cli --repo . --workflow examples\workflows\coding-work
 
 ## Near-term roadmap
 
-1. Harden patch apply with richer conflict detection and binary-file handling.
-2. Add command-specific approval and persisted approval audit records.
-3. Add MCP tool adapter.
-4. Expand provider-specific executor adapters beyond the OpenAI-compatible
-   executor configuration.
-5. Add durable run recovery for long background runs.
+1. Add richer UI for run history: open stored run details, inspect restored
+   live runs, and reattach to blocked runs from the browser.
+2. Expand durable recovery from persisted blocked run snapshots to active
+   resume after process restart.
+3. Add long-lived MCP server sessions and tool discovery/listing instead of
+   only short-lived configured stdio calls.
+4. Add provider-specific non-OpenAI-compatible executor adapters where needed,
+   starting with native SDKs only when the OpenAI-compatible endpoint is not
+   sufficient.
+5. Add desktop packaging and stronger product polish: settings persistence,
+   diff viewer improvements, rejection reasons in the event timeline, and
+   richer rollback conflict handling.

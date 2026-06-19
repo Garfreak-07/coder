@@ -87,7 +87,7 @@ class WorkflowRunner:
                     state.status = "completed"
                 elif node.type == "agent":
                     result = self._run_agent_node(state, node_id)
-                elif node.type == "tool":
+                elif node.type in {"tool", "mcp_tool"}:
                     result = self._run_tool_node(state, node_id)
                 elif node.type == "condition":
                     result = {"passed": evaluate_condition(node.condition, state.data)}
@@ -160,9 +160,13 @@ class WorkflowRunner:
             return {"status": "blocked"}
         state.tool_calls += 1
         args = self._resolve_inputs(node.input, state)
+        tool_name = "mcp_call" if node.type == "mcp_tool" else node.tool
+        if node.type == "mcp_tool":
+            args = dict(args)
+            args.setdefault("__mcp_tool", node.tool)
         state.emit("tool.called", f"Tool {node.tool} called", node_id=node_id, args=args)
         result = self.tools.run(
-            node.tool,
+            tool_name,
             args,
             {
                 "repo_root": state.repo_root,

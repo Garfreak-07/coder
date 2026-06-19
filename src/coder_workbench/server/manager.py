@@ -35,6 +35,7 @@ class RunManager:
         self.store = store
         self._runs: dict[str, LiveRun] = {}
         self._lock = Lock()
+        self._load_persisted_live_runs()
 
     def start(self, workflow: WorkflowSpec, repo_root: str, request: str, initial_data: dict[str, Any]) -> LiveRun:
         live = LiveRun(
@@ -47,11 +48,18 @@ class RunManager:
         live.initial_data["run_id"] = live.id
         with self._lock:
             self._runs[live.id] = live
+        self._persist_live(live)
         thread = Thread(target=self._execute, args=(live,), daemon=True)
         thread.start()
         return live
 
-    def approve(self, run_id: str, approved: bool = True, data: dict[str, Any] | None = None) -> LiveRun:
+    def approve(
+        self,
+        run_id: str,
+        approved: bool = True,
+        data: dict[str, Any] | None = None,
+        reason: str | None = None,
+    ) -> LiveRun:
         run = self.get(run_id)
         if run.status != "blocked" or not run.result or not run.result.resume_checkpoint or not run.result.blocked_node_id:
             raise ValueError("run is not waiting for approval")
@@ -60,11 +68,15 @@ class RunManager:
         checkpoint_data = dict(checkpoint.get("data", {}))
         checkpoint_data[f"{run.result.blocked_node_id}_approved"] = approved
         checkpoint_data.update(data or {})
-        approval_record = self._approval_record(run, checkpoint_data, approved)
+        approval_record = self._approval_record(run, checkpoint_data, approved, reason)
         if approval_record["approval_type"] == "command" and approval_record.get("approval_key"):
             command_approvals = dict(checkpoint_data.get("command_approvals", {}))
             command_approvals[str(approval_record["approval_key"])] = approved
             checkpoint_data["command_approvals"] = command_approvals
+        if approval_record["approval_type"] == "mcp_tool" and approval_record.get("approval_key"):
+            mcp_approvals = dict(checkpoint_data.get("mcp_approvals", {}))
+            mcp_approvals[str(approval_record["approval_key"])] = approved
+            checkpoint_data["mcp_approvals"] = mcp_approvals
 
         approval_audit = list(checkpoint_data.get("approval_audit", []))
         approval_audit.append(approval_record)
@@ -91,6 +103,23 @@ class RunManager:
         )
         run.events.append(approval_event)
         run.queue.put(approval_event)
+        if not approved:
+            checkpoint["data"] = checkpoint_data
+            run.initial_data = checkpoint_data
+            run.status = "failed"
+            run.error = reason or "approval rejected"
+            failed_event = RunEvent(
+                type="run.failed",
+                node_id=run.result.blocked_node_id,
+                message=run.error,
+                payload={"approval": approval_record},
+            )
+            run.events.append(failed_event)
+            run.queue.put(failed_event)
+            self._persist_live(run)
+            run.queue.put(None)
+            return run
+
         prior_events = list(run.events)
         thread = Thread(target=self._execute, args=(run, checkpoint, run.result.blocked_node_id, prior_events), daemon=True)
         thread.start()
@@ -117,6 +146,36 @@ class RunManager:
                 }
                 for run in self._runs.values()
             ]
+
+    def _load_persisted_live_runs(self) -> None:
+        for payload in self.store.list_live():
+            try:
+                workflow = WorkflowSpec.model_validate(payload["workflow"])
+                result_payload = payload.get("result")
+                result = RunResult.model_validate(result_payload) if isinstance(result_payload, dict) else None
+                events = [
+                    RunEvent.model_validate(event)
+                    for event in payload.get("events", [])
+                    if isinstance(event, dict)
+                ]
+                status = payload.get("status", "failed")
+                if status in {"queued", "running"}:
+                    status = "failed"
+                live = LiveRun(
+                    id=str(payload["id"]),
+                    workflow=workflow,
+                    repo_root=str(payload["repo_root"]),
+                    request=str(payload["request"]),
+                    initial_data=dict(payload.get("initial_data", {})),
+                    status=status,
+                    events=events,
+                    result=result,
+                    stored_run_id=payload.get("stored_run_id"),
+                    error=payload.get("error"),
+                )
+                self._runs[live.id] = live
+            except Exception:
+                continue
 
     def stream(self, run_id: str):
         run = self.get(run_id)
@@ -147,6 +206,7 @@ class RunManager:
         def sink(event: RunEvent) -> None:
             run.events.append(event)
             run.queue.put(event)
+            self._persist_live(run)
 
         try:
             result = run_workflow(
@@ -172,9 +232,16 @@ class RunManager:
             run.status = "failed"
             run.error = str(exc)
         finally:
+            self._persist_live(run)
             run.queue.put(None)
 
-    def _approval_record(self, run: LiveRun, checkpoint_data: dict[str, Any], approved: bool) -> dict[str, Any]:
+    def _approval_record(
+        self,
+        run: LiveRun,
+        checkpoint_data: dict[str, Any],
+        approved: bool,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
         blocked_node_id = run.result.blocked_node_id if run.result else None
         blocked_value = checkpoint_data.get(blocked_node_id or "")
         if not isinstance(blocked_value, dict) and run.result and blocked_node_id:
@@ -193,7 +260,23 @@ class RunManager:
             "approval_key": blocked_value.get("approval_key"),
             "command": blocked_value.get("command"),
             "cwd": blocked_value.get("cwd"),
-            "reason": blocked_value.get("reason") or blocked_value.get("message"),
+            "reason": reason or blocked_value.get("reason") or blocked_value.get("message"),
             "actor": "local_user",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
+
+    def _persist_live(self, run: LiveRun) -> None:
+        self.store.save_live(
+            {
+                "id": run.id,
+                "workflow": run.workflow.model_dump(mode="json", by_alias=True),
+                "repo_root": run.repo_root,
+                "request": run.request,
+                "initial_data": run.initial_data,
+                "status": run.status,
+                "events": [event.model_dump(mode="json") for event in run.events],
+                "result": run.result.model_dump(mode="json") if run.result else None,
+                "stored_run_id": run.stored_run_id,
+                "error": run.error,
+            }
+        )

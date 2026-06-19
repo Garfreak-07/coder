@@ -35,6 +35,7 @@ class ApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     approved: bool = True
+    reason: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -143,7 +144,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     @app.post("/api/v2/live-runs/{run_id}/approve")
     def approve_live_run(run_id: str, body: ApprovalRequest) -> dict[str, Any]:
         try:
-            live = manager.approve(run_id, approved=body.approved, data=body.data)
+            live = manager.approve(run_id, approved=body.approved, data=body.data, reason=body.reason)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="live run not found") from exc
         except ValueError as exc:
