@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+from typing import Any
+
+from coder_graph_v2.core import WorkflowSpec
+from coder_graph_v2.executors import AgentExecutor, DefaultAgentExecutor
+from coder_graph_v2.runtime.conditions import evaluate_condition
+from coder_graph_v2.runtime.context import build_agent_context, estimate_tokens
+from coder_graph_v2.runtime.state import RunResult, RunState
+from coder_graph_v2.tools import ToolRegistry, default_tool_registry
+
+
+class WorkflowRunner:
+    """Small JSON-driven workflow interpreter.
+
+    This is the product kernel candidate: canvas edges become real routing,
+    agents are adapter-backed, and token budget pressure is tracked centrally.
+    """
+
+    def __init__(
+        self,
+        workflow: WorkflowSpec,
+        agent_executor: AgentExecutor | None = None,
+        tools: ToolRegistry | None = None,
+        event_sink: Any | None = None,
+    ) -> None:
+        self.workflow = workflow
+        self.nodes = workflow.node_by_id()
+        self.agents = workflow.agent_by_id()
+        self.agent_executor = agent_executor or DefaultAgentExecutor()
+        self.tools = tools or default_tool_registry()
+        self.event_sink = event_sink
+
+    def run(self, request: str, repo_root: str, initial_data: dict[str, Any] | None = None) -> RunResult:
+        state = RunState(
+            workflow_id=self.workflow.id,
+            request=request,
+            repo_root=repo_root,
+            data=initial_data or {},
+            token_budget=self.workflow.token_budget,
+        )
+        if self.event_sink:
+            state.set_event_sink(self.event_sink)
+        state.emit("run.started", f"Workflow {self.workflow.id} started")
+
+        queue = [node.id for node in self.workflow.nodes if node.type == "start"]
+        try:
+            while queue and state.status == "running":
+                if sum(state.visited_nodes.values()) >= self.workflow.max_steps:
+                    self._block(state, "max_steps reached")
+                    break
+
+                node_id = queue.pop(0)
+                node = self.nodes[node_id]
+                state.current_node = node_id
+                state.visited_nodes[node_id] = state.visited_nodes.get(node_id, 0) + 1
+                state.emit("node.started", f"Node {node_id} started", node_id=node_id, node_type=node.type)
+
+                if node.type == "start":
+                    result = {"status": "started"}
+                elif node.type == "end":
+                    result = {"status": "completed"}
+                    state.status = "completed"
+                elif node.type == "agent":
+                    result = self._run_agent_node(state, node_id)
+                elif node.type == "tool":
+                    result = self._run_tool_node(state, node_id)
+                elif node.type == "condition":
+                    result = {"passed": evaluate_condition(node.condition, state.data)}
+                    state.set_value(node.output_key or node.id, result)
+                elif node.type == "human_gate":
+                    result = self._run_human_gate(state, node_id)
+                else:  # pragma: no cover - pydantic prevents this
+                    raise ValueError(f"Unsupported node type: {node.type}")
+
+                state.emit("node.completed", f"Node {node_id} completed", node_id=node_id, result_summary=str(result)[:800])
+
+                if state.status != "running":
+                    break
+                queue.extend(self._next_nodes(state, node_id))
+
+            if state.status == "running":
+                state.status = "completed"
+            state.emit(f"run.{state.status}", f"Workflow {state.status}")
+        except Exception as exc:  # pragma: no cover - boundary safety
+            state.status = "failed"
+            state.emit("run.failed", f"Workflow failed: {exc}", error=str(exc))
+
+        return RunResult(
+            status=state.status,
+            data=state.data,
+            summaries=state.summaries,
+            events=state.events,
+            estimated_tokens_used=state.estimated_tokens_used,
+            agent_calls=state.agent_calls,
+            tool_calls=state.tool_calls,
+        )
+
+    def _run_agent_node(self, state: RunState, node_id: str) -> dict[str, Any]:
+        node = self.nodes[node_id]
+        assert node.agent_id
+        if state.agent_calls >= self.workflow.max_agent_calls:
+            self._block(state, "max_agent_calls reached")
+            return {"status": "blocked"}
+        agent = self.agents[node.agent_id]
+        context = build_agent_context(agent, state)
+        estimated = estimate_tokens(context)
+        state.estimated_tokens_used += estimated
+        state.agent_calls += 1
+        if state.token_budget and state.estimated_tokens_used > state.token_budget:
+            state.emit(
+                "budget.warning",
+                "Estimated token budget exceeded",
+                node_id=node_id,
+                estimated_tokens_used=state.estimated_tokens_used,
+                token_budget=state.token_budget,
+            )
+        state.emit("agent.called", f"Agent {agent.id} called", node_id=node_id, estimated_tokens=estimated)
+        result = self.agent_executor.run(agent, context)
+        state.set_value(node.output_key or agent.output_key or node.id, result)
+        return result
+
+    def _run_tool_node(self, state: RunState, node_id: str) -> dict[str, Any]:
+        node = self.nodes[node_id]
+        assert node.tool
+        if state.tool_calls >= self.workflow.max_tool_calls:
+            self._block(state, "max_tool_calls reached")
+            return {"status": "blocked"}
+        state.tool_calls += 1
+        args = self._resolve_inputs(node.input, state)
+        state.emit("tool.called", f"Tool {node.tool} called", node_id=node_id, args=args)
+        result = self.tools.run(
+            node.tool,
+            args,
+            {
+                "repo_root": state.repo_root,
+                "request": state.request,
+                "data": state.data,
+            },
+        )
+        state.set_value(node.output_key or node.id, result)
+        return result
+
+    def _run_human_gate(self, state: RunState, node_id: str) -> dict[str, Any]:
+        node = self.nodes[node_id]
+        approved = bool(state.data.get("approved", False) or node.input.get("auto_approve", False))
+        result = {
+            "approved": approved,
+            "reason": node.approval_reason or "Human approval gate",
+        }
+        state.set_value(node.output_key or node.id, result)
+        if not approved:
+            state.emit("approval.required", "Workflow paused for approval", node_id=node_id, **result)
+            self._block(state, "approval required")
+        return result
+
+    def _next_nodes(self, state: RunState, node_id: str) -> list[str]:
+        candidates = sorted(
+            [edge for edge in self.workflow.edges if edge.from_node == node_id],
+            key=lambda edge: edge.priority,
+            reverse=True,
+        )
+        selected: list[str] = []
+        for edge in candidates:
+            edge_key = f"{edge.from_node}->{edge.to_node}:{edge.when or ''}"
+            traversals = state.traversed_edges.get(edge_key, 0)
+            if edge.max_traversals is not None and traversals >= edge.max_traversals:
+                continue
+            if not evaluate_condition(edge.when, state.data):
+                continue
+            state.traversed_edges[edge_key] = traversals + 1
+            selected.append(edge.to_node)
+            state.emit("edge.selected", f"{edge.from_node} -> {edge.to_node}", from_node=edge.from_node, to_node=edge.to_node, when=edge.when)
+        return selected
+
+    def _resolve_inputs(self, value: Any, state: RunState) -> Any:
+        if isinstance(value, str) and value.startswith("$"):
+            return state.data.get(value[1:])
+        if isinstance(value, dict):
+            return {key: self._resolve_inputs(item, state) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._resolve_inputs(item, state) for item in value]
+        return value
+
+    def _block(self, state: RunState, reason: str) -> None:
+        state.status = "blocked"
+        state.emit("run.blocked", reason, node_id=state.current_node)
+
+
+def run_workflow(
+    workflow: WorkflowSpec,
+    request: str,
+    repo_root: str,
+    initial_data: dict[str, Any] | None = None,
+    event_sink: Any | None = None,
+) -> RunResult:
+    return WorkflowRunner(workflow, event_sink=event_sink).run(request=request, repo_root=repo_root, initial_data=initial_data)

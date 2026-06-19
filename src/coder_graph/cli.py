@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 from pprint import pprint
@@ -14,6 +15,8 @@ from .specs import load_workflow_spec, summarize_workflow_spec
 from .state import CodingState
 from .tools.filesystem import resolve_existing_dir, summarize_project
 from .workflow_graph import write_workflow_graph
+from coder_graph_v2.core import load_workflow as load_v2_workflow
+from coder_graph_v2.runtime import run_workflow as run_v2_workflow
 
 
 def main() -> None:
@@ -36,6 +39,8 @@ def main() -> None:
     parser.add_argument("--workflow-spec", help="Load and validate a declarative workflow JSON spec.")
     parser.add_argument("--describe-workflow", action="store_true", help="Print workflow spec summary and exit.")
     parser.add_argument("--graph-only", action="store_true", help="Generate a workflow graph HTML from a workflow spec and exit.")
+    parser.add_argument("--v2-workflow", help="Run an experimental JSON-driven v2 workflow spec.")
+    parser.add_argument("--v2-approve", action="store_true", help="Approve v2 human gates for this run.")
     args = parser.parse_args()
 
     if args.provider:
@@ -44,6 +49,31 @@ def main() -> None:
         os.environ["CODER_MODEL"] = args.model
     if args.base_url:
         os.environ["CODER_BASE_URL"] = args.base_url
+
+    if args.v2_workflow:
+        workflow = load_v2_workflow(args.v2_workflow)
+        repo_root = resolve_existing_dir(args.repo)
+        result = run_v2_workflow(
+            workflow=workflow,
+            request=args.request,
+            repo_root=str(repo_root),
+            initial_data={"request": args.request, "approved": args.v2_approve},
+        )
+        print("\n=== V2 STATUS ===")
+        pprint(
+            {
+                "status": result.status,
+                "agent_calls": result.agent_calls,
+                "tool_calls": result.tool_calls,
+                "estimated_tokens_used": result.estimated_tokens_used,
+            }
+        )
+        print("\n=== V2 SUMMARIES ===")
+        print(json.dumps(result.summaries, ensure_ascii=False, indent=2))
+        print("\n=== V2 EVENTS ===")
+        for event in result.events:
+            print(f"{event.created_at.isoformat()} {event.type} {event.node_id or '-'} {event.message}")
+        return
 
     if args.workflow_spec:
         spec = load_workflow_spec(args.workflow_spec)

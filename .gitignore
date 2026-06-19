@@ -16,6 +16,7 @@ htmlcov/
 
 outputs/
 .coder_history/
+.coder_v2/
 
 dist/
 build/

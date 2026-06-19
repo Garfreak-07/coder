@@ -332,6 +332,9 @@ def _save_agent(body: dict[str, Any]) -> dict[str, Any]:
 def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
     repo = str(body.get("repo", "")).strip()
     request = str(body.get("request", "")).strip() or "Analyze this project and propose a safe improvement plan."
+    workflow = None
+    if body.get("workflow"):
+        workflow = validate_workflow_spec(body["workflow"])
     if not repo:
         return {"error": "Project path is empty. Select a project folder before running."}
     repo_root = resolve_existing_dir(repo)
@@ -349,10 +352,11 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
         "approved": True,
         "max_iterations": run_settings["max_iterations"],
     }
-    agents = [AgentCard.model_validate(agent) for agent in DEFAULT_WORKFLOW["agents"]]
+    agent_source = workflow or DEFAULT_WORKFLOW
+    agents = [AgentCard.model_validate(agent) for agent in agent_source["agents"]]
     events = RuntimeEventBus(agents=agents)
     events.emit("ui", "status", "Workflow requested", status="running", payload={"repo": repo})
-    result = build_graph(event_bus=events).invoke(state)
+    result = build_graph(event_bus=events, workflow_spec=workflow).invoke(state)
     events.emit("ui", "result", "Workflow finished", status=str(result.get("status", "unknown")))
     return {
         "plan": result.get("plan", ""),
@@ -367,6 +371,11 @@ def _run_workflow(body: dict[str, Any]) -> dict[str, Any]:
         "messages": events.dump_messages(),
         "a2a_queues": events.dump_a2a_queues(),
         "run_settings": run_settings,
+        "workflow": {
+            "id": agent_source.get("id"),
+            "name": agent_source.get("name"),
+            "edges": agent_source.get("edges", []),
+        },
     }
 
 
@@ -685,6 +694,7 @@ INDEX_HTML = r"""<!doctype html>
 
   <script>
     let current = { modules: [], workflow: null };
+    let defaultWorkflow = null;
     let savedWorkflows = [];
     let availableAgents = [];
     let capabilityCatalog = [];
@@ -732,11 +742,12 @@ INDEX_HTML = r"""<!doctype html>
       await loadCapabilities();
       current = await post("/api/analyze", { repo, query });
       if (current.workflow) {
+        defaultWorkflow = current.workflow;
         const agents = (current.workflow.agents || []).map(withClaudeCode);
         availableAgents = mergeAgents(availableAgents, agents);
         if (!canvasAgents.length) {
           canvasAgents = layoutAgents(agents);
-          agentEdges = defaultAgentEdges(canvasAgents);
+          agentEdges = [];
         }
       }
       applyLibrary(current.library || { workflows: [], agents: [] });
@@ -754,7 +765,8 @@ INDEX_HTML = r"""<!doctype html>
       document.getElementById("result").textContent = "运行中...";
       const data = await post("/api/run", {
         repo: document.getElementById("repo").value,
-        request: document.getElementById("request").value
+        request: document.getElementById("request").value,
+        workflow: currentWorkflowSpec("Current workflow")
       });
       document.getElementById("result").textContent = formatRunResult(data);
     }
@@ -763,7 +775,7 @@ INDEX_HTML = r"""<!doctype html>
       if (data.error) return data.error;
       const events = (data.events || []).map(event => `• [${event.source}] ${event.message} (${event.status || event.type})`).join("\n");
       const messages = (data.messages || []).map(message => `→ [${message.sender} -> ${message.recipient}] ${message.type}`).join("\n");
-      return `${events}\n\nAUTO SETTINGS\n${JSON.stringify(data.run_settings || {}, null, 2)}\n\nA2A MESSAGES\n${messages || "No messages"}\n\nA2A QUEUES\n${JSON.stringify(data.a2a_queues || {}, null, 2)}\n\nPLAN\n${data.plan || ""}\n\nREVIEW\n${data.review || ""}\n\nSTATUS\n${JSON.stringify(data.status || {}, null, 2)}`;
+      return `${events}\n\nWORKFLOW\n${JSON.stringify(data.workflow || {}, null, 2)}\n\nAUTO SETTINGS\n${JSON.stringify(data.run_settings || {}, null, 2)}\n\nA2A MESSAGES\n${messages || "No messages"}\n\nA2A QUEUES\n${JSON.stringify(data.a2a_queues || {}, null, 2)}\n\nPLAN\n${data.plan || ""}\n\nREVIEW\n${data.review || ""}\n\nSTATUS\n${JSON.stringify(data.status || {}, null, 2)}`;
     }
 
     function switchPage(page) {
@@ -792,6 +804,13 @@ INDEX_HTML = r"""<!doctype html>
       const spec = JSON.parse(text);
       const agents = spec.agents || (spec.id ? [spec] : []);
       availableAgents = mergeAgents(availableAgents, agents.map(withClaudeCode));
+      if (spec.agents && spec.steps && spec.edges) {
+        current.workflow = spec;
+        canvasAgents = layoutAgents((spec.agents || []).map(withClaudeCode));
+        agentEdges = visibleAgentEdges(spec.edges || [], canvasAgents);
+        workflowDirty = true;
+        renderWorkflowModes();
+      }
       renderAgents();
     }
 
@@ -982,7 +1001,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function withLocalA2ARouting(agent) {
-      const normalized = applyCapabilitiesLocally(withClaudeCode(agent));
+      const normalized = agentSpec(applyCapabilitiesLocally(withClaudeCode(agent)));
       const subscriptions = agentEdges
         .filter(edge => normalizeCanvasEdge(edge).to === normalized.id)
         .map(edge => normalizeCanvasEdge(edge).from);
@@ -1002,6 +1021,11 @@ INDEX_HTML = r"""<!doctype html>
       };
     }
 
+    function agentSpec(agent) {
+      const { x, y, ...spec } = agent;
+      return spec;
+    }
+
     function selectWorkflowMode() {
       const mode = document.getElementById("mode").value;
       if (mode === "default") {
@@ -1012,7 +1036,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!workflow) return;
       current.workflow = workflow;
       canvasAgents = (workflow.agents || []).map(withClaudeCode);
-      agentEdges = (workflow.edges || defaultAgentEdges(canvasAgents)).map(normalizeCanvasEdge);
+      agentEdges = visibleAgentEdges(workflow.edges || [], canvasAgents);
       availableAgents = mergeAgents(availableAgents, canvasAgents);
       workflowDirty = false;
       selectedAgentForEdge = null;
@@ -1021,12 +1045,13 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function resetDefaultWorkflow() {
-      const workflow = current.workflow;
+      const workflow = defaultWorkflow || current.workflow;
       if (!workflow) return;
+      current.workflow = workflow;
       workflowDirty = false;
       document.getElementById("mode").value = "default";
       canvasAgents = layoutAgents((workflow.agents || []).map(withClaudeCode));
-      agentEdges = (workflow.edges || defaultAgentEdges(canvasAgents)).map(normalizeCanvasEdge);
+      agentEdges = [];
       selectedAgentForEdge = null;
       connectMode = false;
       agentPickerOpen = false;
@@ -1039,14 +1064,14 @@ INDEX_HTML = r"""<!doctype html>
     function currentWorkflowSpec(name) {
       const base = current.workflow || {};
       const selectedMode = document.getElementById("mode").value;
-      const workflowId = selectedMode && selectedMode !== "default" ? selectedMode : `workflow-${Date.now()}`;
+      const workflowId = selectedMode && !["default", "__dirty"].includes(selectedMode) ? selectedMode : `workflow-${Date.now()}`;
       return {
         ...base,
         id: workflowId,
         name,
         description: base.description || "User-composed workflow",
         agents: canvasAgents.map(withLocalA2ARouting),
-        edges: agentEdges.map(workflowSpecEdge),
+        edges: visibleAgentEdges(agentEdges, canvasAgents).map(workflowSpecEdge),
         steps: canvasAgents.map(agent => ({
           id: agent.id,
           kind: "agent",
@@ -1201,7 +1226,7 @@ INDEX_HTML = r"""<!doctype html>
       const mode = document.getElementById("mode").value;
       if (mode === "default" && current.workflow && !canvasAgents.length) {
         canvasAgents = layoutAgents((current.workflow.agents || []).map(withClaudeCode));
-        agentEdges = defaultAgentEdges(canvasAgents);
+        agentEdges = [];
       }
       if (picker) picker.classList.toggle("open", agentPickerOpen);
       if (list) list.innerHTML = availableAgents.map(agent => agentPickerOption(agent)).join("");
@@ -1212,10 +1237,11 @@ INDEX_HTML = r"""<!doctype html>
       return agents.map((agent, index) => ({ ...withClaudeCode(agent), x: 24 + index * 180, y: 78 + (index % 2) * 28 }));
     }
 
-    function defaultAgentEdges(agents) {
-      const edges = [];
-      for (let i = 0; i < agents.length - 1; i++) edges.push({ from: agents[i].id, to: agents[i + 1].id });
-      return edges;
+    function visibleAgentEdges(edges, agents) {
+      const ids = new Set(agents.map(agent => agent.id));
+      return (edges || [])
+        .map(normalizeCanvasEdge)
+        .filter(edge => ids.has(edge.from) && ids.has(edge.to));
     }
 
     function agentPickerOption(agent) {

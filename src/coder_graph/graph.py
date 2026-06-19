@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from langgraph.graph import END, START, StateGraph
 
 from .nodes import (
@@ -17,18 +19,18 @@ from .nodes import (
 from .state import CodingState
 
 
-def build_graph(event_bus=None):
+def build_graph(event_bus=None, workflow_spec: dict[str, Any] | None = None):
     graph = StateGraph(CodingState)
 
-    graph.add_node("intake", _with_events("intake", intake_node, event_bus))
-    graph.add_node("scan_repo", _with_events("scan_repo", scan_repo_node, event_bus))
-    graph.add_node("module_map", _with_events("module_map", module_map_node, event_bus))
-    graph.add_node("plan", _with_events("codex_planner", plan_node, event_bus))
-    graph.add_node("approval", _with_events("approval", approval_node, event_bus))
-    graph.add_node("execute", _with_events("execute", execute_node, event_bus))
-    graph.add_node("check", _with_events("check", check_node, event_bus))
-    graph.add_node("review", _with_events("codex_planner", review_node, event_bus))
-    graph.add_node("blocked", _with_events("blocked", lambda state: state, event_bus))
+    graph.add_node("intake", _with_events("intake", intake_node, event_bus, workflow_spec))
+    graph.add_node("scan_repo", _with_events("scan_repo", scan_repo_node, event_bus, workflow_spec))
+    graph.add_node("module_map", _with_events("module_map", module_map_node, event_bus, workflow_spec))
+    graph.add_node("plan", _with_events("codex_planner", plan_node, event_bus, workflow_spec))
+    graph.add_node("approval", _with_events("approval", approval_node, event_bus, workflow_spec))
+    graph.add_node("execute", _with_events("cc_executor", execute_node, event_bus, workflow_spec))
+    graph.add_node("check", _with_events("cc_tester", check_node, event_bus, workflow_spec))
+    graph.add_node("review", _with_events("codex_planner", review_node, event_bus, workflow_spec))
+    graph.add_node("blocked", _with_events("blocked", lambda state: state, event_bus, workflow_spec))
 
     graph.add_edge(START, "intake")
     graph.add_edge("intake", "scan_repo")
@@ -61,7 +63,7 @@ def build_graph(event_bus=None):
     return graph.compile()
 
 
-def _with_events(name, fn, event_bus):
+def _with_events(name, fn, event_bus, workflow_spec=None):
     if event_bus is None:
         return fn
 
@@ -70,13 +72,54 @@ def _with_events(name, fn, event_bus):
         try:
             result = fn(state)
             event_bus.emit(name, "status", f"{name} completed", status=str(result.get("status", "ok")))
-            _emit_a2a_message(name, state, result, event_bus)
+            if not _emit_workflow_edge_messages(name, result, event_bus, workflow_spec):
+                _emit_a2a_message(name, state, result, event_bus)
             return result
         except Exception as exc:
             event_bus.emit(name, "error", f"{name} failed: {exc}", status="error")
             raise
 
     return wrapped
+
+
+def _emit_workflow_edge_messages(name, result, event_bus, workflow_spec: dict[str, Any] | None) -> bool:
+    """Emit local A2A messages from a user-supplied workflow spec.
+
+    The compiled LangGraph remains the conservative built-in coding flow. This
+    layer makes canvas edges meaningful for routing/telemetry without pretending
+    arbitrary user agents are executable Python nodes yet.
+    """
+
+    if not workflow_spec:
+        return False
+
+    edges = workflow_spec.get("edges") or []
+    matched_edges = [edge for edge in edges if edge.get("source") == name]
+    if not matched_edges:
+        return True
+
+    for edge in matched_edges:
+        target = edge.get("target")
+        if not target:
+            continue
+        event_bus.send_message(
+            name,
+            target,
+            f"{name}.result",
+            action="handoff",
+            payload={
+                "status": result.get("status"),
+                "changed_files": result.get("changed_files", []),
+                "check_passed": result.get("check_passed"),
+                "condition": edge.get("condition"),
+            },
+            metadata={
+                "protocol": "local-a2a-v1",
+                "handoff": "canvas_edge",
+                "workflow_id": workflow_spec.get("id"),
+            },
+        )
+    return True
 
 
 def _emit_a2a_message(name, state, result, event_bus) -> None:
