@@ -6,6 +6,7 @@ import type {
   HealthStatus,
   LibraryIndex,
   LiveRunDetail,
+  PreflightResult,
   RunEvent,
   RunEventsPage,
   RunSummaryItem,
@@ -99,6 +100,14 @@ export async function saveWorkflow(workflow: WorkflowSpec): Promise<WorkflowSpec
     body: JSON.stringify(workflow)
   });
   return payload.workflow;
+}
+
+export function validateWorkflow(workflow: WorkflowSpec): Promise<PreflightResult> {
+  return requestJson<PreflightResult>("/api/v2/workflows/validate", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(workflow)
+  });
 }
 
 export async function startLiveRun(input: {

@@ -305,6 +305,10 @@ class WorkflowRunner:
         state.tool_calls += 1
         args = self._resolve_inputs(node.input, state)
         tool_name = "mcp_call" if node.type == "mcp_tool" else node.tool
+        if tool_name not in self.tools.names():
+            message = f"Tool {node.tool!r} is not registered."
+            state.status = "failed"
+            return {"status": "failed", "error": message}
         if node.type == "mcp_tool":
             args = dict(args)
             args.setdefault("__mcp_tool", node.tool)

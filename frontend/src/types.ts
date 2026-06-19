@@ -75,6 +75,20 @@ export interface WorkflowSpec {
   stop_conditions: string[];
 }
 
+export interface PreflightIssue {
+  level: "error" | "warning" | string;
+  code: string;
+  message: string;
+  target_type: string;
+  target_id?: string | null;
+}
+
+export interface PreflightResult {
+  status: "pass" | "warning" | "error" | string;
+  issues: PreflightIssue[];
+  summary: Record<string, unknown>;
+}
+
 export interface WorkflowSummary {
   id: string;
   version?: string;

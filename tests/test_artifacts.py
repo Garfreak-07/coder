@@ -154,6 +154,42 @@ class ArtifactStorageTests(unittest.TestCase):
             self.assertEqual(loaded["files"][0]["path"], "sample.txt")
             self.assertIn("-before", loaded["files"][0]["diff"])
 
+    def test_large_tool_result_values_become_blobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            large_output = "check output\n" + ("x" * 9000)
+            result = RunResult(
+                status="completed",
+                data={},
+                summaries={},
+                events=[
+                    RunEvent(
+                        type="tool.result",
+                        message="tool result",
+                        node_id="check",
+                        payload={
+                            "tool": "run_check",
+                            "result": {"status": "completed", "output": large_output},
+                        },
+                    )
+                ],
+                estimated_tokens_used=0,
+                agent_calls=0,
+                tool_calls=1,
+            )
+
+            store = RunStore(Path(tmp) / ".coder")
+            stored = store.save("workflow", "/repo", "check", result)
+            event_page = store.get_events(stored.id)
+            stored_tool_result = next(event for event in event_page["events"] if event["type"] == "tool.result")
+            tool_result_id = stored_tool_result["payload"]["tool_result_id"]
+
+            loaded = store.get_tool_result(stored.id, tool_result_id)
+            output_ref = loaded["output"]
+            self.assertIn("blob_id", output_ref)
+            self.assertEqual(output_ref["size_chars"], len(large_output))
+            blob = store.get_blob(output_ref["blob_id"])
+            self.assertEqual(blob["content"], large_output)
+
 
 class WorkflowPreflightTests(unittest.TestCase):
     def test_preflight_reports_unknown_tool_and_unreachable_node(self) -> None:
@@ -180,6 +216,30 @@ class WorkflowPreflightTests(unittest.TestCase):
         codes = {issue["code"] for issue in result["issues"]}
         self.assertIn("unknown_tool", codes)
         self.assertIn("unreachable_node", codes)
+
+    def test_runner_rejects_unknown_tool_at_runtime(self) -> None:
+        workflow = WorkflowSpec.model_validate(
+            {
+                "id": "runtime-tool-guard-test",
+                "name": "Runtime tool guard test",
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "tool", "type": "tool", "tool": "missing_tool"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "tool"},
+                    {"from": "tool", "to": "end"},
+                ],
+            }
+        )
+
+        result = WorkflowRunner(workflow).run("run missing tool", "/repo")
+
+        self.assertEqual(result.status, "failed")
+        completed = [event for event in result.events if event.type == "node.completed" and event.node_id == "tool"]
+        self.assertEqual(completed[0].payload["result_status"], "failed")
+        self.assertTrue(any(event.type == "run.failed" for event in result.events))
 
 
 def _single_agent_workflow(artifact_type: str) -> WorkflowSpec:

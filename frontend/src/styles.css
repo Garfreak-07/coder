@@ -452,6 +452,59 @@ label {
   white-space: pre-wrap;
 }
 
+.artifact-specific {
+  display: grid;
+  gap: 10px;
+}
+
+.artifact-kv {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.artifact-kv div {
+  background: #07111f;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.artifact-kv span {
+  color: #7b8797;
+  font-size: 11px;
+}
+
+.artifact-kv strong {
+  color: #d1d5db;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 6px;
+}
+
+.artifact-list > div:not(.panel-subtitle):not(.muted) {
+  background: #07111f;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  color: #cbd5e1;
+  display: grid;
+  font-size: 12px;
+  gap: 4px;
+  padding: 8px;
+}
+
+.artifact-list code {
+  color: #93c5fd;
+  overflow-wrap: anywhere;
+}
+
 .diff-block pre,
 .patch-panel pre {
   background: #07111f;
@@ -492,6 +545,116 @@ label {
 
 .status-pill.bad {
   background: #7f1d1d;
+}
+
+.modal-backdrop {
+  align-items: center;
+  background: rgba(2, 6, 23, 0.78);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 20;
+}
+
+.modal-card {
+  background: #151c27;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  display: grid;
+  gap: 14px;
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 16px;
+  width: min(760px, 100%);
+}
+
+.modal-heading {
+  align-items: start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.modal-heading h2 {
+  color: #f8fafc;
+  font-size: 22px;
+  margin: 2px 0 0;
+}
+
+.preflight-summary {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.preflight-section {
+  display: grid;
+  gap: 8px;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  color: #cbd5e1;
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.preflight-tool-list,
+.preflight-issues {
+  display: grid;
+  gap: 8px;
+}
+
+.tool-risk-row {
+  align-items: center;
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  color: #cbd5e1;
+  display: grid;
+  font-size: 12px;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.preflight-issue {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  color: #cbd5e1;
+  display: grid;
+  font-size: 12px;
+  gap: 4px;
+  padding: 8px;
+}
+
+.preflight-issue.error {
+  border-color: #7f1d1d;
+}
+
+.preflight-issue.warning {
+  border-color: #713f12;
+}
+
+.preflight-issue small {
+  color: #7b8797;
+}
+
+.modal-actions {
+  justify-content: end;
 }
 
 .event-row {

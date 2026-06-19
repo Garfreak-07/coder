@@ -783,8 +783,17 @@ Implemented:
 - on-demand stored Artifact and Blob API endpoints;
 - tool result events with compact persisted references and on-demand stored
   tool result loading for patch preview, apply, and check output;
+- content-addressed Blob storage for large stored tool result values such as
+  diffs, check output, and raw tool output;
+- artifact-specific UI sections for PlanArtifact, PatchArtifact, and
+  ReviewArtifact summaries/details;
+- runtime tool allowlist guard before executing tool nodes;
 - Artifact cards in the run event panel;
 - lightweight `POST /api/v2/workflows/validate` preflight API;
+- run-start Preflight UI that blocks errors and requires confirmation for
+  warnings while showing issues, permissions, scopes, tool risk, and budget
+  summaries;
+- GitHub Actions CI for Python tests, Python compile checks, and frontend build;
 - lazy loading for additional stored run events in the UI;
 - FastAPI runtime API;
 - live background runs;
@@ -798,21 +807,16 @@ Implemented:
 Near-term work should prioritize the `Coder v0.3 - Trust Runtime` foundation:
 
 1. Kernel contracts:
-   - wire workflow preflight into the UI before live run start;
-   - show preflight errors, warnings, provider status, permission summary, and
-     estimated token budget;
+   - add provider status and connection checks to the run-start Preflight UI;
    - enforce artifact schema failures in live recovery paths as clearly as
      synchronous runs.
 2. Storage separation:
-   - continue moving large patch previews, check logs, snapshots, and raw tool
-     output into Blob storage and object references, building on stored tool
-     result references;
+   - continue moving snapshots and any remaining raw outputs into Blob storage
+     and object references;
    - add a lightweight run index so listing runs does not require scanning run
      directories;
    - add orphan blob cleanup when deleting historical runs.
 3. Default workflow productization:
-   - render PlanArtifact, PatchArtifact, and ReviewArtifact with artifact-specific
-     UI sections;
    - strengthen Patch Approval to show diff, affected files, rollback status,
      and related artifact/context links;
    - keep all file writes on the patch preview -> approval -> snapshot -> apply

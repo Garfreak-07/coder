@@ -379,7 +379,8 @@ class RunStore:
                 tool_result_id = self._safe_object_id(raw_tool_result_id)
             except KeyError:
                 tool_result_id = self._safe_object_id(event.id)
-            result_json = json.dumps(result, ensure_ascii=False, indent=2)
+            stored_result = self._externalize_large_values(result)
+            result_json = json.dumps(stored_result, ensure_ascii=False, indent=2)
             (tool_result_dir / f"{tool_result_id}.json").write_text(result_json, encoding="utf-8")
             compact_payload = {
                 "tool_result_id": tool_result_id,

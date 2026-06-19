@@ -15,6 +15,7 @@ import {
 } from "@xyflow/react";
 import {
   approveLiveRun,
+  getBlob,
   getArtifact,
   getContextPacket,
   getHealth,
@@ -31,7 +32,8 @@ import {
   saveAgent,
   saveWorkflow,
   startLiveRun,
-  subscribeRunEvents
+  subscribeRunEvents,
+  validateWorkflow
 } from "./api";
 import { codingWorkbenchWorkflow } from "./examples";
 import { nodeTypeDescriptions, nodeTypeLabels, zhCN } from "./i18n";
@@ -45,6 +47,7 @@ import type {
   LoopMode,
   NodeSpec,
   NodeType,
+  PreflightResult,
   RunEvent,
   RunSummaryItem,
   StoredRunDetail,
@@ -54,6 +57,15 @@ import type {
 const nodeTypes: NodeType[] = ["start", "agent", "tool", "mcp_tool", "condition", "loop", "human_gate", "end"];
 const loopModes: LoopMode[] = ["retry_until", "while", "for_each"];
 const t = zhCN;
+
+interface PendingPreflightRun {
+  repo: string;
+  request: string;
+  workflow: WorkflowSpec;
+  approved: boolean;
+  scopes: string[];
+  result: PreflightResult;
+}
 
 export function App() {
   const [library, setLibrary] = useState<LibraryIndex>({ agents: [], workflows: [] });
@@ -79,6 +91,8 @@ export function App() {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [selectedRunDetail, setSelectedRunDetail] = useState<StoredRunDetail | LiveRunDetail | null>(null);
   const [selectedRunKind, setSelectedRunKind] = useState<"live" | "stored" | null>(null);
+  const [pendingPreflight, setPendingPreflight] = useState<PendingPreflightRun | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
 
   const selectedNode = useMemo(
     () => workflow.nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -421,20 +435,49 @@ export function App() {
   );
 
   async function runWorkflow(approvedOverride = approved) {
+    setPreflightLoading(true);
+    setStatus("正在运行工作流 Preflight...");
+    try {
+      const parsed = JSON.parse(jsonText) as WorkflowSpec;
+      const scopes = linesToList(scopesText);
+      const result = await validateWorkflow(parsed);
+      setPendingPreflight({
+        repo,
+        request,
+        workflow: parsed,
+        approved: approvedOverride,
+        scopes,
+        result
+      });
+      if (result.status === "error") {
+        setStatus("Preflight 发现错误，运行已阻止。");
+      } else if (result.status === "warning") {
+        setStatus("Preflight 发现警告，请确认后再启动。");
+      } else {
+        setStatus("Preflight 通过，请确认启动。");
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPreflightLoading(false);
+    }
+  }
+
+  async function startWorkflowRun(input: PendingPreflightRun) {
     setEvents([]);
     setEventCursor(0);
     setEventHasMore(false);
     setEventsLoadingMore(false);
     setActiveRunId(null);
-    setStatus(approvedOverride ? "Starting approved live run..." : "Starting live run...");
+    setPendingPreflight(null);
+    setStatus(input.approved ? "Starting approved live run..." : "Starting live run...");
     try {
-      const parsed = JSON.parse(jsonText) as WorkflowSpec;
       const run = await startLiveRun({
-        repo,
-        request,
-        workflow: parsed,
-        approved: approvedOverride,
-        scopes: linesToList(scopesText)
+        repo: input.repo,
+        request: input.request,
+        workflow: input.workflow,
+        approved: input.approved,
+        scopes: input.scopes
       });
       setActiveRunId(run.run_id);
       setSelectedRunKind("live");
@@ -545,7 +588,9 @@ export function App() {
             <input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} />
             {t.run.preApprove}
           </label>
-          <button onClick={() => runWorkflow()}>{t.run.start}</button>
+          <button onClick={() => runWorkflow()} disabled={preflightLoading}>
+            {preflightLoading ? t.preflight.running : t.run.start}
+          </button>
         </section>
 
         <section className="panel">
@@ -739,8 +784,164 @@ export function App() {
           )}
         </section>
       </aside>
+      {pendingPreflight && (
+        <PreflightModal
+          pending={pendingPreflight}
+          onCancel={() => setPendingPreflight(null)}
+          onConfirm={() => startWorkflowRun(pendingPreflight)}
+        />
+      )}
     </div>
   );
+}
+
+function PreflightModal({
+  pending,
+  onCancel,
+  onConfirm
+}: {
+  pending: PendingPreflightRun;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { result, workflow } = pending;
+  const facts = preflightFacts(workflow, pending.scopes, result);
+  const errors = result.issues.filter((issue) => issue.level === "error");
+  const warnings = result.issues.filter((issue) => issue.level === "warning");
+  const canStart = result.status !== "error";
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="modal-card preflight-modal" role="dialog" aria-modal="true" aria-labelledby="preflight-title">
+        <div className="modal-heading">
+          <div>
+            <div className="eyebrow">{t.preflight.eyebrow}</div>
+            <h2 id="preflight-title">{t.preflight.title}</h2>
+          </div>
+          <span className={`status-pill ${statusClass(result.status === "pass" ? "run.completed" : result.status === "error" ? "run.failed" : "run.blocked")}`}>
+            {preflightStatusLabel(result.status)}
+          </span>
+        </div>
+
+        <div className="summary-grid preflight-summary">
+          <span>{t.preflight.nodes(facts.nodes, facts.edges)}</span>
+          <span>{t.preflight.reachable(facts.reachableNodes)}</span>
+          <span>{t.preflight.agents(facts.agents)}</span>
+          <span>{t.preflight.tokenBudget(facts.tokenBudget)}</span>
+          <span>{t.preflight.stepBudget(facts.maxSteps)}</span>
+          <span>{t.preflight.toolBudget(facts.maxToolCalls)}</span>
+        </div>
+
+        <div className="preflight-section">
+          <div className="panel-subtitle">{t.preflight.permissions}</div>
+          <div className="summary-grid">
+            <span>{t.preflight.editAgents(facts.editAgents)}</span>
+            <span>{t.preflight.commandAgents(facts.commandAgents)}</span>
+            <span>{t.preflight.networkAgents(facts.networkAgents)}</span>
+            <span>{t.preflight.approvalAgents(facts.approvalAgents)}</span>
+          </div>
+        </div>
+
+        <div className="preflight-section">
+          <div className="panel-subtitle">{t.preflight.scopes}</div>
+          <div className="chip-row">
+            {pending.scopes.length === 0 ? (
+              <span className="muted">{t.preflight.noScopes}</span>
+            ) : (
+              pending.scopes.map((scope) => <span className="chip" key={scope}>{scope}</span>)
+            )}
+          </div>
+        </div>
+
+        <div className="preflight-section">
+          <div className="panel-subtitle">{t.preflight.tools}</div>
+          {facts.tools.length === 0 ? (
+            <div className="muted">{t.preflight.noTools}</div>
+          ) : (
+            <div className="preflight-tool-list">
+              {facts.tools.map((tool) => (
+                <div className="tool-risk-row" key={`${tool.nodeId}-${tool.name}`}>
+                  <span>{tool.name}</span>
+                  <span>{tool.nodeId}</span>
+                  <span className={`status-pill ${tool.risk === "high" ? "bad" : tool.risk === "medium" ? "warn" : "good"}`}>
+                    {tool.risk}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="preflight-section">
+          <div className="panel-subtitle">{t.preflight.issues}</div>
+          {result.issues.length === 0 ? (
+            <div className="muted">{t.preflight.noIssues}</div>
+          ) : (
+            <div className="preflight-issues">
+              {result.issues.map((issue, index) => (
+                <div className={`preflight-issue ${issue.level}`} key={`${issue.code}-${issue.target_id ?? index}`}>
+                  <strong>{issue.level.toUpperCase()} · {issue.code}</strong>
+                  <span>{issue.message}</span>
+                  <small>{issue.target_type}{issue.target_id ? `: ${issue.target_id}` : ""}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {errors.length > 0 && <div className="muted">{t.preflight.errorsBlock(errors.length)}</div>}
+        {warnings.length > 0 && errors.length === 0 && <div className="muted">{t.preflight.warningsConfirm(warnings.length)}</div>}
+
+        <div className="button-row modal-actions">
+          <button onClick={onCancel}>{canStart ? t.preflight.cancel : t.preflight.close}</button>
+          <button onClick={onConfirm} disabled={!canStart}>{t.preflight.confirm}</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function preflightStatusLabel(status: string): string {
+  if (status === "pass") return t.preflight.pass;
+  if (status === "warning") return t.preflight.warning;
+  if (status === "error") return t.preflight.error;
+  return status;
+}
+
+function preflightFacts(workflow: WorkflowSpec, scopes: string[], result: PreflightResult) {
+  const summary = result.summary ?? {};
+  const toolNodes = workflow.nodes.filter((node) => node.type === "tool" || node.type === "mcp_tool");
+  const agents = workflow.agents;
+  return {
+    nodes: numberFromSummary(summary.nodes, workflow.nodes.length),
+    edges: numberFromSummary(summary.edges, workflow.edges.length),
+    agents: numberFromSummary(summary.agents, workflow.agents.length),
+    reachableNodes: numberFromSummary(summary.reachable_nodes, 0),
+    maxSteps: numberFromSummary(summary.max_steps, workflow.max_steps),
+    maxToolCalls: numberFromSummary(summary.max_tool_calls, workflow.max_tool_calls),
+    tokenBudget: summary.token_budget == null ? "none" : String(summary.token_budget),
+    editAgents: agents.filter((agent) => agent.permissions.edit_files).length,
+    commandAgents: agents.filter((agent) => agent.permissions.run_commands).length,
+    networkAgents: agents.filter((agent) => agent.permissions.use_network).length,
+    approvalAgents: agents.filter((agent) => agent.permissions.requires_approval).length,
+    scopes,
+    tools: toolNodes.map((node) => ({
+      nodeId: node.id,
+      name: node.type === "mcp_tool" ? `MCP: ${node.tool ?? "unconfigured"}` : node.tool ?? "unconfigured",
+      risk: toolRisk(node)
+    }))
+  };
+}
+
+function numberFromSummary(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function toolRisk(node: NodeSpec): "low" | "medium" | "high" {
+  if (node.type === "mcp_tool") return "high";
+  if (node.tool === "apply_patch" || node.tool === "rollback_patch") return "high";
+  if (node.tool === "run_check" || node.tool === "propose_patch") return "medium";
+  return "low";
 }
 
 function ContextPacketCard({ event, runId }: { event: RunEvent; runId: string | null }) {
@@ -863,7 +1064,7 @@ function ArtifactCard({ event, runId }: { event: RunEvent; runId: string | null 
         <span>{artifactId ?? "unknown id"}</span>
         <span>size: {String(payload?.size_chars ?? "unknown")}</span>
       </div>
-      {summary && <pre>{JSON.stringify(summary, null, 2)}</pre>}
+      <ArtifactPreview artifactType={artifactType} artifact={loadedArtifact ?? summary} />
       {artifactId && runId && (
         <button onClick={loadArtifact} disabled={loading}>
           {loading ? "Loading..." : "Load full artifact"}
@@ -878,6 +1079,146 @@ function ArtifactCard({ event, runId }: { event: RunEvent; runId: string | null 
       )}
     </div>
   );
+}
+
+function ArtifactPreview({
+  artifactType,
+  artifact
+}: {
+  artifactType: string;
+  artifact: Record<string, unknown> | null;
+}) {
+  if (!artifact) {
+    return <div className="muted">No artifact summary available.</div>;
+  }
+  if (artifactType === "plan_artifact") {
+    const targetFiles = stringList(artifact.target_files);
+    const steps = stringList(artifact.implementation_steps);
+    const risks = stringList(artifact.risks);
+    const checks = stringList(artifact.recommended_checks ?? artifact.checks);
+    return (
+      <div className="artifact-specific">
+        <div className="muted">{String(artifact.summary ?? "")}</div>
+        <KeyValueList
+          items={[
+            ["Target files", targetFiles.join(", ") || "none"],
+            ["Steps", steps.length > 0 ? String(steps.length) : String(artifact.steps ?? 0)],
+            ["Risks", risks.length > 0 ? String(risks.length) : String(artifact.risks ?? 0)],
+            ["Checks", checks.join(", ") || "none"]
+          ]}
+        />
+        {steps.length > 0 && <InlineList title="Implementation steps" values={steps} />}
+        {risks.length > 0 && <InlineList title="Risks" values={risks} />}
+      </div>
+    );
+  }
+  if (artifactType === "patch_artifact") {
+    const changedFiles = stringList(artifact.changed_files);
+    const risks = stringList(artifact.risks);
+    const patches = Array.isArray(artifact.patches) ? artifact.patches : [];
+    return (
+      <div className="artifact-specific">
+        <div className="muted">{String(artifact.implementation_summary ?? artifact.summary ?? "")}</div>
+        <KeyValueList
+          items={[
+            ["Changed files", changedFiles.join(", ") || "none"],
+            ["Patches", String(patches.length || artifact.patches || 0)],
+            ["Risks", risks.length > 0 ? String(risks.length) : String(artifact.risks ?? 0)],
+            ["Suggested check", String(artifact.suggested_check_command ?? "none")]
+          ]}
+        />
+        {patches.length > 0 && <PatchArtifactList patches={patches} />}
+        {risks.length > 0 && <InlineList title="Risks" values={risks} />}
+      </div>
+    );
+  }
+  if (artifactType === "review_artifact") {
+    const evidence = stringList(artifact.evidence);
+    const issues = stringList(artifact.issues);
+    return (
+      <div className="artifact-specific">
+        <KeyValueList
+          items={[
+            ["Status", String(artifact.status ?? "unknown")],
+            ["Risk", String(artifact.risk_level ?? "unknown")],
+            ["Issues", issues.length > 0 ? String(issues.length) : String(artifact.issues ?? 0)],
+            ["Action", String(artifact.recommended_action ?? "none")]
+          ]}
+        />
+        {issues.length > 0 && <InlineList title="Issues" values={issues} />}
+        {evidence.length > 0 && <InlineList title="Evidence" values={evidence} />}
+      </div>
+    );
+  }
+  return <pre>{JSON.stringify(artifact, null, 2)}</pre>;
+}
+
+function KeyValueList({ items }: { items: [string, string][] }) {
+  return (
+    <div className="artifact-kv">
+      {items.map(([label, value]) => (
+        <div key={label}>
+          <span>{label}</span>
+          <strong>{value}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InlineList({ title, values }: { title: string; values: string[] }) {
+  return (
+    <div className="artifact-list">
+      <div className="panel-subtitle">{title}</div>
+      {values.map((value, index) => (
+        <div key={`${title}-${index}`}>{value}</div>
+      ))}
+    </div>
+  );
+}
+
+function PatchArtifactList({ patches }: { patches: unknown[] }) {
+  return (
+    <div className="artifact-list">
+      <div className="panel-subtitle">Patches</div>
+      {patches.slice(0, 6).map((patch, index) => {
+        const value = objectValue(patch);
+        const diff = value ? value.diff : null;
+        return (
+          <div key={`patch-${index}`}>
+            <strong>{String(value?.path ?? `patch ${index + 1}`)}</strong>
+            <span>{String(value?.action ?? "change")}</span>
+            {typeof diff === "string" && <code>{diff.slice(0, 180)}</code>}
+            {objectValue(diff) && <code>{String(objectValue(diff)?.blob_id ?? "blob reference")}</code>}
+          </div>
+        );
+      })}
+      {patches.length > 6 && <div className="muted">+ {patches.length - 6} more patches</div>}
+    </div>
+  );
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => (typeof item === "string" ? item : JSON.stringify(item)));
+}
+
+async function hydrateBlobRefs(value: unknown, runId: string): Promise<unknown> {
+  const object = objectValue(value);
+  if (object?.blob_id && typeof object.blob_id === "string" && typeof object.size_chars === "number") {
+    const blob = await getBlob(runId, object.blob_id);
+    return blob.content;
+  }
+  if (Array.isArray(value)) {
+    return Promise.all(value.map((item) => hydrateBlobRefs(item, runId)));
+  }
+  if (object) {
+    const entries = await Promise.all(
+      Object.entries(object).map(async ([key, item]) => [key, await hydrateBlobRefs(item, runId)] as const)
+    );
+    return Object.fromEntries(entries);
+  }
+  return value;
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -912,9 +1253,11 @@ function PatchPanel({
     const missing = toolResultIds.filter((id) => !loadedToolResults[id] && !toolResultErrors[id]);
     for (const id of missing) {
       getToolResult(runId, id)
-        .then((detail) => {
+        .then(async (detail) => {
           if (cancelled) return;
-          setLoadedToolResults((current) => ({ ...current, [id]: detail.result }));
+          const hydrated = await hydrateBlobRefs(detail.result, runId);
+          if (cancelled) return;
+          setLoadedToolResults((current) => ({ ...current, [id]: hydrated as Record<string, unknown> }));
         })
         .catch((error) => {
           if (cancelled) return;
