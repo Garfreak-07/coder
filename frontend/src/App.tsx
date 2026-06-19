@@ -38,6 +38,7 @@ import type {
   HealthStatus,
   LibraryIndex,
   LiveRunDetail,
+  LoopMode,
   NodeSpec,
   NodeType,
   RunEvent,
@@ -46,7 +47,8 @@ import type {
   WorkflowSpec
 } from "./types";
 
-const nodeTypes: NodeType[] = ["start", "agent", "tool", "mcp_tool", "condition", "human_gate", "end"];
+const nodeTypes: NodeType[] = ["start", "agent", "tool", "mcp_tool", "condition", "loop", "human_gate", "end"];
+const loopModes: LoopMode[] = ["retry_until", "while", "for_each"];
 const t = zhCN;
 
 export function App() {
@@ -231,7 +233,8 @@ export function App() {
           ...(type === "agent" ? { agent_id: current.agents[0]?.id ?? "agent_id" } : {}),
           ...(type === "tool" ? { tool: "project_index" } : {}),
           ...(type === "mcp_tool" ? { tool: "tool_name", input: { server_command: "" } } : {}),
-          ...(type === "condition" ? { condition: "state.value == True" } : {})
+          ...(type === "condition" ? { condition: "state.value == True" } : {}),
+          ...(type === "loop" ? { loop_mode: "retry_until" as LoopMode, condition: "review.status == 'done'", max_iterations: 3 } : {})
         }
       ]
     }));
@@ -649,7 +652,8 @@ export function App() {
                   {event.node_id && <code>{event.node_id}</code>}
                 </div>
                 <span>{event.message ?? ""}</span>
-                {event.payload && Object.keys(event.payload).length > 0 && (
+                {event.type === "agent.context_packet" && <ContextPacketCard packet={event.payload?.packet} />}
+                {event.type !== "agent.context_packet" && event.payload && Object.keys(event.payload).length > 0 && (
                   <pre>{JSON.stringify(event.payload, null, 2)}</pre>
                 )}
               </div>
@@ -659,6 +663,54 @@ export function App() {
       </aside>
     </div>
   );
+}
+
+function ContextPacketCard({ packet }: { packet: unknown }) {
+  if (!packet || typeof packet !== "object" || Array.isArray(packet)) return null;
+  const value = packet as Record<string, unknown>;
+  const agent = objectValue(value.agent);
+  const token = objectValue(value.token_estimate);
+  const project = objectValue(value.project_context);
+  const loop = objectValue(value.loop);
+  const selectedKeys = Array.isArray(value.selected_state_keys) ? value.selected_state_keys : [];
+  const tools = Array.isArray(value.allowed_tools) ? value.allowed_tools : [];
+
+  return (
+    <div className="context-packet-card">
+      <div className="panel-subtitle">ContextPacket</div>
+      <div className="summary-grid">
+        <span>agent: {String(agent?.id ?? "unknown")}</span>
+        <span>node: {String(value.node_id ?? "unknown")}</span>
+        <span>tokens: {String(token?.packet ?? "unknown")}</span>
+        <span>budget: {String(token?.budget ?? "none")}</span>
+      </div>
+      <div className="muted">Task: {String(value.task ?? "")}</div>
+      <div className="muted">Repo: {String(project?.repo_root ?? "")}</div>
+      {loop && (
+        <div className="approval-card">
+          <div className="panel-subtitle">Loop</div>
+          <div className="summary-grid">
+            <span>{String(loop.node_id ?? "loop")}</span>
+            <span>iteration {String(loop.iteration ?? 0)}</span>
+            <span>{loop["continue"] ? "continue" : "stopped"}</span>
+            <span>{String(loop.break_reason ?? "no break")}</span>
+          </div>
+        </div>
+      )}
+      <div className="summary-grid">
+        <span>state keys: {selectedKeys.map(String).join(", ") || "none"}</span>
+        <span>tools: {tools.map(String).join(", ") || "none"}</span>
+      </div>
+      <details>
+        <summary>查看完整上下文包</summary>
+        <pre>{JSON.stringify(value, null, 2)}</pre>
+      </details>
+    </div>
+  );
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function PatchPanel({
@@ -1017,6 +1069,64 @@ function NodeInspector({
           <input value={node.condition ?? ""} onChange={(event) => onChange({ condition: event.target.value })} />
         </label>
       )}
+      {node.type === "loop" && (
+        <>
+          <label>
+            {t.forms.loopMode}
+            <select value={node.loop_mode ?? "retry_until"} onChange={(event) => onChange({ loop_mode: event.target.value as LoopMode })}>
+              {loopModes.map((mode) => (
+                <option key={mode} value={mode}>
+                  {mode}
+                </option>
+              ))}
+            </select>
+            <span className="field-help">
+              retry_until 在条件为 true 时退出；while 在条件为 false 时退出；for_each 遍历列表输入键。连线条件通常使用
+              loop_output.should_continue。
+            </span>
+          </label>
+          {(node.loop_mode ?? "retry_until") !== "for_each" && (
+            <label>
+              {t.forms.condition}
+              <input value={node.condition ?? ""} onChange={(event) => onChange({ condition: event.target.value })} />
+            </label>
+          )}
+          {(node.loop_mode ?? "retry_until") === "for_each" && (
+            <>
+              <label>
+                {t.forms.itemsKey}
+                <input value={node.items_key ?? ""} onChange={(event) => onChange({ items_key: event.target.value })} />
+              </label>
+              <label>
+                {t.forms.itemKey}
+                <input value={node.item_key ?? ""} onChange={(event) => onChange({ item_key: event.target.value })} />
+              </label>
+            </>
+          )}
+          <label>
+            {t.forms.maxIterations}
+            <input
+              type="number"
+              min={1}
+              max={50}
+              value={node.max_iterations ?? 3}
+              onChange={(event) => onChange({ max_iterations: Number(event.target.value) })}
+            />
+          </label>
+          <label>
+            {t.forms.iterationKey}
+            <input value={node.iteration_key ?? ""} onChange={(event) => onChange({ iteration_key: event.target.value })} />
+          </label>
+          <label>
+            {t.forms.collectKey}
+            <input value={node.collect_key ?? ""} onChange={(event) => onChange({ collect_key: event.target.value })} />
+          </label>
+          <label>
+            {t.forms.summaryKey}
+            <input value={node.summary_key ?? ""} onChange={(event) => onChange({ summary_key: event.target.value })} />
+          </label>
+        </>
+      )}
       {node.type === "human_gate" && (
         <label>
           {t.forms.approvalReason}
@@ -1229,6 +1339,9 @@ function nodeDisplayLabel(node: NodeSpec, workflow: WorkflowSpec): string {
   if (node.type === "tool" || node.type === "mcp_tool") {
     return `${typeLabel}: ${node.tool ?? "未配置"}\n${node.id}`;
   }
+  if (node.type === "loop") {
+    return `${typeLabel}: ${node.loop_mode ?? "retry_until"} ×${node.max_iterations ?? 3}\n${node.id}`;
+  }
   return `${typeLabel}\n${node.id}`;
 }
 
@@ -1316,6 +1429,18 @@ function cleanNode(node: NodeSpec): NodeSpec {
     ...(node.type === "tool" ? { tool: node.tool || "project_index" } : {}),
     ...(node.type === "mcp_tool" ? { tool: node.tool || "tool_name" } : {}),
     ...(node.type === "condition" ? { condition: node.condition || "state.value == True" } : {}),
+    ...(node.type === "loop"
+      ? {
+          loop_mode: node.loop_mode || "retry_until",
+          ...(node.condition ? { condition: node.condition } : {}),
+          ...(node.items_key ? { items_key: node.items_key } : {}),
+          ...(node.item_key ? { item_key: node.item_key } : {}),
+          ...(node.iteration_key ? { iteration_key: node.iteration_key } : {}),
+          max_iterations: node.max_iterations || 3,
+          ...(node.collect_key ? { collect_key: node.collect_key } : {}),
+          ...(node.summary_key ? { summary_key: node.summary_key } : {})
+        }
+      : {}),
     ...(node.type === "human_gate" && node.approval_reason ? { approval_reason: node.approval_reason } : {}),
     ...(node.output_key ? { output_key: node.output_key } : {}),
     ...(node.input && Object.keys(node.input).length > 0 ? { input: node.input } : {})

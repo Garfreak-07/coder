@@ -85,12 +85,12 @@ Initial node types:
 - `tool`
 - `mcp_tool`
 - `condition`
+- `loop`
 - `human_gate`
 - `end`
 
 Future node types:
 
-- `loop`
 - `parallel`
 - `subworkflow`
 - `patch_review`
@@ -303,9 +303,10 @@ Progress status:
   scoped patch proposal/apply/rollback, local library storage, and file-backed
   run records.
 - Remaining work is mostly product hardening rather than core proof-of-concept:
-  restart-resumable blocked runs, richer run-history browsing, long-lived MCP
-  sessions and tool discovery, desktop packaging, and deeper provider-specific
-  adapters where OpenAI-compatible endpoints are not sufficient.
+  richer loop UX, restart-resumable blocked runs, richer run-history browsing,
+  long-lived MCP sessions and tool discovery, desktop packaging, and deeper
+  provider-specific adapters where OpenAI-compatible endpoints are not
+  sufficient.
 - Current baseline: PR #1 and PR #2 have been merged into `main`. New unrelated
   work should start from updated `main` on a new branch.
 
@@ -314,8 +315,16 @@ Implemented:
 - workflow/agent/node/edge schema
 - JSON-driven runner
 - real edge condition routing
+- first-class `loop` node type in backend and frontend with `retry_until`,
+  `while`, and `for_each` modes, required `max_iterations`, iteration state,
+  break reasons, and loop events
+- conditional back-edges plus edge traversal and workflow step/tool/agent/token
+  limits for loop safety
 - human approval gate
 - compact agent context policy
+- inspectable `agent.context_packet` events before agent calls, including task,
+  selected state, summaries, allowed tools, token estimate, project scopes, and
+  current loop state
 - estimated token tracking
 - mock agent executor when credentials are missing
 - React + TypeScript + Vite frontend scaffold
@@ -367,6 +376,8 @@ Implemented:
 - template-first frontend entry with default coding workflow and blank advanced
   workflow cards before the saved workflow library
 - readable Chinese canvas node labels with internal node IDs still visible
+- loop node creation, loop inspector fields, and ContextPacket event cards in
+  the frontend
 - CLI execution:
 
 ```powershell
@@ -384,23 +395,28 @@ python -m coder_workbench.cli --repo . --workflow examples\workflows\coding-work
 
 ## Near-term roadmap
 
-1. Add ContextPacket data model and event display:
-   - emit agent context packets as inspectable run events;
-   - show task, upstream artifacts, selected project context, allowed tools,
-     token estimates, and output artifacts in the UI.
-2. Add provider settings UI for OpenAI/DeepSeek keys, base URL, default model,
+1. Harden first-class loop UX and semantics:
+   - timeline grouping by loop iteration;
+   - output collection through `collect_key`;
+   - compact prior iteration summaries through `summary_key`;
+   - clearer visual indication of loop-back edges.
+2. Expand ContextPacket detail:
+   - add local knowledge chunk provenance;
+   - add explicit output artifact schema rendering;
+   - summarize prior loop iterations compactly.
+3. Add provider settings UI for OpenAI/DeepSeek keys, base URL, default model,
    connection testing, and mock mode. Do not store API keys in workflow JSON.
-3. Add local `.md` / `.txt` document knowledge MVP:
+4. Add local `.md` / `.txt` document knowledge MVP:
    - local storage;
    - chunking and retrieval;
    - provenance shown in context packets.
-4. Expand durable recovery from persisted blocked run snapshots to active
+5. Expand durable recovery from persisted blocked run snapshots to active
    resume after process restart.
-5. Add long-lived MCP server sessions and tool discovery/listing instead of
+6. Add long-lived MCP server sessions and tool discovery/listing instead of
    only short-lived configured stdio calls.
-6. Add provider-specific non-OpenAI-compatible executor adapters where needed,
+7. Add provider-specific non-OpenAI-compatible executor adapters where needed,
    starting with native SDKs only when the OpenAI-compatible endpoint is not
    sufficient.
-7. Add desktop packaging and stronger product polish: settings persistence,
+8. Add desktop packaging and stronger product polish: settings persistence,
    diff viewer improvements, rejection reasons in the event timeline, and
    richer rollback conflict handling.

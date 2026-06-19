@@ -111,6 +111,14 @@ export const codingWorkbenchWorkflow: WorkflowSpec = {
     { id: "apply_patch", type: "tool", tool: "apply_patch", input: { patch: "$patch_preview" }, output_key: "patch_apply" },
     { id: "check", type: "tool", tool: "run_check", input: { command: "" }, output_key: "check_result" },
     { id: "review", type: "agent", agent_id: "reviewer", output_key: "review" },
+    {
+      id: "review_retry",
+      type: "loop",
+      loop_mode: "retry_until",
+      condition: "review.status == 'completed' or review.status == 'done'",
+      max_iterations: 3,
+      output_key: "review_retry"
+    },
     { id: "finish", type: "end" }
   ],
   edges: [
@@ -124,7 +132,9 @@ export const codingWorkbenchWorkflow: WorkflowSpec = {
     { from: "patch_approval", to: "apply_patch", when: "patch_approval.approved == True" },
     { from: "apply_patch", to: "check" },
     { from: "check", to: "review" },
-    { from: "review", to: "finish" }
+    { from: "review", to: "review_retry" },
+    { from: "review_retry", to: "approval", when: "review_retry.should_continue == True", max_traversals: 3 },
+    { from: "review_retry", to: "finish", when: "review_retry.should_continue == False" }
   ],
   stop_conditions: [
     "approval required",
