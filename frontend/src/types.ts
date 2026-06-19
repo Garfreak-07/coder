@@ -14,6 +14,7 @@ export interface ContextPolicy {
   summary_keys: string[];
   max_items_per_key: number;
   max_chars_per_value: number;
+  include_all_state: boolean;
   include_event_history: boolean;
   include_full_outputs: boolean;
 }

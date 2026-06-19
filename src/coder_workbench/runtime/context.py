@@ -14,7 +14,7 @@ def build_agent_context(agent: AgentSpec, state: RunState) -> dict[str, Any]:
     """
 
     policy = agent.context or ContextPolicy()
-    keys = policy.input_keys or list(state.data.keys())
+    keys = list(state.data.keys()) if policy.include_all_state else policy.input_keys
     context: dict[str, Any] = {
         "request": state.request,
         "repo_root": state.repo_root,
@@ -83,7 +83,7 @@ def build_context_packet(
         "loop": loop,
         "token_estimate": {
             "packet": estimated_tokens,
-            "run_used_after_packet": state.estimated_tokens_used,
+            "run_used_after_packet": state.estimated_tokens_used + estimated_tokens,
             "budget": state.token_budget,
         },
         "output_contract": {
@@ -106,7 +106,7 @@ def _compact_value(value: Any, policy: ContextPolicy) -> Any:
     if isinstance(value, str):
         return value[: policy.max_chars_per_value]
     if isinstance(value, list):
-        return value[: policy.max_items_per_key]
+        return [_compact_value(item, policy) for item in value[: policy.max_items_per_key]]
     if isinstance(value, dict):
         compact: dict[str, Any] = {}
         for index, (key, item) in enumerate(value.items()):

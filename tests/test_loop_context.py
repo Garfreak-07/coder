@@ -2,9 +2,24 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from typing import Any
 
 from coder_workbench.core import WorkflowSpec
 from coder_workbench.runtime import run_workflow
+from coder_workbench.runtime.runner import WorkflowRunner
+
+
+class CapturingExecutor:
+    def __init__(self) -> None:
+        self.contexts: list[dict[str, Any]] = []
+
+    def run(self, agent, context: dict[str, Any]) -> dict[str, Any]:
+        self.contexts.append(context)
+        return {
+            "status": "completed",
+            "state_keys": sorted(context.get("state", {}).keys()),
+            "summary_keys": sorted(context.get("state_summaries", {}).keys()),
+        }
 
 
 class LoopAndContextPacketTests(unittest.TestCase):
@@ -102,6 +117,162 @@ class LoopAndContextPacketTests(unittest.TestCase):
             self.assertEqual(packet["loop"]["iteration"], 1)
             self.assertEqual(packet["project_context"]["scopes"], ["src"])
             self.assertIn("retry_state", packet["selected_state_keys"])
+
+    def test_empty_input_keys_do_not_send_all_state_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = WorkflowSpec.model_validate(
+                {
+                    "id": "default-context-test",
+                    "name": "Default context test",
+                    "nodes": [
+                        {"id": "start", "type": "start"},
+                        {"id": "agent", "type": "agent", "agent_id": "worker", "output_key": "worker_result"},
+                        {"id": "end", "type": "end"},
+                    ],
+                    "edges": [
+                        {"from": "start", "to": "agent"},
+                        {"from": "agent", "to": "end"},
+                    ],
+                    "agents": [{"id": "worker", "role": "Worker", "goal": "Use compact context."}],
+                }
+            )
+            executor = CapturingExecutor()
+
+            result = WorkflowRunner(workflow, agent_executor=executor).run(
+                "inspect context",
+                tmp,
+                initial_data={"large_previous_output": "x" * 2000, "scopes": ["src"]},
+            )
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(executor.contexts[0]["state"], {})
+            self.assertEqual(executor.contexts[0]["state_summaries"], {})
+            self.assertEqual(result.data["worker_result"]["state_keys"], [])
+            packet = next(event.payload["packet"] for event in result.events if event.type == "agent.context_packet")
+            self.assertEqual(packet["selected_state_keys"], [])
+
+    def test_include_all_state_is_explicit_and_lists_are_compacted_recursively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = WorkflowSpec.model_validate(
+                {
+                    "id": "explicit-context-test",
+                    "name": "Explicit context test",
+                    "nodes": [
+                        {"id": "start", "type": "start"},
+                        {"id": "agent", "type": "agent", "agent_id": "worker", "output_key": "worker_result"},
+                        {"id": "end", "type": "end"},
+                    ],
+                    "edges": [
+                        {"from": "start", "to": "agent"},
+                        {"from": "agent", "to": "end"},
+                    ],
+                    "agents": [
+                        {
+                            "id": "worker",
+                            "role": "Worker",
+                            "goal": "Use explicit full state.",
+                            "context": {
+                                "include_all_state": True,
+                                "max_items_per_key": 1,
+                                "max_chars_per_value": 500,
+                            },
+                        }
+                    ],
+                }
+            )
+            executor = CapturingExecutor()
+
+            result = WorkflowRunner(workflow, agent_executor=executor).run(
+                "inspect context",
+                tmp,
+                initial_data={"items": [["x" * 700, "y" * 700], ["z" * 700]]},
+            )
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.data["worker_result"]["state_keys"], ["items"])
+            compacted = executor.contexts[0]["state"]["items"]
+            self.assertEqual(len(compacted), 1)
+            self.assertEqual(len(compacted[0]), 1)
+            self.assertEqual(len(compacted[0][0]), 500)
+
+    def test_token_budget_excess_blocks_before_agent_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = WorkflowSpec.model_validate(
+                {
+                    "id": "budget-test",
+                    "name": "Budget test",
+                    "token_budget": 1000,
+                    "nodes": [
+                        {"id": "start", "type": "start"},
+                        {"id": "agent", "type": "agent", "agent_id": "worker", "output_key": "worker_result"},
+                        {"id": "end", "type": "end"},
+                    ],
+                    "edges": [
+                        {"from": "start", "to": "agent"},
+                        {"from": "agent", "to": "end"},
+                    ],
+                    "agents": [
+                        {
+                            "id": "worker",
+                            "role": "Worker",
+                            "goal": "Use too much context.",
+                            "context": {"include_all_state": True, "max_chars_per_value": 50000},
+                        }
+                    ],
+                }
+            )
+            executor = CapturingExecutor()
+
+            result = WorkflowRunner(workflow, agent_executor=executor).run(
+                "inspect context",
+                tmp,
+                initial_data={"large": "x" * 8000},
+            )
+
+            self.assertEqual(result.status, "blocked")
+            self.assertEqual(result.blocked_node_id, "agent")
+            self.assertEqual(result.agent_calls, 0)
+            self.assertEqual(executor.contexts, [])
+            self.assertTrue(any(event.type == "budget.warning" for event in result.events))
+            self.assertFalse(any(event.type == "agent.called" for event in result.events))
+
+    def test_node_completed_events_keep_summary_not_full_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = WorkflowSpec.model_validate(
+                {
+                    "id": "event-summary-test",
+                    "name": "Event summary test",
+                    "nodes": [
+                        {"id": "start", "type": "start"},
+                        {"id": "agent", "type": "agent", "agent_id": "worker", "output_key": "worker_result"},
+                        {"id": "end", "type": "end"},
+                    ],
+                    "edges": [
+                        {"from": "start", "to": "agent"},
+                        {"from": "agent", "to": "end"},
+                    ],
+                    "agents": [
+                        {
+                            "id": "worker",
+                            "role": "Worker",
+                            "goal": "Return a result.",
+                            "context": {"input_keys": ["request_context"]},
+                        }
+                    ],
+                }
+            )
+
+            result = WorkflowRunner(workflow, agent_executor=CapturingExecutor()).run(
+                "inspect context",
+                tmp,
+                initial_data={"request_context": {"note": "small"}},
+            )
+
+            completed_events = [event for event in result.events if event.type == "node.completed"]
+            self.assertTrue(completed_events)
+            for event in completed_events:
+                self.assertNotIn("result", event.payload)
+                self.assertIn("result_summary", event.payload)
 
 
 if __name__ == "__main__":

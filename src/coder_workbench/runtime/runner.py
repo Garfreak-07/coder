@@ -6,7 +6,7 @@ from coder_workbench.core import WorkflowSpec
 from coder_workbench.executors import AgentExecutor, DefaultAgentExecutor
 from coder_workbench.runtime.conditions import evaluate_condition
 from coder_workbench.runtime.context import build_agent_context, build_context_packet, estimate_tokens
-from coder_workbench.runtime.state import RunEvent, RunResult, RunState
+from coder_workbench.runtime.state import RunEvent, RunResult, RunState, summarize_value
 from coder_workbench.tools import ToolRegistry, default_tool_registry
 
 
@@ -104,8 +104,10 @@ class WorkflowRunner:
                     "node.completed",
                     f"Node {node_id} completed",
                     node_id=node_id,
-                    result=result,
-                    result_summary=str(result)[:800],
+                    result_summary=summarize_value(result),
+                    result_status=result.get("status") if isinstance(result, dict) else None,
+                    result_keys=sorted(result.keys()) if isinstance(result, dict) else None,
+                    result_size_chars=len(str(result)),
                 )
 
                 if state.status != "running":
@@ -140,16 +142,7 @@ class WorkflowRunner:
         agent = self.agents[node.agent_id]
         context = build_agent_context(agent, state)
         estimated = estimate_tokens(context)
-        state.estimated_tokens_used += estimated
-        state.agent_calls += 1
-        if state.token_budget and state.estimated_tokens_used > state.token_budget:
-            state.emit(
-                "budget.warning",
-                "Estimated token budget exceeded",
-                node_id=node_id,
-                estimated_tokens_used=state.estimated_tokens_used,
-                token_budget=state.token_budget,
-            )
+        projected_tokens = state.estimated_tokens_used + estimated
         packet = build_context_packet(agent, state, node_id=node_id, context=context, estimated_tokens=estimated)
         state.emit(
             "agent.context_packet",
@@ -157,6 +150,26 @@ class WorkflowRunner:
             node_id=node_id,
             packet=packet,
         )
+        if state.token_budget and projected_tokens > state.token_budget:
+            state.emit(
+                "budget.warning",
+                "Estimated token budget exceeded; agent call blocked",
+                node_id=node_id,
+                estimated_tokens_used=state.estimated_tokens_used,
+                projected_tokens_used=projected_tokens,
+                estimated_tokens=estimated,
+                token_budget=state.token_budget,
+            )
+            self._block(state, "token budget exceeded")
+            return {
+                "status": "blocked",
+                "reason": "token budget exceeded",
+                "estimated_tokens": estimated,
+                "projected_tokens_used": projected_tokens,
+                "token_budget": state.token_budget,
+            }
+        state.estimated_tokens_used = projected_tokens
+        state.agent_calls += 1
         state.emit("agent.called", f"Agent {agent.id} called", node_id=node_id, estimated_tokens=estimated)
         result = self.agent_executor.run(agent, context)
         state.set_value(node.output_key or agent.output_key or node.id, result)

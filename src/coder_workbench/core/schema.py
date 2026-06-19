@@ -24,6 +24,7 @@ class ContextPolicy(BaseModel):
     summary_keys: list[str] = Field(default_factory=list)
     max_items_per_key: int = Field(default=20, ge=1, le=200)
     max_chars_per_value: int = Field(default=4000, ge=500, le=50000)
+    include_all_state: bool = False
     include_event_history: bool = False
     include_full_outputs: bool = False
 

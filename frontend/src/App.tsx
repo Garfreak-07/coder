@@ -915,6 +915,14 @@ function latestToolResult(events: RunEvent[], nodeId: string): Record<string, un
     if (event.type !== "node.completed" || event.node_id !== nodeId) continue;
     const result = event.payload?.result;
     if (result && typeof result === "object" && !Array.isArray(result)) return result as Record<string, unknown>;
+    const resultStatus = event.payload?.result_status;
+    if (typeof resultStatus === "string") {
+      return {
+        status: resultStatus,
+        summary: event.payload?.result_summary,
+        keys: event.payload?.result_keys
+      };
+    }
   }
   return null;
 }
@@ -1415,6 +1423,7 @@ function createDefaultAgent(id: string): AgentSpec {
       summary_keys: [],
       max_items_per_key: 20,
       max_chars_per_value: 4000,
+      include_all_state: false,
       include_event_history: false,
       include_full_outputs: false
     }
