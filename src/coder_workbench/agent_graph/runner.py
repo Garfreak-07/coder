@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.agent_graph.context import upstream_refs_for_item
 from coder_workbench.agent_graph.effects import apply_hidden_effects
 from coder_workbench.agent_graph.merge import build_planner_input_bundle, build_round_summary
-from coder_workbench.agent_graph.scheduler import AgentGraphScheduler
-from coder_workbench.agent_graph.schema import ExecutionRecord, PlannerOrder, TestRecord
+from coder_workbench.agent_graph.scheduler import AgentGraphScheduler, ReadyWave
+from coder_workbench.agent_graph.schema import ExecutionRecord, PlannerOrder, TestRecord, WorkItemOutcome
 from coder_workbench.agent_graph.validation import assert_valid_planner_order
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec, assert_valid_agent_workflow
 from coder_workbench.runtime.state import RunEvent, RunResult, summarize_value
@@ -121,9 +122,18 @@ class AgentGraphRunner:
                         blocked_by=blocked.blocked_by,
                     )
 
-                ready_items = scheduler.ready_items()
-                if not ready_items:
-                    waiting = scheduler.waiting_items()
+                wave = scheduler.next_wave()
+                if wave.deferred_ready_work_item_ids:
+                    emit(
+                        "resource.deferred",
+                        "Ready work items deferred by max_concurrency",
+                        round=1,
+                        wave_index=wave.wave_index,
+                        deferred_work_item_ids=wave.deferred_ready_work_item_ids,
+                        max_concurrency=scheduler.max_concurrency,
+                    )
+                if not wave.items:
+                    waiting = scheduler.dependency_waiting_items()
                     if waiting:
                         emit(
                             "join.waiting",
@@ -133,7 +143,16 @@ class AgentGraphRunner:
                         )
                     break
 
-                for item in ready_items:
+                emit(
+                    "agent_graph.wave.started",
+                    f"Agent graph wave {wave.wave_index} started",
+                    round=1,
+                    wave_index=wave.wave_index,
+                    ready_work_item_ids=wave.ready_work_item_ids,
+                    work_item_ids=[item.work_item_id for item in wave.items],
+                    deferred_ready_work_item_ids=wave.deferred_ready_work_item_ids,
+                )
+                for item in wave.items:
                     scheduler.mark_running(item.work_item_id)
                     if item.depends_on:
                         emit(
@@ -143,14 +162,64 @@ class AgentGraphRunner:
                             work_item_id=item.work_item_id,
                             depends_on=item.depends_on,
                         )
-                    self._run_work_item(cache, item, planner_order_ref, emit)
-                    execution = cache.execution_cache[item.work_item_id]
+                    self._start_work_item(cache, item, planner_order_ref, emit)
+                outcomes = self._run_wave(wave)
+                for outcome in outcomes:
+                    execution = cache.record_execution(outcome.execution)
                     if execution.status == "completed":
-                        scheduler.mark_completed(item.work_item_id)
+                        emit(
+                            "agent_task.completed",
+                            f"Task {outcome.work_item_id} completed",
+                            round=cache.round,
+                            work_item_id=outcome.work_item_id,
+                            execution_result_ref=execution.execution_result_ref,
+                        )
+                        scheduler.mark_completed(outcome.work_item_id)
                     elif execution.status == "blocked":
-                        scheduler.mark_blocked(item.work_item_id)
+                        emit(
+                            "agent_task.blocked",
+                            f"Task {outcome.work_item_id} blocked",
+                            round=cache.round,
+                            work_item_id=outcome.work_item_id,
+                            execution_result_ref=execution.execution_result_ref,
+                        )
+                        scheduler.mark_blocked(outcome.work_item_id)
                     else:
-                        scheduler.mark_failed(item.work_item_id)
+                        emit(
+                            "agent_task.failed",
+                            f"Task {outcome.work_item_id} failed",
+                            round=cache.round,
+                            work_item_id=outcome.work_item_id,
+                            execution_result_ref=execution.execution_result_ref,
+                        )
+                        scheduler.mark_failed(outcome.work_item_id)
+                    for test in outcome.tests:
+                        test_record = cache.record_test(test)
+                        emit(
+                            "test.local.completed",
+                            f"Local test for {outcome.work_item_id} completed",
+                            round=cache.round,
+                            work_item_id=outcome.work_item_id,
+                            tester_agent_id=test_record.tester_agent_id,
+                            test_result_ref=test_record.test_result_ref,
+                        )
+                emit(
+                    "agent_graph.wave.completed",
+                    f"Agent graph wave {wave.wave_index} completed",
+                    round=1,
+                    wave_index=wave.wave_index,
+                    completed_work_item_ids=[
+                        outcome.work_item_id
+                        for outcome in outcomes
+                        if outcome.execution.status == "completed"
+                    ],
+                    failed_work_item_ids=[
+                        outcome.work_item_id for outcome in outcomes if outcome.execution.status == "failed"
+                    ],
+                    blocked_work_item_ids=[
+                        outcome.work_item_id for outcome in outcomes if outcome.execution.status == "blocked"
+                    ],
+                )
 
             data["scheduler_status"] = dict(scheduler.status_by_id)
             hidden_effects = apply_hidden_effects(
@@ -242,7 +311,7 @@ class AgentGraphRunner:
             status_code=status_code,
         )
 
-    def _run_work_item(
+    def _start_work_item(
         self,
         cache: GraphRunCache,
         item: Any,
@@ -270,25 +339,48 @@ class AgentGraphRunner:
             work_item_id=item.work_item_id,
             envelope=envelope.model_dump(mode="json"),
         )
-        execution_record = cache.record_execution(
-            ExecutionRecord(
+
+    def _run_wave(self, wave: ReadyWave) -> list[WorkItemOutcome]:
+        outcomes: list[WorkItemOutcome] = []
+        if not wave.items:
+            return outcomes
+        with ThreadPoolExecutor(max_workers=max(1, len(wave.items))) as pool:
+            futures = {pool.submit(self._build_work_item_outcome, item): item for item in wave.items}
+            for future in as_completed(futures):
+                item = futures[future]
+                try:
+                    outcomes.append(future.result())
+                except Exception as exc:  # pragma: no cover - defensive boundary
+                    outcomes.append(
+                        WorkItemOutcome(
+                            work_item_id=item.work_item_id,
+                            merge_index=item.merge_index,
+                            execution=ExecutionRecord(
+                                work_item_id=item.work_item_id,
+                                merge_index=item.merge_index,
+                                agent_id=item.assignee_agent_id,
+                                status="failed",
+                                execution_summary=f"Work item failed: {exc}",
+                                execution_result_ref=f"memory:execution_result:{item.work_item_id}:failed",
+                            ),
+                            tests=[],
+                        )
+                    )
+        return outcomes
+
+    def _build_work_item_outcome(self, item: Any) -> WorkItemOutcome:
+        return WorkItemOutcome(
+            work_item_id=item.work_item_id,
+            merge_index=item.merge_index,
+            execution=ExecutionRecord(
                 work_item_id=item.work_item_id,
                 merge_index=item.merge_index,
                 agent_id=item.assignee_agent_id,
                 status="completed",
                 execution_summary="Phase 3 mock execution completed from an AgentTaskEnvelope.",
                 execution_result_ref=f"memory:execution_result:{item.work_item_id}",
-            )
-        )
-        emit(
-            "agent_task.completed",
-            f"Task {item.work_item_id} completed",
-            round=cache.round,
-            work_item_id=item.work_item_id,
-            execution_result_ref=execution_record.execution_result_ref,
-        )
-        for tester_agent_id in item.tester_agent_ids:
-            test_record = cache.record_test(
+            ),
+            tests=[
                 TestRecord(
                     work_item_id=item.work_item_id,
                     merge_index=item.merge_index,
@@ -297,15 +389,9 @@ class AgentGraphRunner:
                     test_summary="Phase 3 mock test evidence recorded.",
                     test_result_ref=f"memory:test_result:{item.work_item_id}:{tester_agent_id}",
                 )
-            )
-            emit(
-                "test.local.completed",
-                f"Local test for {item.work_item_id} completed",
-                round=cache.round,
-                work_item_id=item.work_item_id,
-                tester_agent_id=test_record.tester_agent_id,
-                test_result_ref=test_record.test_result_ref,
-            )
+                for tester_agent_id in item.tester_agent_ids
+            ],
+        )
 
     def _planner_order_from_initial_data(self, data: dict[str, Any]) -> PlannerOrder | None:
         value = data.get("planner_order")

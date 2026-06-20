@@ -53,6 +53,35 @@ class AgentGraphSchedulerTests(unittest.TestCase):
 
         self.assertCountEqual([ready.work_item_id for ready in scheduler.ready_items()], ["a", "b"])
 
+    def test_next_wave_splits_ready_from_resource_deferred_items(self) -> None:
+        scheduler = AgentGraphScheduler(
+            [
+                item("a", 1),
+                item("b", 2),
+                item("c", 3),
+                item("d", 4, ["a"]),
+            ],
+            max_concurrency=2,
+        )
+
+        wave = scheduler.next_wave()
+
+        self.assertEqual(wave.wave_index, 1)
+        self.assertEqual(wave.ready_work_item_ids, ["a", "b", "c"])
+        self.assertEqual([ready.work_item_id for ready in wave.items], ["a", "b"])
+        self.assertEqual(wave.deferred_ready_work_item_ids, ["c"])
+        self.assertEqual([item.work_item_id for item in scheduler.resource_deferred_items()], ["c"])
+        self.assertEqual([item.work_item_id for item in scheduler.dependency_waiting_items()], ["d"])
+
+    def test_wave_index_advances_only_when_items_dispatch(self) -> None:
+        scheduler = AgentGraphScheduler([item("b", 2, ["a"])], max_concurrency=2)
+
+        empty_wave = scheduler.next_wave()
+
+        self.assertEqual(empty_wave.wave_index, 1)
+        self.assertEqual(empty_wave.items, [])
+        self.assertEqual(scheduler.next_wave().wave_index, 1)
+
     def test_failed_upstream_blocks_downstream(self) -> None:
         scheduler = AgentGraphScheduler([item("a", 1), item("b", 2, ["a"])])
 
@@ -128,6 +157,97 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
         self.assertEqual(
             second_task["upstream_refs"],
             ["memory:execution_result:first", "memory:test_result:first:tester"],
+        )
+
+    def test_runner_emits_waves_and_resource_deferred_events(self) -> None:
+        planner_order = {
+            "artifact_type": "planner_order",
+            "round": 1,
+            "round_goal": "Run bounded ready work.",
+            "plan_graph": {
+                "work_items": [
+                    {
+                        "work_item_id": "a",
+                        "merge_index": 1,
+                        "assignee_agent_id": "executor",
+                        "task_summary": "Run A.",
+                        "depends_on": [],
+                        "tester_agent_ids": [],
+                    },
+                    {
+                        "work_item_id": "b",
+                        "merge_index": 2,
+                        "assignee_agent_id": "executor",
+                        "task_summary": "Run B.",
+                        "depends_on": [],
+                        "tester_agent_ids": [],
+                    },
+                    {
+                        "work_item_id": "c",
+                        "merge_index": 3,
+                        "assignee_agent_id": "executor",
+                        "task_summary": "Run C.",
+                        "depends_on": [],
+                        "tester_agent_ids": [],
+                    },
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            result = AgentGraphRunner(default_planner_led_agent_workflow()).run(
+                "Run bounded ready work.",
+                tmp,
+                initial_data={"planner_order": planner_order, "max_concurrency": 2},
+            )
+
+        self.assertEqual(result.status, "completed")
+        wave_events = [event for event in result.events if event.type == "agent_graph.wave.started"]
+        self.assertEqual([event.payload["wave_index"] for event in wave_events], [1, 2])
+        self.assertEqual(wave_events[0].payload["ready_work_item_ids"], ["a", "b", "c"])
+        self.assertEqual(wave_events[0].payload["work_item_ids"], ["a", "b"])
+        self.assertEqual(wave_events[0].payload["deferred_ready_work_item_ids"], ["c"])
+        deferred = [event for event in result.events if event.type == "resource.deferred"]
+        self.assertEqual(deferred[0].payload["deferred_work_item_ids"], ["c"])
+
+    def test_runner_merge_order_is_not_dispatch_order(self) -> None:
+        planner_order = {
+            "artifact_type": "planner_order",
+            "round": 1,
+            "round_goal": "Separate dispatch from merge.",
+            "plan_graph": {
+                "work_items": [
+                    {
+                        "work_item_id": "z-work",
+                        "merge_index": 1,
+                        "assignee_agent_id": "executor",
+                        "task_summary": "Merge first.",
+                        "depends_on": [],
+                        "tester_agent_ids": [],
+                    },
+                    {
+                        "work_item_id": "a-work",
+                        "merge_index": 2,
+                        "assignee_agent_id": "executor",
+                        "task_summary": "Merge second.",
+                        "depends_on": [],
+                        "tester_agent_ids": [],
+                    },
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            result = AgentGraphRunner(default_planner_led_agent_workflow()).run(
+                "Separate dispatch from merge.",
+                tmp,
+                initial_data={"planner_order": planner_order, "max_concurrency": 2},
+            )
+
+        self.assertEqual(result.status, "completed")
+        wave_started = next(event for event in result.events if event.type == "agent_graph.wave.started")
+        self.assertEqual(wave_started.payload["work_item_ids"], ["a-work", "z-work"])
+        self.assertEqual(
+            [item["work_item_id"] for item in result.data["planner_input_bundle"]["items"]],
+            ["z-work", "a-work"],
         )
 
 

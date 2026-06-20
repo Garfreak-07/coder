@@ -99,6 +99,12 @@ class TestRecord(MergeIndexedModel):
     test_result_ref: str | None = None
 
 
+class WorkItemOutcome(MergeIndexedModel):
+    work_item_id: str
+    execution: ExecutionRecord
+    tests: list[TestRecord] = Field(default_factory=list)
+
+
 class FinalTestRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
