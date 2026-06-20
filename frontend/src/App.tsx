@@ -17,17 +17,13 @@ import {
   approveLiveRun,
   compileLegacyRuntimePreview,
   deleteRun,
-  getCapabilities,
-  getHealth,
   getAgent,
   getAgentWorkflow,
   getDefaultAgentWorkflow,
   getLibrary,
   getLiveRun,
-  getLiveRuns,
   getRun,
   getRunEvents,
-  getRuns,
   getToolResult,
   getWorkflow,
   rollbackPatch,
@@ -47,6 +43,7 @@ import { AgentWorkflowAgentInspector } from "./features/agent-workflow/AgentWork
 import { AgentWorkflowEdgeInspector } from "./features/agent-workflow/AgentWorkflowEdgeInspector";
 import { AgentWorkflowValidationPanel } from "./features/agent-workflow/AgentWorkflowValidationPanel";
 import { useProviderSettings } from "./hooks/useProviderSettings";
+import { useRuntimeInfo } from "./hooks/useRuntimeInfo";
 import { enUS, nodeTypeDescriptions, nodeTypeLabels } from "./i18n";
 import { EventReplayList, hydrateBlobRefs, objectList, objectValue, stringList } from "./runEvents";
 import { agentWorkflowTemplateCards, instantiateAgentWorkflowTemplate, type AgentWorkflowTemplateCard } from "./template";
@@ -80,9 +77,7 @@ import type {
   AgentWorkflowEdge,
   AgentWorkflowValidationResult,
   AgentWorkflowSpec,
-  CapabilitySpec,
   EdgeSpec,
-  HealthStatus,
   LibraryIndex,
   LiveRunDetail,
   LoopMode,
@@ -129,7 +124,6 @@ export function App() {
   const [runtimeJsonText, setRuntimeJsonText] = useState(() => formatJson(initialRuntimeWorkflow));
   const [showAdvancedRuntime, setShowAdvancedRuntime] = useState(false);
   const [runtimePreviewDirty, setRuntimePreviewDirty] = useState(false);
-  const [capabilities, setCapabilities] = useState<CapabilitySpec[]>([]);
   const [agentWorkflowValidation, setAgentWorkflowValidation] = useState<AgentWorkflowValidationResult | null>(null);
   const [nodes, setNodes] = useState<FlowNode[]>(() => toAgentFlowNodes(initialAgentWorkflow));
   const [edges, setEdges] = useState<FlowEdge[]>(() => toAgentFlowEdges(initialAgentWorkflow));
@@ -148,11 +142,15 @@ export function App() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [runHistory, setRunHistory] = useState<RunSummaryItem[]>([]);
-  const [liveRuns, setLiveRuns] = useState<RunSummaryItem[]>([]);
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyStatusFilter, setHistoryStatusFilter] = useState("all");
-  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const {
+    capabilities,
+    runHistory,
+    liveRuns,
+    health,
+    refreshRuntimeInfo
+  } = useRuntimeInfo(setStatus);
   const {
     providerSettings,
     providerStatus,
@@ -204,17 +202,6 @@ export function App() {
     getLibrary()
       .then(setLibrary)
       .catch((error) => setStatus(`Failed to load library: ${error.message}`));
-  }
-
-  function refreshRuntimeInfo() {
-    Promise.all([getRuns(), getLiveRuns(), getHealth(), getCapabilities()])
-      .then(([runs, live, nextHealth, nextCapabilities]) => {
-        setRunHistory(runs);
-        setLiveRuns(live);
-        setHealth(nextHealth);
-        setCapabilities(nextCapabilities);
-      })
-      .catch((error) => setStatus(`Failed to load runtime info: ${error.message}`));
   }
 
   async function openStoredRun(runId: string) {
