@@ -280,7 +280,12 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
                     }
                 ],
             }
-        return validate_workflow_preflight(spec, registered_tools=default_tool_registry().names())
+        registry = default_tool_registry()
+        return validate_workflow_preflight(
+            spec,
+            registered_tools=registry.names(),
+            tool_capabilities=registry.capabilities(),
+        )
 
     @app.get("/api/v2/live-runs/{run_id}/events")
     def stream_live_events(run_id: str) -> StreamingResponse:

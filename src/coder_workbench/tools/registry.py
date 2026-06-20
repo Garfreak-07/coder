@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from coder_workbench.module_map import build_module_map
 from coder_workbench.project_index import annotate_recommendations, recommend_modules
@@ -13,14 +14,38 @@ from coder_workbench.tools.filesystem import resolve_scoped_path, summarize_proj
 
 
 ToolFn = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
+RiskLevel = Literal["low", "medium", "high"]
+PermissionKey = Literal["read_files", "edit_files", "run_commands", "use_network"]
+
+
+@dataclass(frozen=True)
+class ToolCapability:
+    id: str
+    display_name: str
+    description: str = ""
+    risk_level: RiskLevel = "low"
+    permissions: tuple[PermissionKey, ...] = ()
+    requires_approval: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "display_name": self.display_name,
+            "description": self.description,
+            "risk_level": self.risk_level,
+            "permissions": list(self.permissions),
+            "requires_approval": self.requires_approval,
+        }
 
 
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolFn] = {}
+        self._capabilities: dict[str, ToolCapability] = {}
 
-    def register(self, name: str, fn: ToolFn) -> None:
+    def register(self, name: str, fn: ToolFn, capability: ToolCapability | None = None) -> None:
         self._tools[name] = fn
+        self._capabilities[name] = capability or ToolCapability(id=name, display_name=name)
 
     def run(self, name: str, args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
         if name not in self._tools:
@@ -30,17 +55,108 @@ class ToolRegistry:
     def names(self) -> list[str]:
         return sorted(self._tools)
 
+    def capability(self, name: str) -> ToolCapability | None:
+        return self._capabilities.get(name)
+
+    def capabilities(self) -> dict[str, dict[str, Any]]:
+        return {name: capability.to_dict() for name, capability in sorted(self._capabilities.items())}
+
 
 def default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register("project_index", _project_index)
-    registry.register("recommend_modules", _recommend_modules)
-    registry.register("dry_run_patch", _dry_run_patch)
-    registry.register("propose_patch", propose_patch)
-    registry.register("apply_patch", apply_patch)
-    registry.register("rollback_patch", rollback_patch)
-    registry.register("run_check", _run_check)
-    registry.register("mcp_call", call_mcp_tool)
+    registry.register(
+        "project_index",
+        _project_index,
+        ToolCapability(
+            id="project_index",
+            display_name="Project index",
+            description="Read scoped project files and summarize the local project.",
+            risk_level="low",
+            permissions=("read_files",),
+        ),
+    )
+    registry.register(
+        "recommend_modules",
+        _recommend_modules,
+        ToolCapability(
+            id="recommend_modules",
+            display_name="Recommend modules",
+            description="Rank indexed project modules for a request.",
+            risk_level="low",
+        ),
+    )
+    registry.register(
+        "dry_run_patch",
+        _dry_run_patch,
+        ToolCapability(
+            id="dry_run_patch",
+            display_name="Patch dry run",
+            description="Preview a scoped patch without writing files.",
+            risk_level="medium",
+            permissions=("read_files",),
+            requires_approval=True,
+        ),
+    )
+    registry.register(
+        "propose_patch",
+        propose_patch,
+        ToolCapability(
+            id="propose_patch",
+            display_name="Propose patch",
+            description="Build a scoped patch preview before file mutation.",
+            risk_level="medium",
+            permissions=("read_files", "edit_files"),
+            requires_approval=True,
+        ),
+    )
+    registry.register(
+        "apply_patch",
+        apply_patch,
+        ToolCapability(
+            id="apply_patch",
+            display_name="Apply patch",
+            description="Apply an approved scoped patch to local files.",
+            risk_level="high",
+            permissions=("edit_files",),
+            requires_approval=True,
+        ),
+    )
+    registry.register(
+        "rollback_patch",
+        rollback_patch,
+        ToolCapability(
+            id="rollback_patch",
+            display_name="Rollback patch",
+            description="Restore files from a saved patch snapshot.",
+            risk_level="high",
+            permissions=("edit_files",),
+            requires_approval=True,
+        ),
+    )
+    registry.register(
+        "run_check",
+        _run_check,
+        ToolCapability(
+            id="run_check",
+            display_name="Run check",
+            description="Run an approved local command in a scoped working directory.",
+            risk_level="high",
+            permissions=("run_commands",),
+            requires_approval=True,
+        ),
+    )
+    registry.register(
+        "mcp_call",
+        call_mcp_tool,
+        ToolCapability(
+            id="mcp_call",
+            display_name="MCP stdio call",
+            description="Launch or call an MCP stdio server tool after approval.",
+            risk_level="high",
+            permissions=("run_commands",),
+            requires_approval=True,
+        ),
+    )
     return registry
 
 

@@ -144,6 +144,14 @@ class WorkflowRunner:
             self._block(state, "max_agent_calls reached")
             return {"status": "blocked"}
         agent = self.agents[node.agent_id]
+        policy_violations = self._agent_tool_policy_violations(agent)
+        if policy_violations:
+            state.status = "failed"
+            return {
+                "status": "failed",
+                "error": "agent tool policy violation",
+                "policy_violations": policy_violations,
+            }
         context = build_agent_context(agent, state)
         estimated = estimate_tokens(context)
         projected_tokens = state.estimated_tokens_used + estimated
@@ -305,14 +313,15 @@ class WorkflowRunner:
         state.tool_calls += 1
         args = self._resolve_inputs(node.input, state)
         tool_name = "mcp_call" if node.type == "mcp_tool" else node.tool
-        if tool_name not in self.tools.names():
+        capability = self.tools.capability(tool_name)
+        if capability is None:
             message = f"Tool {node.tool!r} is not registered."
             state.status = "failed"
             return {"status": "failed", "error": message}
         if node.type == "mcp_tool":
             args = dict(args)
             args.setdefault("__mcp_tool", node.tool)
-        state.emit("tool.called", f"Tool {node.tool} called", node_id=node_id, args=args)
+        state.emit("tool.called", f"Tool {node.tool} called", node_id=node_id, args=args, capability=capability.to_dict())
         result = self.tools.run(
             tool_name,
             args,
@@ -348,6 +357,46 @@ class WorkflowRunner:
             )
             self._block(state, str(result.get("message") or "tool approval required"))
         return result
+
+    def _agent_tool_policy_violations(self, agent: Any) -> list[dict[str, Any]]:
+        violations: list[dict[str, Any]] = []
+        for tool_name in agent.tools:
+            capability = self.tools.capability(tool_name)
+            if capability is None:
+                violations.append(
+                    {
+                        "code": "agent_unknown_tool",
+                        "agent_id": agent.id,
+                        "tool": tool_name,
+                        "message": f"Agent {agent.id} declares unknown tool {tool_name!r}.",
+                    }
+                )
+                continue
+            missing = [
+                permission
+                for permission in capability.permissions
+                if not bool(getattr(agent.permissions, permission, False))
+            ]
+            if missing:
+                violations.append(
+                    {
+                        "code": "agent_tool_permission_denied",
+                        "agent_id": agent.id,
+                        "tool": tool_name,
+                        "missing_permissions": missing,
+                        "message": f"Agent {agent.id} lacks permissions for {tool_name!r}: {', '.join(missing)}.",
+                    }
+                )
+            if capability.requires_approval and not agent.permissions.requires_approval:
+                violations.append(
+                    {
+                        "code": "agent_tool_requires_approval",
+                        "agent_id": agent.id,
+                        "tool": tool_name,
+                        "message": f"Agent {agent.id} declares approval-gated tool {tool_name!r} without requiring approval.",
+                    }
+                )
+        return violations
 
     def _run_human_gate(self, state: RunState, node_id: str) -> dict[str, Any]:
         node = self.nodes[node_id]

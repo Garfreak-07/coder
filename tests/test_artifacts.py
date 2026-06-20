@@ -10,6 +10,7 @@ from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.runtime import RunEvent, RunResult
 from coder_workbench.runtime.runner import WorkflowRunner
 from coder_workbench.server.storage import RunStore
+from coder_workbench.tools import default_tool_registry
 
 
 class StaticExecutor:
@@ -217,6 +218,53 @@ class WorkflowPreflightTests(unittest.TestCase):
         self.assertIn("unknown_tool", codes)
         self.assertIn("unreachable_node", codes)
 
+    def test_preflight_checks_agent_tool_policy_and_returns_capability_summary(self) -> None:
+        workflow = WorkflowSpec.model_validate(
+            {
+                "id": "preflight-policy-test",
+                "name": "Preflight policy test",
+                "agents": [
+                    {
+                        "id": "checker",
+                        "role": "Checker",
+                        "goal": "Run checks.",
+                        "tools": ["run_check"],
+                        "permissions": {
+                            "read_files": True,
+                            "edit_files": False,
+                            "run_commands": False,
+                            "use_network": False,
+                            "requires_approval": True,
+                        },
+                    }
+                ],
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "agent", "type": "agent", "agent_id": "checker"},
+                    {"id": "check", "type": "tool", "tool": "run_check", "input": {"command": ""}},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "agent"},
+                    {"from": "agent", "to": "check"},
+                    {"from": "check", "to": "end"},
+                ],
+            }
+        )
+        registry = default_tool_registry()
+
+        result = validate_workflow_preflight(
+            workflow,
+            registered_tools=registry.names(),
+            tool_capabilities=registry.capabilities(),
+        )
+
+        codes = {issue["code"] for issue in result["issues"]}
+        self.assertEqual(result["status"], "error")
+        self.assertIn("agent_tool_permission_denied", codes)
+        self.assertEqual(result["summary"]["tools"][0]["risk_level"], "high")
+        self.assertEqual(result["summary"]["permission_summary"]["permissions"]["run_commands"], 1)
+
     def test_runner_rejects_unknown_tool_at_runtime(self) -> None:
         workflow = WorkflowSpec.model_validate(
             {
@@ -240,6 +288,47 @@ class WorkflowPreflightTests(unittest.TestCase):
         completed = [event for event in result.events if event.type == "node.completed" and event.node_id == "tool"]
         self.assertEqual(completed[0].payload["result_status"], "failed")
         self.assertTrue(any(event.type == "run.failed" for event in result.events))
+
+    def test_runner_rejects_agent_tool_policy_before_agent_call(self) -> None:
+        workflow = WorkflowSpec.model_validate(
+            {
+                "id": "runtime-agent-policy-test",
+                "name": "Runtime agent policy test",
+                "agents": [
+                    {
+                        "id": "checker",
+                        "role": "Checker",
+                        "goal": "Run checks.",
+                        "tools": ["run_check"],
+                        "permissions": {
+                            "read_files": True,
+                            "edit_files": False,
+                            "run_commands": False,
+                            "use_network": False,
+                            "requires_approval": True,
+                        },
+                    }
+                ],
+                "nodes": [
+                    {"id": "start", "type": "start"},
+                    {"id": "agent", "type": "agent", "agent_id": "checker", "output_key": "agent_result"},
+                    {"id": "end", "type": "end"},
+                ],
+                "edges": [
+                    {"from": "start", "to": "agent"},
+                    {"from": "agent", "to": "end"},
+                ],
+            }
+        )
+        executor = StaticExecutor({"status": "should_not_run"})
+
+        result = WorkflowRunner(workflow, agent_executor=executor).run("run policy check", "/repo")
+
+        self.assertEqual(result.status, "failed")
+        self.assertNotIn("agent_result", result.data)
+        completed = [event for event in result.events if event.type == "node.completed" and event.node_id == "agent"]
+        self.assertEqual(completed[0].payload["result_status"], "failed")
+        self.assertFalse(any(event.type == "agent.called" for event in result.events))
 
 
 def _single_agent_workflow(artifact_type: str) -> WorkflowSpec:

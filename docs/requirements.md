@@ -788,6 +788,12 @@ Implemented:
 - artifact-specific UI sections for PlanArtifact, PatchArtifact, and
   ReviewArtifact summaries/details;
 - runtime tool allowlist guard before executing tool nodes;
+- centralized tool capability metadata with risk level, required permissions,
+  and approval requirements;
+- Preflight capability policy checks for agent-declared tools, including
+  permission and approval mismatches;
+- runtime guard that blocks agent calls before execution when declared tools
+  exceed the agent permission policy;
 - Artifact cards in the run event panel;
 - lightweight `POST /api/v2/workflows/validate` preflight API;
 - run-start Preflight UI that blocks errors and requires confirmation for

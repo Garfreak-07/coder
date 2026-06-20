@@ -59,6 +59,7 @@ export const zhCN = {
     commandAgents: (count: number) => `${count} 个智能体可运行命令`,
     networkAgents: (count: number) => `${count} 个智能体可使用网络`,
     approvalAgents: (count: number) => `${count} 个智能体需要审批`,
+    approvalTools: (count: number) => `${count} 个工具需要审批`,
     scopes: "作用域",
     noScopes: "未限制作用域，将使用运行时默认路径保护。",
     tools: "工具风险",

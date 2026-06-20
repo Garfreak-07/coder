@@ -30,10 +30,12 @@ def validate_workflow_preflight(
     workflow: WorkflowSpec,
     *,
     registered_tools: list[str] | None = None,
+    tool_capabilities: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run product-level checks before starting a workflow run."""
 
-    registered = set(registered_tools or [])
+    capabilities = tool_capabilities or {}
+    registered = set(registered_tools or capabilities.keys())
     node_by_id = workflow.node_by_id()
     outgoing: dict[str, list[str]] = defaultdict(list)
     issues: list[PreflightIssue] = []
@@ -71,7 +73,8 @@ def validate_workflow_preflight(
             else:
                 output_owners[node.output_key] = node.id
 
-        if node.type == "tool" and node.tool and registered and node.tool not in registered:
+        runtime_tool = _runtime_tool_name(node.type, node.tool)
+        if node.type in {"tool", "mcp_tool"} and runtime_tool and registered and runtime_tool not in registered:
             issues.append(_issue("error", "unknown_tool", f"Tool {node.tool!r} is not registered.", "tool", node.tool))
         if node.type == "mcp_tool" and node.tool and not node.input.get("server_command"):
             issues.append(
@@ -81,6 +84,38 @@ def validate_workflow_preflight(
             issues.append(
                 _issue("error", "loop_max_iterations_missing", f"Loop node {node.id} needs max_iterations.", "node", node.id)
             )
+
+    for agent in workflow.agents:
+        for tool_name in agent.tools:
+            capability = capabilities.get(tool_name)
+            if registered and tool_name not in registered:
+                issues.append(
+                    _issue("error", "agent_unknown_tool", f"Agent {agent.id} declares unknown tool {tool_name!r}.", "agent", agent.id)
+                )
+                continue
+            if not capability:
+                continue
+            missing = _missing_permissions(agent.permissions, capability)
+            if missing:
+                issues.append(
+                    _issue(
+                        "error",
+                        "agent_tool_permission_denied",
+                        f"Agent {agent.id} declares {tool_name!r} but lacks permissions: {', '.join(missing)}.",
+                        "agent",
+                        agent.id,
+                    )
+                )
+            if capability.get("requires_approval") and not agent.permissions.requires_approval:
+                issues.append(
+                    _issue(
+                        "error",
+                        "agent_tool_requires_approval",
+                        f"Agent {agent.id} declares approval-gated tool {tool_name!r} without requiring approval.",
+                        "agent",
+                        agent.id,
+                    )
+                )
 
     for edge in workflow.edges:
         if edge.to_node in node_by_id and node_by_id[edge.to_node].type == "loop":
@@ -124,8 +159,79 @@ def validate_workflow_preflight(
             "max_agent_calls": workflow.max_agent_calls,
             "max_tool_calls": workflow.max_tool_calls,
             "token_budget": workflow.token_budget,
+            "tools": _tool_summaries(workflow, capabilities),
+            "permission_summary": _permission_summary(workflow, capabilities),
         },
     ).model_dump(mode="json")
+
+
+def _runtime_tool_name(node_type: str, tool_name: str | None) -> str | None:
+    if not tool_name:
+        return None
+    return "mcp_call" if node_type == "mcp_tool" else tool_name
+
+
+def _tool_summaries(workflow: WorkflowSpec, capabilities: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for node in workflow.nodes:
+        if node.type not in {"tool", "mcp_tool"}:
+            continue
+        runtime_tool = _runtime_tool_name(node.type, node.tool)
+        capability = capabilities.get(runtime_tool or "")
+        summaries.append(
+            {
+                "node_id": node.id,
+                "tool": node.tool,
+                "runtime_tool": runtime_tool,
+                "display_name": _capability_value(capability, "display_name", node.tool or "unconfigured"),
+                "risk_level": _capability_value(capability, "risk_level", "unknown"),
+                "permissions": _capability_list(capability, "permissions"),
+                "requires_approval": bool(capability.get("requires_approval")) if capability else False,
+            }
+        )
+    return summaries
+
+
+def _permission_summary(workflow: WorkflowSpec, capabilities: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    permission_counts = {"read_files": 0, "edit_files": 0, "run_commands": 0, "use_network": 0}
+    risk_counts = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+    approval_required = 0
+    for summary in _tool_summaries(workflow, capabilities):
+        for permission in summary["permissions"]:
+            if permission in permission_counts:
+                permission_counts[permission] += 1
+        risk = str(summary["risk_level"])
+        risk_counts[risk if risk in risk_counts else "unknown"] += 1
+        if summary["requires_approval"]:
+            approval_required += 1
+    return {
+        "permissions": permission_counts,
+        "risk": risk_counts,
+        "approval_required_tools": approval_required,
+    }
+
+
+def _missing_permissions(permission_policy: Any, capability: dict[str, Any]) -> list[str]:
+    return [
+        permission
+        for permission in _capability_list(capability, "permissions")
+        if not bool(getattr(permission_policy, permission, False))
+    ]
+
+
+def _capability_value(capability: dict[str, Any] | None, key: str, fallback: Any) -> Any:
+    if not capability:
+        return fallback
+    return capability.get(key, fallback)
+
+
+def _capability_list(capability: dict[str, Any] | None, key: str) -> list[str]:
+    if not capability:
+        return []
+    value = capability.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def _reachable_from(start_ids: list[str], outgoing: dict[str, list[str]]) -> set[str]:

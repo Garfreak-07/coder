@@ -67,6 +67,14 @@ interface PendingPreflightRun {
   result: PreflightResult;
 }
 
+interface PreflightToolFact {
+  nodeId: string;
+  name: string;
+  risk: string;
+  permissions: string[];
+  requiresApproval: boolean;
+}
+
 export function App() {
   const [library, setLibrary] = useState<LibraryIndex>({ agents: [], workflows: [] });
   const [workflow, setWorkflow] = useState<WorkflowSpec>(workflowTemplate);
@@ -839,6 +847,7 @@ function PreflightModal({
             <span>{t.preflight.commandAgents(facts.commandAgents)}</span>
             <span>{t.preflight.networkAgents(facts.networkAgents)}</span>
             <span>{t.preflight.approvalAgents(facts.approvalAgents)}</span>
+            <span>{t.preflight.approvalTools(facts.approvalRequiredTools)}</span>
           </div>
         </div>
 
@@ -862,7 +871,11 @@ function PreflightModal({
               {facts.tools.map((tool) => (
                 <div className="tool-risk-row" key={`${tool.nodeId}-${tool.name}`}>
                   <span>{tool.name}</span>
-                  <span>{tool.nodeId}</span>
+                  <span>
+                    {tool.nodeId}
+                    {tool.permissions.length > 0 ? ` · ${tool.permissions.join(", ")}` : ""}
+                    {tool.requiresApproval ? " · approval" : ""}
+                  </span>
                   <span className={`status-pill ${tool.risk === "high" ? "bad" : tool.risk === "medium" ? "warn" : "good"}`}>
                     {tool.risk}
                   </span>
@@ -912,6 +925,18 @@ function preflightFacts(workflow: WorkflowSpec, scopes: string[], result: Prefli
   const summary = result.summary ?? {};
   const toolNodes = workflow.nodes.filter((node) => node.type === "tool" || node.type === "mcp_tool");
   const agents = workflow.agents;
+  const backendTools = objectList(summary.tools).map((tool): PreflightToolFact => {
+    const displayName = typeof tool.display_name === "string" ? tool.display_name : String(tool.tool ?? "unconfigured");
+    const rawTool = typeof tool.tool === "string" && tool.tool !== displayName ? ` (${tool.tool})` : "";
+    return {
+      nodeId: String(tool.node_id ?? "unknown"),
+      name: `${displayName}${rawTool}`,
+      risk: String(tool.risk_level ?? "unknown"),
+      permissions: stringList(tool.permissions),
+      requiresApproval: Boolean(tool.requires_approval)
+    };
+  });
+  const permissionSummary = objectValue(summary.permission_summary);
   return {
     nodes: numberFromSummary(summary.nodes, workflow.nodes.length),
     edges: numberFromSummary(summary.edges, workflow.edges.length),
@@ -924,12 +949,17 @@ function preflightFacts(workflow: WorkflowSpec, scopes: string[], result: Prefli
     commandAgents: agents.filter((agent) => agent.permissions.run_commands).length,
     networkAgents: agents.filter((agent) => agent.permissions.use_network).length,
     approvalAgents: agents.filter((agent) => agent.permissions.requires_approval).length,
+    approvalRequiredTools: numberFromSummary(permissionSummary?.approval_required_tools, 0),
     scopes,
-    tools: toolNodes.map((node) => ({
-      nodeId: node.id,
-      name: node.type === "mcp_tool" ? `MCP: ${node.tool ?? "unconfigured"}` : node.tool ?? "unconfigured",
-      risk: toolRisk(node)
-    }))
+    tools: backendTools.length > 0
+      ? backendTools
+      : toolNodes.map((node) => ({
+          nodeId: node.id,
+          name: node.type === "mcp_tool" ? `MCP: ${node.tool ?? "unconfigured"}` : node.tool ?? "unconfigured",
+          risk: toolRisk(node),
+          permissions: [],
+          requiresApproval: false
+        }))
   };
 }
 
@@ -1201,6 +1231,14 @@ function PatchArtifactList({ patches }: { patches: unknown[] }) {
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => (typeof item === "string" ? item : JSON.stringify(item)));
+}
+
+function objectList(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const object = objectValue(item);
+    return object ? [object] : [];
+  });
 }
 
 async function hydrateBlobRefs(value: unknown, runId: string): Promise<unknown> {
