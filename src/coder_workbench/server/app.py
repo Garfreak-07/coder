@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,14 @@ from coder_workbench.server.library import LibraryStore
 from coder_workbench.server.manager import RunManager
 from coder_workbench.server.settings import ProviderSettingsStore, provider_status, workflow_provider_status
 from coder_workbench.server.storage import RunStore
+from coder_workbench.skills import (
+    InstalledSkillStore,
+    RegistryClient,
+    RegistryClientError,
+    SkillInstaller,
+    SkillVerificationError,
+    build_skill_index,
+)
 from coder_workbench.tools import default_tool_registry
 from coder_workbench.tools.filesystem import normalize_scope_paths, resolve_existing_dir
 from coder_workbench.tools.patching import rollback_patch
@@ -85,11 +94,20 @@ class ProviderSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class SkillInstallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str
+    registry_url: str | None = None
+    allow_untrusted: bool = False
+
+
 def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | None = None) -> FastAPI:
     app = FastAPI(title="Coder Runtime API", version="0.1.0")
     store = RunStore(store_root)
     settings_store = ProviderSettingsStore(store_root)
     library = LibraryStore(Path(store_root) / "library")
+    skill_store = InstalledSkillStore(store_root)
     manager = RunManager(store, runner_factory=lambda workflow: WorkflowRunner(workflow, runtime_settings=settings_store.load()))
     agent_manager = AgentGraphRunManager(store, runtime_settings_loader=settings_store.load)
 
@@ -103,6 +121,57 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     @app.get("/api/v2/capabilities")
     def get_capabilities() -> dict[str, Any]:
         return {"capabilities": capability_catalog()}
+
+    @app.get("/api/v2/skills/installed")
+    def get_installed_skills() -> dict[str, Any]:
+        records = skill_store.list_installed()
+        return {
+            "skills": [record.summary().model_dump(mode="json") for record in records],
+            "index": build_skill_index(records).model_dump(mode="json"),
+        }
+
+    @app.get("/api/v2/skills/discover")
+    def discover_skills(registry_url: str | None = None) -> dict[str, Any]:
+        try:
+            url = _resolve_skill_registry_url(registry_url)
+            index = RegistryClient(url).fetch_index()
+        except (RegistryClientError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        installed_ids = {record.id for record in skill_store.list_installed()}
+        return {
+            "registry": index.model_dump(mode="json"),
+            "skills": [entry.summary(installed=entry.id in installed_ids) for entry in index.skills],
+        }
+
+    @app.post("/api/v2/skills/install")
+    def install_skill(body: SkillInstallRequest) -> dict[str, Any]:
+        try:
+            url = _resolve_skill_registry_url(body.registry_url)
+            result = SkillInstaller(
+                client=RegistryClient(url),
+                store=skill_store,
+            ).install(body.skill_id, allow_untrusted=body.allow_untrusted)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+        except (RegistryClientError, SkillVerificationError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result.model_dump(mode="json")
+
+    @app.post("/api/v2/skills/{skill_id}/enable")
+    def enable_skill(skill_id: str) -> dict[str, Any]:
+        try:
+            record = skill_store.enable(skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+        return {"skill": record.summary().model_dump(mode="json")}
+
+    @app.post("/api/v2/skills/{skill_id}/disable")
+    def disable_skill(skill_id: str) -> dict[str, Any]:
+        try:
+            record = skill_store.disable(skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+        return {"skill": record.summary().model_dump(mode="json")}
 
     @app.get("/api/v2/providers/settings")
     def get_provider_settings() -> dict[str, Any]:
@@ -559,6 +628,13 @@ def _raise_agent_workflow_validation(agent_workflow: dict[str, Any]) -> None:
     validation = validate_agent_workflow_payload(agent_workflow)
     if validation.status == "error":
         raise AgentWorkflowValidationError(validation)
+
+
+def _resolve_skill_registry_url(registry_url: str | None) -> str:
+    url = (registry_url or os.getenv("CODER_SKILL_REGISTRY_URL") or "").strip()
+    if not url:
+        raise ValueError("registry_url is required when CODER_SKILL_REGISTRY_URL is not configured")
+    return url
 
 
 def _initial_data_from_request(body: RunRequest, repo_root: Path) -> dict[str, Any]:
