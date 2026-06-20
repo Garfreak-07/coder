@@ -16,7 +16,7 @@ class AgentGraphMergeTests(unittest.TestCase):
         self.assertEqual([item.work_item_id for item in bundle.items], ["first", "second"])
         self.assertEqual([item.merge_index for item in bundle.items], [1, 2])
         self.assertEqual(bundle.plan_status, "partial_failed")
-        self.assertEqual(bundle.items[0].refs, ["artifact:execution:first", "artifact:test:first"])
+        self.assertEqual(bundle.items[0].refs, ["execution_result_first", "test_result_first"])
         self.assertEqual(bundle.items[1].test_status, "fail")
         payload = bundle.model_dump(mode="json")
         self.assertNotIn("order_index", str(payload))
@@ -33,7 +33,7 @@ class AgentGraphMergeTests(unittest.TestCase):
         self.assertEqual(summary.failed_count, 1)
         self.assertEqual([item.work_item_id for item in summary.ordered_state], ["first", "second"])
         self.assertEqual(summary.ordered_state[1].status, "failed_test")
-        self.assertEqual(summary.ordered_state[1].refs, ["artifact:execution:second", "artifact:test:second"])
+        self.assertEqual(summary.ordered_state[1].refs, ["execution_result_second", "test_result_second"])
 
 
 def _cache_with_out_of_order_items() -> GraphRunCache:
@@ -72,7 +72,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
             agent_id="executor",
             status="completed",
             execution_summary="First done.",
-            execution_result_ref="artifact:execution:first",
+            execution_result_ref="execution_result_first",
         )
     )
     cache.record_test(
@@ -82,7 +82,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
             tester_agent_id="tester",
             status="pass",
             test_summary="First test passed.",
-            test_result_ref="artifact:test:first",
+            test_result_ref="test_result_first",
         )
     )
     cache.record_execution(
@@ -92,7 +92,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
             agent_id="executor",
             status="completed",
             execution_summary="Second done.",
-            execution_result_ref="artifact:execution:second",
+            execution_result_ref="execution_result_second",
         )
     )
     cache.record_test(
@@ -102,7 +102,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
             tester_agent_id="tester",
             status="fail",
             test_summary="Second test failed.",
-            test_result_ref="artifact:test:second",
+            test_result_ref="test_result_second",
         )
     )
     return cache

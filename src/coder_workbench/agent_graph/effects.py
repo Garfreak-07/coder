@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.core import AgentWorkflowSpec
 from coder_workbench.tools import default_tool_registry
@@ -61,7 +62,7 @@ def _handle_optional_check_commands(
             records.append(record)
             continue
 
-        output_ref = f"memory:check_output:{index}"
+        output_ref = graph_artifact_id("check_output", index)
         record = {
             "effect_type": "optional_check_command",
             "status": "completed" if result.get("passed") else "failed",
@@ -90,7 +91,7 @@ def _handle_patch_previews(
         return []
 
     preview = propose_patch({"changes": changes}, {"repo_root": repo_root, "scopes": scopes, "data": data})
-    patch_ref = f"memory:patch_preview:{preview['patch_id']}"
+    patch_ref = graph_artifact_id("patch_preview", preview["patch_id"])
     record = {
         "effect_type": "modify_files",
         "status": "patch_preview_created",

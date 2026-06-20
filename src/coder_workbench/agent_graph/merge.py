@@ -12,7 +12,7 @@ from coder_workbench.agent_graph.schema import (
 
 
 def build_planner_input_bundle(cache: GraphRunCache) -> PlannerInputBundle:
-    planner_order_ref = cache.plan_cache.planner_order_ref if cache.plan_cache else "memory:planner_order:unknown"
+    planner_order_ref = cache.plan_cache.planner_order_ref if cache.plan_cache else "planner_order_unknown"
     items = [
         PlannerInputBundleItem(
             work_item_id=item.work_item_id,
@@ -42,7 +42,7 @@ def build_planner_input_bundle(cache: GraphRunCache) -> PlannerInputBundle:
 
 
 def build_round_summary(cache: GraphRunCache) -> PlanRunSummary:
-    planner_order_ref = cache.plan_cache.planner_order_ref if cache.plan_cache else "memory:planner_order:unknown"
+    planner_order_ref = cache.plan_cache.planner_order_ref if cache.plan_cache else "planner_order_unknown"
     bundle = build_planner_input_bundle(cache)
     ordered_state = [
         RoundSummaryItem(

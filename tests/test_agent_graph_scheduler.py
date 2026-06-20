@@ -156,7 +156,7 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
         second_task = result.data["graph_run_cache"]["agent_tasks"]["second"]
         self.assertEqual(
             second_task["upstream_refs"],
-            ["memory:execution_result:first", "memory:test_result:first:tester"],
+            ["execution_result_first", "test_result_first_tester"],
         )
 
     def test_runner_emits_waves_and_resource_deferred_events(self) -> None:

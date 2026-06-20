@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from coder_workbench.agent_graph.artifacts import AgentGraphArtifactRecorder, graph_artifact_id
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.agent_graph.context import upstream_refs_for_item
 from coder_workbench.agent_graph.effects import apply_hidden_effects
@@ -44,6 +45,7 @@ class AgentGraphRunner:
     ) -> RunResult:
         events = list(prior_events or [])
         data = dict(initial_data or {})
+        artifacts: dict[str, Any] = {}
         blocked_node_id = None
         result_resume_checkpoint = None
 
@@ -52,6 +54,8 @@ class AgentGraphRunner:
             events.append(event)
             if self.event_sink:
                 self.event_sink(event)
+
+        recorder = AgentGraphArtifactRecorder(artifacts, emit)
 
         try:
             if resume_after_node:
@@ -79,14 +83,20 @@ class AgentGraphRunner:
             cache = GraphRunCache(round=1)
             planner_order = self._planner_order_from_initial_data(data) or self._mock_planner_order(request)
             assert_valid_planner_order(self.agent_workflow, planner_order)
-            planner_order_ref = "memory:planner_order:round-1"
+            planner_order_ref = graph_artifact_id("planner_order", "round", 1)
             data["planner_order"] = planner_order.model_dump(mode="json", exclude_none=True)
             emit(
                 "planner.order.produced",
                 "Planner produced a PlanGraph",
                 artifact_type="planner_order",
+                artifact_id=planner_order_ref,
                 round=1,
                 planner_order=data["planner_order"],
+            )
+            data["planner_order"] = recorder.record(
+                planner_order_ref,
+                data["planner_order"],
+                expected_type="planner_order",
             )
             plan_cache = cache.cache_planner_order(planner_order, planner_order_ref)
             emit(
@@ -104,16 +114,17 @@ class AgentGraphRunner:
                 for blocked in scheduler.block_items_with_failed_upstreams():
                     item = blocked.work_item
                     scheduler.mark_blocked(item.work_item_id)
-                    cache.record_execution(
+                    execution = cache.record_execution(
                         ExecutionRecord(
                             work_item_id=item.work_item_id,
                             merge_index=item.merge_index,
                             agent_id=item.assignee_agent_id,
                             status="blocked",
                             execution_summary=f"Blocked by failed upstream work item(s): {', '.join(blocked.blocked_by)}.",
-                            execution_result_ref=f"memory:execution_result:{item.work_item_id}:blocked",
+                            execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
                         )
                     )
+                    self._record_execution_artifact(recorder, cache.round, execution)
                     emit(
                         "agent_task.blocked",
                         f"Task {item.work_item_id} blocked by upstream failure",
@@ -166,6 +177,7 @@ class AgentGraphRunner:
                 outcomes = self._run_wave(wave)
                 for outcome in outcomes:
                     execution = cache.record_execution(outcome.execution)
+                    self._record_execution_artifact(recorder, cache.round, execution)
                     if execution.status == "completed":
                         emit(
                             "agent_task.completed",
@@ -195,6 +207,7 @@ class AgentGraphRunner:
                         scheduler.mark_failed(outcome.work_item_id)
                     for test in outcome.tests:
                         test_record = cache.record_test(test)
+                        self._record_test_artifact(recorder, cache.round, test_record)
                         emit(
                             "test.local.completed",
                             f"Local test for {outcome.work_item_id} completed",
@@ -231,25 +244,37 @@ class AgentGraphRunner:
             )
             if hidden_effects:
                 data["hidden_effects"] = hidden_effects
+                self._emit_hidden_effect_outputs(cache, hidden_effects, emit)
             data["graph_run_cache"] = cache.as_runtime_payload()
 
             planner_input_bundle = build_planner_input_bundle(cache)
-            data["planner_input_bundle"] = planner_input_bundle.model_dump(mode="json", exclude_none=True)
+            planner_input_bundle_ref = graph_artifact_id("planner_input_bundle", "round", cache.round)
+            data["planner_input_bundle"] = recorder.record(
+                planner_input_bundle_ref,
+                planner_input_bundle.model_dump(mode="json", exclude_none=True),
+            )
             emit(
                 "planner.input_bundle.created",
                 "Compact PlannerInputBundle created",
                 artifact_type="planner_input_bundle",
+                artifact_id=planner_input_bundle_ref,
                 round=1,
                 items=len(planner_input_bundle.items),
                 plan_status=planner_input_bundle.plan_status,
             )
 
             round_summary = build_round_summary(cache)
-            data["round_summary"] = round_summary.model_dump(mode="json")
+            round_summary_ref = graph_artifact_id("round_summary", "round", cache.round)
+            data["round_summary"] = recorder.record(
+                round_summary_ref,
+                round_summary.model_dump(mode="json"),
+                expected_type="round_summary",
+            )
             emit(
                 "round_summary.created",
                 "Round summary created",
                 artifact_type="round_summary",
+                artifact_id=round_summary_ref,
                 round=1,
                 plan_status=round_summary.plan_status,
             )
@@ -261,16 +286,26 @@ class AgentGraphRunner:
                 "next_action": "finish",
                 "reason": "Phase 6 AgentGraphRunner mock-mode completed dependency scheduling.",
             }
-            data["planner_decision"] = planner_decision
+            planner_decision_ref = graph_artifact_id("planner_decision", "round", 1)
+            data["planner_decision"] = recorder.record(
+                planner_decision_ref,
+                planner_decision,
+                expected_type="planner_decision",
+            )
             emit(
                 "planner.decision.produced",
                 "Planner decision produced",
                 artifact_type="planner_decision",
+                artifact_id=planner_decision_ref,
                 round=1,
-                next_action=planner_decision["next_action"],
+                next_action=data["planner_decision"]["next_action"],
             )
-            if planner_decision["next_action"] == "ask_human":
-                prompt = planner_decision.get("human_message") or planner_decision.get("reason") or "Planner needs user input."
+            if data["planner_decision"]["next_action"] == "ask_human":
+                prompt = (
+                    data["planner_decision"].get("human_message")
+                    or data["planner_decision"].get("reason")
+                    or "Planner needs user input."
+                )
                 data["planner_human_prompt"] = prompt
                 emit(
                     "planner.human_prompt",
@@ -300,7 +335,7 @@ class AgentGraphRunner:
             status=status,
             data=data,
             summaries={key: summarize_value(value) for key, value in data.items()},
-            artifacts={},
+            artifacts=artifacts,
             events=events,
             estimated_tokens_used=0,
             agent_calls=0,
@@ -361,7 +396,7 @@ class AgentGraphRunner:
                                 agent_id=item.assignee_agent_id,
                                 status="failed",
                                 execution_summary=f"Work item failed: {exc}",
-                                execution_result_ref=f"memory:execution_result:{item.work_item_id}:failed",
+                                execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
                             ),
                             tests=[],
                         )
@@ -378,7 +413,7 @@ class AgentGraphRunner:
                 agent_id=item.assignee_agent_id,
                 status="completed",
                 execution_summary="Phase 3 mock execution completed from an AgentTaskEnvelope.",
-                execution_result_ref=f"memory:execution_result:{item.work_item_id}",
+                execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
             ),
             tests=[
                 TestRecord(
@@ -387,17 +422,88 @@ class AgentGraphRunner:
                     tester_agent_id=tester_agent_id,
                     status="pass",
                     test_summary="Phase 3 mock test evidence recorded.",
-                    test_result_ref=f"memory:test_result:{item.work_item_id}:{tester_agent_id}",
+                    test_result_ref=graph_artifact_id("test_result", item.work_item_id, tester_agent_id),
                 )
                 for tester_agent_id in item.tester_agent_ids
             ],
         )
 
+    def _record_execution_artifact(
+        self,
+        recorder: AgentGraphArtifactRecorder,
+        round_number: int,
+        execution: ExecutionRecord,
+    ) -> dict[str, Any]:
+        return recorder.record(
+            execution.execution_result_ref,
+            {
+                "artifact_type": "execution_result",
+                "round": round_number,
+                "work_item_id": execution.work_item_id,
+                "merge_index": execution.merge_index,
+                "agent_id": execution.agent_id,
+                "status": execution.status,
+                "summary": execution.execution_summary,
+            },
+            expected_type="execution_result",
+        )
+
+    def _record_test_artifact(
+        self,
+        recorder: AgentGraphArtifactRecorder,
+        round_number: int,
+        test: TestRecord,
+    ) -> dict[str, Any]:
+        return recorder.record(
+            test.test_result_ref or graph_artifact_id("test_result", test.work_item_id, test.tester_agent_id),
+            {
+                "artifact_type": "test_result",
+                "round": round_number,
+                "work_item_id": test.work_item_id,
+                "merge_index": test.merge_index,
+                "tester_agent_id": test.tester_agent_id,
+                "status": test.status,
+                "summary": test.test_summary,
+            },
+            expected_type="test_result",
+        )
+
+    def _emit_hidden_effect_outputs(
+        self,
+        cache: GraphRunCache,
+        effects: list[dict[str, Any]],
+        emit: Any,
+    ) -> None:
+        effect_by_ref = {
+            str(effect.get("output_ref") or effect.get("patch_ref")): effect
+            for effect in effects
+            if effect.get("output_ref") or effect.get("patch_ref")
+        }
+        for output_ref, output in cache.hidden_effect_outputs.items():
+            effect = effect_by_ref.get(output_ref, {})
+            tool = "propose_patch" if effect.get("effect_type") == "modify_files" else "run_check"
+            emit(
+                "tool.result",
+                f"Hidden effect output {output_ref} recorded",
+                tool=tool,
+                tool_result_id=output_ref,
+                result=output,
+                result_summary=summarize_value(output),
+                result_status=output.get("status") if isinstance(output, dict) else effect.get("status"),
+                result_keys=sorted(output.keys()) if isinstance(output, dict) else None,
+                result_size_chars=len(str(output)),
+            )
+
     def _planner_order_from_initial_data(self, data: dict[str, Any]) -> PlannerOrder | None:
         value = data.get("planner_order")
         if not isinstance(value, dict):
             return None
-        return PlannerOrder.model_validate(value)
+        payload = {
+            key: value[key]
+            for key in ("artifact_type", "round", "round_goal", "plan_graph")
+            if key in value
+        }
+        return PlannerOrder.model_validate(payload)
 
     def _planner_decision_from_initial_data(self, data: dict[str, Any]) -> dict[str, Any] | None:
         value = data.get("planner_decision")
