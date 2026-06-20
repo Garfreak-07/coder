@@ -636,6 +636,15 @@ label {
   padding: 10px;
 }
 
+.validation-panel {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
 .preflight-section {
   display: grid;
   gap: 8px;
@@ -697,6 +706,47 @@ label {
 
 .preflight-issue small {
   color: #7b8797;
+}
+
+.capability-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.capability-option {
+  align-items: start;
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 8px;
+}
+
+.capability-option.selected {
+  border-color: #38bdf8;
+}
+
+.capability-option input {
+  margin-top: 3px;
+  width: auto;
+}
+
+.capability-option span {
+  display: grid;
+  gap: 4px;
+}
+
+.capability-option small {
+  color: #7b8797;
+  line-height: 1.35;
+}
+
+.warning-text {
+  color: #fbbf24 !important;
 }
 
 .modal-actions {

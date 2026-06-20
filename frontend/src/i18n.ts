@@ -1,5 +1,164 @@
 import type { NodeType } from "./types";
 
+export const enUS = {
+  app: {
+    title: "Workflow Workbench",
+    eyebrow: "Planner-led local workflows",
+    defaultStatus: "Ready"
+  },
+  templates: {
+    title: "Start From Template",
+    defaultCodingName: "Planner-led Default Workflow",
+    defaultCodingPurpose: "Planner decides, Executor acts, Tester returns evidence, and only structured handoff data is passed.",
+    blankName: "Blank Advanced Workflow",
+    blankPurpose: "Start/end only. Useful for legacy runtime editing or JSON import.",
+    useTemplate: "Use Template",
+    agents: "Agents",
+    tools: "Tools",
+    approvals: "Approvals",
+    model: "Model",
+    knowledge: "Knowledge",
+    risk: "Risk",
+    requiredApprovals: "Approval before implementation and patch apply",
+    plannerOnlyHuman: "Only Planner can ask the user",
+    optionalModel: "OpenAI/DeepSeek or mock mode",
+    projectKnowledge: "Project summary, expandable with local md/txt knowledge",
+    structuredHandoff: "Structured artifacts such as RunContract, PlannerOrder, and ExecutionResult",
+    mediumRisk: "Medium: Executor owns implementation but direct write tools stay hidden by default",
+    lowRisk: "Low: no writable nodes"
+  },
+  library: {
+    title: "Workflow Library",
+    loadExample: "Load Default",
+    refresh: "Refresh",
+    empty: "No saved workflows yet.",
+    nodeEdgeCount: (nodes: number, edges: number) => `${nodes} nodes / ${edges} edges`
+  },
+  run: {
+    title: "Run",
+    repo: "Project Path",
+    scopes: "Scopes",
+    scopesPlaceholder: "Optional: one repo-relative path per line",
+    request: "Request",
+    preApprove: "Pre-approve approval gates",
+    start: "Start Live Run"
+  },
+  preflight: {
+    eyebrow: "Preflight",
+    title: "Preflight Confirmation",
+    running: "Checking...",
+    pass: "Pass",
+    warning: "Warning",
+    error: "Error",
+    nodes: (nodes: number, edges: number) => `${nodes} nodes / ${edges} edges`,
+    reachable: (nodes: number) => `${nodes} reachable nodes`,
+    agents: (count: number) => `${count} agents`,
+    tokenBudget: (budget: string) => `Token budget: ${budget}`,
+    stepBudget: (steps: number) => `Max steps: ${steps}`,
+    toolBudget: (calls: number) => `Max tool calls: ${calls}`,
+    permissions: "Permission Summary",
+    editAgents: (count: number) => `${count} agents can edit files`,
+    commandAgents: (count: number) => `${count} agents can run commands`,
+    networkAgents: (count: number) => `${count} agents can use network`,
+    approvalAgents: (count: number) => `${count} agents need approval`,
+    approvalTools: (count: number) => `${count} tools need approval`,
+    scopes: "Scopes",
+    noScopes: "No scope restrictions were provided. Runtime path protections still apply.",
+    tools: "Tool Risk",
+    noTools: "This workflow has no tool nodes.",
+    issues: "Issues",
+    noIssues: "No errors or warnings.",
+    errorsBlock: (count: number) => `${count} errors block the run. Fix them and check again.`,
+    warningsConfirm: (count: number) => `${count} warnings need confirmation before launch.`,
+    cancel: "Cancel",
+    close: "Close",
+    confirm: "Confirm Start"
+  },
+  runtime: {
+    title: "Runtime",
+    refresh: "Refresh Runtime",
+    unknown: "Unknown",
+    tools: (count: number) => `${count} tools`,
+    liveRuns: (count: number) => `${count} live runs`,
+    storedRuns: (count: number) => `${count} stored runs`,
+    noLiveRuns: "No live runs.",
+    storedHistory: "Stored History",
+    noStoredRuns: "No stored runs."
+  },
+  canvas: {
+    addNode: (type: NodeType) => `+ ${nodeTypeLabels[type]}`
+  },
+  json: {
+    title: "Workflow JSON (Advanced)",
+    apply: "Apply JSON",
+    save: "Save",
+    export: "Export",
+    import: "Import"
+  },
+  inspector: {
+    title: "Inspector",
+    empty: "Select a node or edge.",
+    agents: "Agents",
+    addAgent: "+ Agent",
+    saveAgent: "Save Agent",
+    noAgents: "This workflow has no agents.",
+    libraryAgents: "Library Agents"
+  },
+  events: {
+    title: "Run Events",
+    empty: "No events yet."
+  },
+  forms: {
+    id: "ID",
+    type: "Type",
+    agent: "Agent",
+    selectAgent: "Select Agent",
+    tool: "Tool",
+    mcpToolName: "MCP Tool Name",
+    inputJson: "Input JSON",
+    condition: "Condition",
+    approvalReason: "Approval Reason",
+    loopMode: "Loop Mode",
+    maxIterations: "Max Iterations",
+    itemsKey: "Items Key",
+    itemKey: "Item Key",
+    iterationKey: "Iteration Key",
+    collectKey: "Collect Key",
+    summaryKey: "Summary Key",
+    outputKey: "Output Key",
+    from: "From",
+    to: "To",
+    priority: "Priority",
+    maxTraversals: "Max Traversals",
+    name: "Name",
+    role: "Role",
+    goal: "Goal",
+    instructions: "Instructions",
+    provider: "Provider",
+    model: "Model",
+    permissions: "Permissions",
+    readFiles: "Read files",
+    editFiles: "Edit files",
+    runCommands: "Run commands",
+    useNetwork: "Use network",
+    requiresApproval: "Requires approval",
+    contextPolicy: "Context Policy",
+    inputKeys: "Input keys",
+    summaryKeys: "Summary keys"
+  }
+};
+
+export const zhCNNodeTypeLabels: Record<NodeType, string> = {
+  start: "开始",
+  agent: "智能体",
+  tool: "工具",
+  mcp_tool: "MCP 工具",
+  condition: "条件",
+  loop: "循环",
+  human_gate: "人工审批",
+  end: "结束"
+};
+
 export const zhCN = {
   app: {
     title: "工作流工作台",
@@ -86,7 +245,7 @@ export const zhCN = {
     noStoredRuns: "没有历史运行。"
   },
   canvas: {
-    addNode: (type: NodeType) => `+ ${nodeTypeLabels[type]}`
+    addNode: (type: NodeType) => `+ ${zhCNNodeTypeLabels[type]}`
   },
   json: {
     title: "工作流 JSON（高级）",
@@ -149,23 +308,23 @@ export const zhCN = {
 };
 
 export const nodeTypeLabels: Record<NodeType, string> = {
-  start: "开始",
-  agent: "智能体",
-  tool: "工具",
-  mcp_tool: "MCP 工具",
-  condition: "条件",
-  loop: "循环",
-  human_gate: "人工审批",
-  end: "结束"
+  start: "Start",
+  agent: "Agent",
+  tool: "Tool",
+  mcp_tool: "MCP Tool",
+  condition: "Condition",
+  loop: "Loop",
+  human_gate: "Human Approval",
+  end: "End"
 };
 
 export const nodeTypeDescriptions: Record<NodeType, string> = {
-  start: "工作流入口",
-  agent: "调用配置好的智能体",
-  tool: "调用内置本地工具",
-  mcp_tool: "调用 MCP stdio 工具",
-  condition: "按状态表达式分支",
-  loop: "显式循环控制节点，输出 continue、iteration 和 break_reason 供连线条件使用",
-  human_gate: "等待用户批准或拒绝",
-  end: "工作流结束"
+  start: "Workflow entry point",
+  agent: "Call a configured agent",
+  tool: "Call a built-in local tool",
+  mcp_tool: "Call an MCP stdio tool",
+  condition: "Branch by a state expression",
+  loop: "Explicit loop control node that emits continue, iteration, and break_reason for edge conditions",
+  human_gate: "Wait for the user to approve or reject",
+  end: "Workflow end"
 };

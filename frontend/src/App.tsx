@@ -17,6 +17,7 @@ import {
   approveLiveRun,
   compileAgentWorkflowRemote,
   deleteRun,
+  getCapabilities,
   getHealth,
   getAgent,
   getAgentWorkflow,
@@ -37,13 +38,15 @@ import {
   saveProviderSettings,
   saveWorkflow,
   startLiveRun,
+  startLiveAgentRun,
   subscribeRunEvents,
   testProvider,
   retryCurrentNode,
+  validateAgentWorkflow,
   validateWorkflow
 } from "./api";
-import { compileAgentWorkflow, defaultPlannerLedAgentWorkflow } from "./examples";
-import { nodeTypeDescriptions, nodeTypeLabels, zhCN } from "./i18n";
+import { codingWorkbenchWorkflow, defaultPlannerLedAgentWorkflow } from "./examples";
+import { enUS, nodeTypeDescriptions, nodeTypeLabels } from "./i18n";
 import { EventReplayList, hydrateBlobRefs, objectList, objectValue, stringList } from "./runEvents";
 import { agentWorkflowTemplateCards, instantiateAgentWorkflowTemplate, type AgentWorkflowTemplateCard } from "./template";
 import {
@@ -73,11 +76,13 @@ import {
 import type {
   AgentModelTier,
   AgentSpec,
+  AgentWorkflowRole,
   AgentWorkflowAgent,
   AgentWorkflowEdge,
+  AgentWorkflowValidationResult,
   AgentWorkflowSpec,
+  CapabilitySpec,
   EdgeSpec,
-  HandoffType,
   HealthStatus,
   LibraryIndex,
   LiveRunDetail,
@@ -99,10 +104,20 @@ const advancedNodeTypes: NodeType[] = ["start", "tool", "mcp_tool", "condition",
 const nodeTypes: NodeType[] = [...primaryNodeTypes, ...advancedNodeTypes];
 const loopModes: LoopMode[] = ["retry_until", "while", "for_each"];
 const agentModelTiers: AgentModelTier[] = ["best", "standard", "economy"];
-const handoffTypes: HandoffType[] = ["run_contract", "planner_order", "execution_result", "test_result", "planner_decision", "round_summary"];
-const t = zhCN;
+const agentWorkflowRoles: AgentWorkflowRole[] = [
+  "planner",
+  "executor",
+  "worker",
+  "tester",
+  "reviewer",
+  "writer",
+  "researcher",
+  "summarizer",
+  "custom"
+];
+const t = enUS;
 const initialAgentWorkflow = cloneAgentWorkflow(defaultPlannerLedAgentWorkflow);
-const initialRuntimeWorkflow = compileAgentWorkflow(initialAgentWorkflow);
+const initialRuntimeWorkflow = codingWorkbenchWorkflow;
 
 interface PendingPreflightRun {
   repo: string;
@@ -136,6 +151,9 @@ export function App() {
   const [jsonText, setJsonText] = useState(() => formatJson(initialAgentWorkflow));
   const [runtimeJsonText, setRuntimeJsonText] = useState(() => formatJson(initialRuntimeWorkflow));
   const [showAdvancedRuntime, setShowAdvancedRuntime] = useState(false);
+  const [runtimePreviewDirty, setRuntimePreviewDirty] = useState(false);
+  const [capabilities, setCapabilities] = useState<CapabilitySpec[]>([]);
+  const [agentWorkflowValidation, setAgentWorkflowValidation] = useState<AgentWorkflowValidationResult | null>(null);
   const [nodes, setNodes] = useState<FlowNode[]>(() => toAgentFlowNodes(initialAgentWorkflow));
   const [edges, setEdges] = useState<FlowEdge[]>(() => toAgentFlowEdges(initialAgentWorkflow));
   const [selectedAgentWorkflowId, setSelectedAgentWorkflowId] = useState<string | null>("planner");
@@ -212,11 +230,12 @@ export function App() {
   }
 
   function refreshRuntimeInfo() {
-    Promise.all([getRuns(), getLiveRuns(), getHealth()])
-      .then(([runs, live, nextHealth]) => {
+    Promise.all([getRuns(), getLiveRuns(), getHealth(), getCapabilities()])
+      .then(([runs, live, nextHealth, nextCapabilities]) => {
         setRunHistory(runs);
         setLiveRuns(live);
         setHealth(nextHealth);
+        setCapabilities(nextCapabilities);
       })
       .catch((error) => setStatus(`Failed to load runtime info: ${error.message}`));
   }
@@ -368,31 +387,84 @@ export function App() {
     setEdges(advanced ? toFlowEdges(nextWorkflow) : toAgentFlowEdges(nextAgentWorkflow));
   }
 
-  function setCurrentAgentWorkflow(next: AgentWorkflowSpec, runtime = compileAgentWorkflow(next)) {
+  function setCurrentAgentWorkflow(next: AgentWorkflowSpec, runtime?: WorkflowSpec) {
     const clean = cloneAgentWorkflow(next);
     setAgentWorkflow(clean);
-    setWorkflow(runtime);
     setJsonText(formatJson(clean));
-    setRuntimeJsonText(formatJson(runtime));
-    renderWorkflowCanvas(clean, runtime);
+    if (runtime) {
+      setWorkflow(runtime);
+      setRuntimeJsonText(formatJson(runtime));
+      setRuntimePreviewDirty(false);
+      renderWorkflowCanvas(clean, runtime);
+      setSelectedNodeId(runtime.nodes[0]?.id ?? null);
+      setSelectedAgentId(runtime.agents[0]?.id ?? null);
+    } else {
+      setRuntimePreviewDirty(true);
+      if (showAdvancedRuntime) {
+        setShowAdvancedRuntime(false);
+      }
+      renderWorkflowCanvas(clean, workflow, false);
+    }
     setSelectedAgentWorkflowId(clean.agents[0]?.id ?? null);
     setSelectedAgentWorkflowEdgeId(null);
-    setSelectedNodeId(runtime.nodes[0]?.id ?? null);
     setSelectedEdgeId(null);
-    setSelectedAgentId(runtime.agents[0]?.id ?? null);
   }
 
   function updateAgentWorkflow(mutator: (current: AgentWorkflowSpec) => AgentWorkflowSpec) {
     const next = cloneAgentWorkflow(mutator(cloneAgentWorkflow(agentWorkflow)));
-    const runtime = compileAgentWorkflow(next);
     setAgentWorkflow(next);
-    setWorkflow(runtime);
     setJsonText(formatJson(next));
-    setRuntimeJsonText(formatJson(runtime));
-    renderWorkflowCanvas(next, runtime);
+    setAgentWorkflowValidation(null);
+    setRuntimePreviewDirty(true);
+    if (!showAdvancedRuntime) {
+      renderWorkflowCanvas(next, workflow, false);
+    }
   }
 
-  function setAdvancedRuntimeMode(enabled: boolean) {
+  async function compileRuntimePreview(successStatus = "Runtime preview compiled.") {
+    const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
+    const validation = await validateAgentWorkflow(parsed);
+    setAgentWorkflowValidation(validation);
+    const clean = cloneAgentWorkflow(parsed);
+    setAgentWorkflow(clean);
+    setJsonText(formatJson(clean));
+    setRuntimePreviewDirty(true);
+    if (!showAdvancedRuntime) {
+      renderWorkflowCanvas(clean, workflow, false);
+    }
+    if (validation.status === "error") {
+      setStatus("Cannot compile runtime preview until Agent workflow validation errors are fixed.");
+      return null;
+    }
+    const payload = await compileAgentWorkflowRemote(parsed);
+    setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
+    setStatus(successStatus);
+    return payload;
+  }
+
+  async function setAdvancedRuntimeMode(enabled: boolean) {
+    if (enabled && runtimePreviewDirty) {
+      setStatus("Compiling runtime preview...");
+      try {
+        const payload = await compileRuntimePreview();
+        if (!payload) {
+          setShowAdvancedRuntime(false);
+          return;
+        }
+        setShowAdvancedRuntime(true);
+        setNodes(toFlowNodes(payload.workflow));
+        setEdges(toFlowEdges(payload.workflow));
+        setSelectedNodeId(payload.workflow.nodes[0]?.id ?? null);
+        setSelectedEdgeId(null);
+        setSelectedAgentId(payload.workflow.agents[0]?.id ?? null);
+        setSelectedAgentWorkflowEdgeId(null);
+        return;
+      } catch (error) {
+        setShowAdvancedRuntime(false);
+        setStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
     setShowAdvancedRuntime(enabled);
     setNodes(enabled ? toFlowNodes(workflow) : toAgentFlowNodes(agentWorkflow));
     setEdges(enabled ? toFlowEdges(workflow) : toAgentFlowEdges(agentWorkflow));
@@ -414,7 +486,7 @@ export function App() {
   function useTemplateCard(template: AgentWorkflowTemplateCard) {
     const next = instantiateAgentWorkflowTemplate(template);
     setCurrentAgentWorkflow(next);
-    setStatus(`已从模板创建：${next.name}`);
+    setStatus(`Created from template: ${next.name}`);
   }
 
   async function loadDefaultAgentWorkflow() {
@@ -453,9 +525,14 @@ export function App() {
   async function applyJson() {
     try {
       const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
-      const payload = await compileAgentWorkflowRemote(parsed);
-      setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
-      setStatus("Agent workflow JSON applied locally. Save to persist it.");
+      setCurrentAgentWorkflow(parsed);
+      const validation = await validateAgentWorkflow(parsed);
+      setAgentWorkflowValidation(validation);
+      setStatus(
+        validation.status === "error"
+          ? "Agent workflow JSON applied with validation errors. Fix them before saving or running."
+          : "Agent workflow JSON applied locally. Save to persist it."
+      );
     } catch (error) {
       setStatus(error instanceof Error ? `Invalid Agent workflow JSON: ${error.message}` : "Invalid Agent workflow JSON");
     }
@@ -464,6 +541,13 @@ export function App() {
   async function persistWorkflow() {
     try {
       const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
+      const validation = await validateAgentWorkflow(parsed);
+      setAgentWorkflowValidation(validation);
+      if (validation.status === "error") {
+        setCurrentAgentWorkflow(parsed);
+        setStatus("Save blocked by Agent workflow validation errors.");
+        return;
+      }
       const saved = await saveAgentWorkflow(parsed);
       const payload = await compileAgentWorkflowRemote(saved);
       setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
@@ -490,9 +574,14 @@ export function App() {
       .text()
       .then(async (text) => {
         const parsed = JSON.parse(text) as AgentWorkflowSpec;
-        const payload = await compileAgentWorkflowRemote(parsed);
-        setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
-        setStatus(`Imported Agent workflow ${payload.agent_workflow.id}`);
+        setCurrentAgentWorkflow(parsed);
+        const validation = await validateAgentWorkflow(parsed);
+        setAgentWorkflowValidation(validation);
+        setStatus(
+          validation.status === "error"
+            ? `Imported Agent workflow ${parsed.id} with validation errors`
+            : `Imported Agent workflow ${parsed.id}`
+        );
       })
       .catch((error) => setStatus(error instanceof Error ? `Import failed: ${error.message}` : "Import failed"));
   }
@@ -591,6 +680,65 @@ export function App() {
     setSelectedAgentId(agent.id);
   }
 
+  function uniqueAgentWorkflowAgentId(current: AgentWorkflowSpec) {
+    const used = new Set(current.agents.map((agent) => agent.id));
+    let index = current.agents.length + 1;
+    let candidate = `agent_${index}`;
+    while (used.has(candidate)) {
+      index += 1;
+      candidate = `agent_${index}`;
+    }
+    return candidate;
+  }
+
+  function addAgentWorkflowAgent() {
+    const id = uniqueAgentWorkflowAgentId(agentWorkflow);
+    const agent: AgentWorkflowAgent = {
+      id,
+      name: "New Agent",
+      role: "worker",
+      model_tier: "standard",
+      can_talk_to_human: false,
+      capabilities: []
+    };
+    updateAgentWorkflow((current) => {
+      const layout = { ...(current.ui?.layout ?? {}) };
+      const index = current.agents.length;
+      layout[id] = { x: 80 + (index % 3) * 280, y: 120 + Math.floor(index / 3) * 170 };
+      return {
+        ...current,
+        agents: [...current.agents, agent],
+        ui: { ...(current.ui ?? {}), layout }
+      };
+    });
+    setSelectedAgentWorkflowId(id);
+    setSelectedAgentWorkflowEdgeId(null);
+    setStatus("Added Agent. Select capabilities before saving.");
+  }
+
+  function removeAgentWorkflowAgent(agentId = selectedAgentWorkflowId) {
+    if (!agentId) return;
+    const target = agentWorkflow.agents.find((agent) => agent.id === agentId);
+    if (!target) return;
+    if (agentId === agentWorkflow.primary_planner_id) {
+      setStatus("Primary Planner cannot be deleted. Assign another Planner first.");
+      return;
+    }
+    updateAgentWorkflow((current) => {
+      const layout = { ...(current.ui?.layout ?? {}) };
+      delete layout[agentId];
+      return {
+        ...current,
+        agents: current.agents.filter((agent) => agent.id !== agentId),
+        edges: current.edges.filter((edge) => edge.from !== agentId && edge.to !== agentId),
+        ui: { ...(current.ui ?? {}), layout }
+      };
+    });
+    setSelectedAgentWorkflowId((current) => (current === agentId ? agentWorkflow.primary_planner_id : current));
+    setSelectedAgentWorkflowEdgeId(null);
+    setStatus(`Deleted Agent ${target.name}.`);
+  }
+
   function updateSelectedAgent(patch: Partial<AgentSpec>) {
     if (!selectedAgent) return;
     const nextId = patch.id;
@@ -610,7 +758,14 @@ export function App() {
     updateAgentWorkflow((current) => ({
       ...current,
       agents: current.agents.map((agent) =>
-        agent.id === selectedAgentWorkflowAgent.id ? { ...agent, ...patch, id: agent.id, role: agent.role } : agent
+        agent.id === selectedAgentWorkflowAgent.id
+          ? {
+              ...agent,
+              ...patch,
+              id: agent.id,
+              can_talk_to_human: patch.role && patch.role !== "planner" ? false : patch.can_talk_to_human ?? agent.can_talk_to_human
+            }
+          : agent
       )
     }));
   }
@@ -671,13 +826,93 @@ export function App() {
     }
   }, []);
 
-  const onAgentNodesChange = useCallback((changes: NodeChange[]) => {
-    setNodes((current) => applyNodeChanges(changes.filter((change) => change.type !== "remove"), current));
-  }, []);
+  const onAgentNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      const removedIds = changes.filter((change) => change.type === "remove").map((change) => change.id);
+      const blockedPrimaryDelete = removedIds.includes(agentWorkflow.primary_planner_id);
+      const removableIds = new Set(removedIds.filter((id) => id !== agentWorkflow.primary_planner_id));
+      if (blockedPrimaryDelete) {
+        setStatus("Primary Planner cannot be deleted. Assign another Planner first.");
+      }
+      const allowedChanges = changes.filter((change) => change.type !== "remove" || removableIds.has(change.id));
+      setNodes((currentNodes) => {
+        const nextNodes = applyNodeChanges(allowedChanges, currentNodes);
+        setAgentWorkflow((currentWorkflow) => {
+          const layout = { ...(currentWorkflow.ui?.layout ?? {}) };
+          const agentIds = new Set(currentWorkflow.agents.map((agent) => agent.id));
+          for (const node of nextNodes) {
+            if (agentIds.has(node.id)) {
+              layout[node.id] = { x: node.position.x, y: node.position.y };
+            }
+          }
+          for (const removedId of removableIds) {
+            delete layout[removedId];
+          }
+          const nextWorkflow = {
+            ...currentWorkflow,
+            agents: currentWorkflow.agents.filter((agent) => !removableIds.has(agent.id)),
+            edges: currentWorkflow.edges.filter((edge) => !removableIds.has(edge.from) && !removableIds.has(edge.to)),
+            ui: { ...(currentWorkflow.ui ?? {}), layout }
+          };
+          setJsonText(formatJson(nextWorkflow));
+          setAgentWorkflowValidation(null);
+          setRuntimePreviewDirty(true);
+          setSelectedAgentWorkflowId((current) =>
+            current && removableIds.has(current) ? nextWorkflow.agents[0]?.id ?? null : current
+          );
+          setSelectedAgentWorkflowEdgeId((current) => (current && removedIds.length > 0 ? null : current));
+          return nextWorkflow;
+        });
+        return nextNodes;
+      });
+    },
+    [agentWorkflow.primary_planner_id]
+  );
 
   const onAgentEdgesChange = useCallback((changes: EdgeChange[]) => {
-    setEdges((current) => applyEdgeChanges(changes.filter((change) => change.type !== "remove"), current));
+    const removedIndexes = new Set(
+      changes
+        .filter((change) => change.type === "remove")
+        .map((change) => agentEdgeIndexFromId(change.id))
+        .filter((index): index is number => index !== null)
+    );
+    setEdges((current) => applyEdgeChanges(changes, current));
+    if (removedIndexes.size > 0) {
+      setAgentWorkflow((currentWorkflow) => {
+        const nextWorkflow = {
+          ...currentWorkflow,
+          edges: currentWorkflow.edges.filter((_, index) => !removedIndexes.has(index))
+        };
+        setJsonText(formatJson(nextWorkflow));
+        setEdges(toAgentFlowEdges(nextWorkflow));
+        setAgentWorkflowValidation(null);
+        setRuntimePreviewDirty(true);
+        setSelectedAgentWorkflowEdgeId(null);
+        return nextWorkflow;
+      });
+    }
   }, []);
+
+  function onAgentConnect(connection: Connection) {
+    const source = connection.source;
+    const target = connection.target;
+    if (!source || !target) return;
+    if (source === target) {
+      setStatus("Agent edges must connect two different Agents.");
+      return;
+    }
+    if (agentWorkflow.edges.some((edge) => edge.from === source && edge.to === target)) {
+      setStatus(`Edge ${source} -> ${target} already exists.`);
+      return;
+    }
+    updateAgentWorkflow((current) => ({
+      ...current,
+      edges: [...current.edges, cleanAgentWorkflowEdge({ from: source, to: target })]
+    }));
+    setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(agentWorkflow.edges.length));
+    setSelectedAgentWorkflowId(null);
+    setStatus(`Connected ${source} -> ${target}.`);
+  }
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
       setEdges((current) => {
@@ -712,28 +947,37 @@ export function App() {
 
   async function runWorkflow(approvedOverride = approved) {
     setPreflightLoading(true);
-    setStatus("正在编译 Agent 工作流并运行 Preflight...");
+    setStatus("Validating Agent workflow...");
     try {
       const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
-      const compiled = await compileAgentWorkflowRemote(parsed);
-      setCurrentAgentWorkflow(compiled.agent_workflow, compiled.workflow);
+      const validation = await validateAgentWorkflow(parsed);
+      setAgentWorkflowValidation(validation);
+      setCurrentAgentWorkflow(parsed);
+      if (validation.status === "error") {
+        setStatus("Run blocked by Agent workflow validation errors.");
+        return;
+      }
       const scopes = linesToList(scopesText);
-      const result = await validateWorkflow(compiled.workflow);
-      setPendingPreflight({
+      setEvents([]);
+      setEventCursor(0);
+      setEventHasMore(false);
+      setEventsLoadingMore(false);
+      setActiveRunId(null);
+      setPendingPreflight(null);
+      setStatus(approvedOverride ? "Starting approved Agent workflow run..." : "Starting Agent workflow run...");
+      const run = await startLiveAgentRun({
         repo,
         request,
-        workflow: compiled.workflow,
+        agent_workflow: parsed,
         approved: approvedOverride,
-        scopes,
-        result
+        scopes
       });
-      if (result.status === "error") {
-        setStatus("Preflight 发现错误，运行已阻止。");
-      } else if (result.status === "warning") {
-        setStatus("Preflight 发现警告，请确认后再启动。");
-      } else {
-        setStatus("Preflight 通过，请确认启动。");
-      }
+      setActiveRunId(run.run_id);
+      setSelectedRunKind("live");
+      setSelectedRunDetail(null);
+      setStatus(`Live Agent run ${run.run_id}: ${run.status}`);
+      subscribeToRun(run.run_id, run.events_url);
+      refreshRuntimeInfo();
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -872,14 +1116,14 @@ export function App() {
               library.agent_workflows.map((item) => (
                 <button className="list-item" key={item.id} onClick={() => loadAgentWorkflow(item.id)}>
                   <span>{item.name ?? item.id}</span>
-                  <small>{item.agents} agents / {item.edges} handoffs / {item.max_auto_rounds ?? 3} rounds</small>
+                  <small>{item.agents} agents / {item.edges} edges / {item.max_auto_rounds ?? 3} rounds</small>
                 </button>
               ))
             )}
           </div>
           {library.workflows.length > 0 && (
             <details className="advanced-node-tools">
-              <summary>高级遗留 runtime workflows</summary>
+              <summary>Advanced legacy runtime workflows</summary>
               <div className="list compact-list">
                 {library.workflows.map((item) => (
                   <button className="list-item" key={item.id} onClick={() => loadWorkflow(item.id)}>
@@ -997,7 +1241,7 @@ export function App() {
             <div>
               <strong>{showAdvancedRuntime ? workflow.name : agentWorkflow.name}</strong>
               <span>
-                {showAdvancedRuntime ? `${workflow.id} · 编译后 runtime graph` : `${agentWorkflow.id} · AgentWorkflowSpec`}
+                {showAdvancedRuntime ? `${workflow.id} · compiled runtime graph` : `${agentWorkflow.id} · AgentWorkflowSpec`}
               </span>
             </div>
             <div className="node-add-controls">
@@ -1005,13 +1249,13 @@ export function App() {
                 <input
                   type="checkbox"
                   checked={showAdvancedRuntime}
-                  onChange={(event) => setAdvancedRuntimeMode(event.target.checked)}
+                  onChange={(event) => void setAdvancedRuntimeMode(event.target.checked)}
                 />
-                查看编译后运行时图
+                View compiled runtime graph
               </label>
               {showAdvancedRuntime && (
                 <details className="advanced-node-tools">
-                  <summary>高级遗留 runtime 节点</summary>
+                  <summary>Advanced legacy runtime nodes</summary>
                   <div className="button-row">
                     {[...primaryNodeTypes, ...advancedNodeTypes].map((type) => (
                       <button key={type} onClick={() => addWorkflowNode(type)}>
@@ -1028,9 +1272,9 @@ export function App() {
             edges={edges}
             onNodesChange={showAdvancedRuntime ? onNodesChange : onAgentNodesChange}
             onEdgesChange={showAdvancedRuntime ? onEdgesChange : onAgentEdgesChange}
-            onConnect={showAdvancedRuntime ? onConnect : undefined}
-            nodesConnectable={showAdvancedRuntime}
-            deleteKeyCode={showAdvancedRuntime ? "Backspace" : null}
+            onConnect={showAdvancedRuntime ? onConnect : onAgentConnect}
+            nodesConnectable
+            deleteKeyCode="Backspace"
             onNodeClick={(_, node) => {
               if (showAdvancedRuntime) {
                 setSelectedNodeId(node.id);
@@ -1058,24 +1302,24 @@ export function App() {
         </section>
 
         <section className="editor-panel agent-workflow-panel">
-          <div className="panel-title">Agent 工作流</div>
+          <div className="panel-title">Agent Workflow</div>
           <div className="agent-workflow-settings">
             <label>
-              工作流名称
+              Workflow Name
               <input
                 value={agentWorkflow.name}
                 onChange={(event) => updateAgentWorkflow((current) => ({ ...current, name: event.target.value }))}
               />
             </label>
             <label>
-              工作流 ID
+              Workflow ID
               <input
                 value={agentWorkflow.id}
                 onChange={(event) => updateAgentWorkflow((current) => ({ ...current, id: event.target.value }))}
               />
             </label>
             <label>
-              最大自动轮次
+              Max Auto Rounds
               <input
                 type="number"
                 min={1}
@@ -1100,10 +1344,10 @@ export function App() {
                   }))
                 }
               />
-              用户可以调整轮次
+              User can change rounds
             </label>
             <label className="agent-description-field">
-              描述
+              Description
               <textarea
                 value={agentWorkflow.description}
                 onChange={(event) => updateAgentWorkflow((current) => ({ ...current, description: event.target.value }))}
@@ -1112,13 +1356,14 @@ export function App() {
             </label>
           </div>
           <div className="summary-grid agent-policy-summary">
-            <span>只有 Planner 可以询问用户</span>
-            <span>Executor 只按 PlannerOrder 执行</span>
-            <span>Tester 返回 TestResult 证据</span>
-            <span>{workflow.nodes.length} 个隐藏 runtime 节点</span>
+            <span>Only Planner can ask the user</span>
+            <span>Workers follow PlannerOrder</span>
+            <span>Reviewers return evidence</span>
+            <span>{runtimePreviewDirty ? "Runtime preview needs compile" : `${workflow.nodes.length} hidden runtime nodes`}</span>
           </div>
+          <AgentWorkflowValidationPanel result={agentWorkflowValidation} />
           <details className="json-details">
-            <summary>AgentWorkflowSpec JSON（高级）</summary>
+            <summary>AgentWorkflowSpec JSON (Advanced)</summary>
             <div className="button-row">
               <button onClick={applyJson}>{t.json.apply}</button>
               <button onClick={persistWorkflow}>{t.json.save}</button>
@@ -1135,11 +1380,12 @@ export function App() {
             <textarea className="json-editor" value={jsonText} onChange={(event) => setJsonText(event.target.value)} />
           </details>
           <details className="json-details" open={showAdvancedRuntime}>
-            <summary>编译后 runtime JSON（高级遗留）</summary>
+            <summary>Compiled Runtime JSON (Advanced Legacy)</summary>
             <div className="button-row">
-              <button onClick={applyRuntimeJson}>应用 runtime JSON</button>
-              <button onClick={persistRuntimeWorkflow}>保存 runtime JSON</button>
-              <button onClick={exportRuntimeWorkflow}>导出 runtime JSON</button>
+              <button onClick={() => void compileRuntimePreview()}>Compile Preview</button>
+              <button onClick={applyRuntimeJson}>Apply runtime JSON</button>
+              <button onClick={persistRuntimeWorkflow}>Save runtime JSON</button>
+              <button onClick={exportRuntimeWorkflow}>Export runtime JSON</button>
             </div>
             <textarea
               className="json-editor"
@@ -1152,7 +1398,7 @@ export function App() {
 
       <aside className="inspector">
         <section className="panel">
-          <div className="panel-title">{showAdvancedRuntime ? "Runtime 检查器" : "Agent 检查器"}</div>
+          <div className="panel-title">{showAdvancedRuntime ? "Runtime Inspector" : "Agent Inspector"}</div>
           {showAdvancedRuntime ? (
             selectedNode ? (
               <NodeInspector node={selectedNode} workflow={workflow} onChange={updateSelectedNode} />
@@ -1162,7 +1408,11 @@ export function App() {
               <div className="muted">{t.inspector.empty}</div>
             )
           ) : selectedAgentWorkflowAgent ? (
-            <AgentWorkflowAgentInspector agent={selectedAgentWorkflowAgent} onChange={updateSelectedAgentWorkflowAgent} />
+            <AgentWorkflowAgentInspector
+              agent={selectedAgentWorkflowAgent}
+              capabilities={capabilities}
+              onChange={updateSelectedAgentWorkflowAgent}
+            />
           ) : selectedAgentWorkflowEdge ? (
             <AgentWorkflowEdgeInspector
               edge={selectedAgentWorkflowEdge}
@@ -1170,14 +1420,14 @@ export function App() {
               onChange={updateSelectedAgentWorkflowEdge}
             />
           ) : (
-            <div className="muted">选择一个 Agent 或交接边。</div>
+            <div className="muted">Select an Agent or edge.</div>
           )}
         </section>
 
         <section className="panel">
           {showAdvancedRuntime ? (
             <>
-              <div className="panel-title">Runtime Agents（高级遗留）</div>
+              <div className="panel-title">Runtime Agents (Advanced Legacy)</div>
               <div className="button-row">
                 <button onClick={addAgent}>{t.inspector.addAgent}</button>
                 <button disabled={!selectedAgent} onClick={persistSelectedAgent}>
@@ -1214,7 +1464,13 @@ export function App() {
             </>
           ) : (
             <>
-              <div className="panel-title">Agent 拓扑</div>
+              <div className="panel-title">Agent Topology</div>
+              <div className="button-row">
+                <button onClick={addAgentWorkflowAgent}>Add Agent</button>
+                <button disabled={!selectedAgentWorkflowAgent} onClick={() => removeAgentWorkflowAgent()}>
+                  Delete Agent
+                </button>
+              </div>
               <div className="list compact-list">
                 {agentWorkflow.agents.map((agent) => (
                   <button
@@ -1230,21 +1486,22 @@ export function App() {
                   </button>
                 ))}
               </div>
-              <div className="panel-subtitle">结构化交接</div>
+              <div className="panel-subtitle">Edges</div>
               <div className="list compact-list">
                 {agentWorkflow.edges.map((edge, index) => (
                   <button
                     className={`list-item ${agentEdgeIdFromIndex(index) === selectedAgentWorkflowEdgeId ? "selected" : ""}`}
-                    key={`${edge.from}-${edge.to}-${edge.handoff}`}
+                    key={`${edge.from}-${edge.to}-${index}`}
                     onClick={() => {
                       setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(index));
                       setSelectedAgentWorkflowId(null);
                     }}
                   >
                     <span>{edge.from} → {edge.to}</span>
-                    <small>{edge.handoff}{edge.loop ? " · loop" : ""}</small>
+                    <small>{edge.loop ? "loop" : "handoff inferred"}</small>
                   </button>
                 ))}
+                {agentWorkflow.edges.length === 0 && <div className="muted">No edges yet.</div>}
               </div>
             </>
           )}
@@ -2082,25 +2339,93 @@ function statusClass(type: string | undefined): string {
   return "";
 }
 
+function AgentWorkflowValidationPanel({ result }: { result: AgentWorkflowValidationResult | null }) {
+  if (!result) return null;
+  const statusTone = result.status === "pass" ? "good" : result.status === "warning" ? "warn" : "bad";
+  return (
+    <div className="validation-panel">
+      <div className="event-heading">
+        <span className={`status-pill ${statusTone}`}>{result.status}</span>
+        <strong>Agent workflow validation</strong>
+      </div>
+      <div className="summary-grid">
+        <span>{String(result.summary.agents ?? 0)} agents</span>
+        <span>{String(result.summary.edges ?? 0)} edges</span>
+        <span>Primary Planner: {String(result.summary.primary_planner_id ?? "none")}</span>
+        <span>Max rounds: {String(result.summary.max_auto_rounds ?? "unset")}</span>
+      </div>
+      {result.issues.length === 0 ? (
+        <div className="muted">No validation issues.</div>
+      ) : (
+        <div className="preflight-issues">
+          {result.issues.map((issue, index) => (
+            <div className={`preflight-issue ${issue.level}`} key={`${issue.code}-${issue.target_id ?? "workflow"}-${index}`}>
+              <strong>{issue.message}</strong>
+              <small>
+                {issue.level.toUpperCase()} · {issue.code} · {issue.target_type}
+                {issue.target_id ? `:${issue.target_id}` : ""}
+              </small>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function capabilityPermissionSummary(capability: CapabilitySpec): string {
+  const permissions = [
+    capability.permissions.read_files ? "read files" : null,
+    capability.permissions.edit_files ? "edit files" : null,
+    capability.permissions.run_commands ? "run commands" : null,
+    capability.permissions.use_network ? "network" : null
+  ].filter(Boolean);
+  return permissions.length > 0 ? permissions.join(", ") : "no elevated permissions";
+}
+
 function AgentWorkflowAgentInspector({
   agent,
+  capabilities,
   onChange
 }: {
   agent: AgentWorkflowAgent;
+  capabilities: CapabilitySpec[];
   onChange: (patch: Partial<AgentWorkflowAgent>) => void;
 }) {
+  const selectedCapabilities = new Set(agent.capabilities);
+  const visibleCapabilities = capabilities.filter(
+    (capability) => capability.allowed_roles.includes(agent.role) || selectedCapabilities.has(capability.id)
+  );
+
+  function toggleCapability(capabilityId: string, checked: boolean) {
+    const nextCapabilities = checked
+      ? Array.from(new Set([...agent.capabilities, capabilityId]))
+      : agent.capabilities.filter((candidate) => candidate !== capabilityId);
+    onChange({ capabilities: nextCapabilities });
+  }
+
   return (
     <div className="form-stack agent-editor">
       <div className="summary-grid">
         <span>{agent.role}</span>
-        <span>{agent.can_talk_to_human ? "可询问用户" : "不直接询问用户"}</span>
+        <span>{agent.can_talk_to_human ? "Can ask user" : "Does not ask user"}</span>
       </div>
       <label>
-        名称
+        Name
         <input value={agent.name} onChange={(event) => onChange({ name: event.target.value })} />
       </label>
       <label>
-        模型层级
+        Role
+        <select value={agent.role} onChange={(event) => onChange({ role: event.target.value as AgentWorkflowRole })}>
+          {agentWorkflowRoles.map((role) => (
+            <option key={role} value={role}>
+              {role}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Model Tier
         <select value={agent.model_tier} onChange={(event) => onChange({ model_tier: event.target.value as AgentModelTier })}>
           {agentModelTiers.map((tier) => (
             <option key={tier} value={tier}>
@@ -2116,14 +2441,41 @@ function AgentWorkflowAgentInspector({
           disabled={agent.role !== "planner"}
           onChange={(event) => onChange({ can_talk_to_human: event.target.checked })}
         />
-        允许询问用户（仅 Planner）
+        Allow asking the user (Planner only)
       </label>
-      <div className="panel-subtitle">能力</div>
-      <div className="chip-row">
-        {agent.capabilities.map((capability) => (
-          <span className="chip" key={capability}>{capability}</span>
-        ))}
-      </div>
+      <div className="panel-subtitle">Capabilities</div>
+      {capabilities.length === 0 ? (
+        <div className="muted">Capability catalog is unavailable.</div>
+      ) : (
+        <div className="capability-list">
+          {visibleCapabilities.map((capability) => {
+            const selected = selectedCapabilities.has(capability.id);
+            const roleAllowed = capability.allowed_roles.includes(agent.role);
+            return (
+              <label className={`capability-option ${selected ? "selected" : ""}`} key={capability.id}>
+                <input
+                  type="checkbox"
+                  checked={selected}
+                  disabled={!roleAllowed && !selected}
+                  onChange={(event) => toggleCapability(capability.id, event.target.checked)}
+                />
+                <span>
+                  <strong>{capability.label}</strong>
+                  <small>{capability.description}</small>
+                  <small>
+                    Produces: {capability.produces.join(", ") || "none"} · Requires: {capability.requires.join(", ") || "none"}
+                  </small>
+                  <small>
+                    Permissions: {capabilityPermissionSummary(capability)}
+                    {capability.runtime_effects.length > 0 ? ` · Effects: ${capability.runtime_effects.join(", ")}` : ""}
+                  </small>
+                  {!roleAllowed && selected && <small className="warning-text">Not allowed for role {agent.role}</small>}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -2146,19 +2498,14 @@ function AgentWorkflowEdgeInspector({
         <span>{to?.name ?? edge.to}</span>
       </div>
       <label>
-        交接 artifact
-        <select value={edge.handoff ?? ""} onChange={(event) => onChange({ handoff: event.target.value as HandoffType })}>
-          {handoffTypes.map((handoff) => (
-            <option key={handoff} value={handoff}>
-              {handoff}
-            </option>
-          ))}
-        </select>
+        Label
+        <input value={edge.label ?? ""} onChange={(event) => onChange({ label: event.target.value || null })} />
       </label>
       <label className="checkbox-row">
         <input type="checkbox" checked={Boolean(edge.loop)} onChange={(event) => onChange({ loop: event.target.checked })} />
-        这是回到 Planner 的循环边
+        This edge loops back to the Planner
       </label>
+      <div className="muted">Handoff is inferred from selected capabilities during validation and compile.</div>
     </div>
   );
 }
@@ -2241,8 +2588,8 @@ function NodeInspector({
               ))}
             </select>
             <span className="field-help">
-              retry_until 在条件为 true 时退出；while 在条件为 false 时退出；for_each 遍历列表输入键。连线条件通常使用
-              loop_output.should_continue。
+              retry_until exits when the condition is true; while exits when the condition is false; for_each iterates
+              the items key. Edge conditions usually read loop_output.should_continue.
             </span>
           </label>
           {(node.loop_mode ?? "retry_until") !== "for_each" && (
@@ -2339,7 +2686,7 @@ function EdgeInspector({
       <label>
         {t.forms.condition}
         <input
-          placeholder="可选，例如 approval.approved == True"
+          placeholder="Optional, for example approval.approved == True"
           value={edge.when ?? ""}
           onChange={(event) => onChange({ when: event.target.value })}
         />

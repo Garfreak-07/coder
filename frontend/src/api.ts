@@ -1,8 +1,10 @@
 import type {
   AgentSpec,
+  AgentWorkflowValidationResult,
   AgentWorkflowSpec,
   ArtifactDetail,
   BlobDetail,
+  CapabilitySpec,
   ContextPacketDetail,
   HealthStatus,
   LibraryIndex,
@@ -37,6 +39,11 @@ export function getLibrary(): Promise<LibraryIndex> {
 
 export function getHealth(): Promise<HealthStatus> {
   return requestJson<HealthStatus>("/api/v2/health");
+}
+
+export async function getCapabilities(): Promise<CapabilitySpec[]> {
+  const payload = await requestJson<{ capabilities: CapabilitySpec[] }>("/api/v2/capabilities");
+  return payload.capabilities;
 }
 
 export async function getProviderSettings(): Promise<ProviderSettings> {
@@ -118,6 +125,14 @@ export async function compileAgentWorkflowRemote(agentWorkflow: AgentWorkflowSpe
   workflow: WorkflowSpec;
 }> {
   return requestJson("/api/v2/agent-workflows/compile", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(agentWorkflow)
+  });
+}
+
+export function validateAgentWorkflow(agentWorkflow: AgentWorkflowSpec): Promise<AgentWorkflowValidationResult> {
+  return requestJson<AgentWorkflowValidationResult>("/api/v2/agent-workflows/validate", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify(agentWorkflow)

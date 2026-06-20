@@ -10,20 +10,7 @@ export type AgentWorkflowRole =
   | "researcher"
   | "summarizer"
   | "custom";
-export type AgentCapability =
-  | "negotiate_contract"
-  | "make_plan"
-  | "judge_completion"
-  | "judge_risk"
-  | "make_next_decision"
-  | "round_summarize"
-  | "modify_files"
-  | "generate_text"
-  | "follow_planner_order"
-  | "return_execution_result"
-  | "model_review"
-  | "optional_check_command"
-  | "return_test_result";
+export type AgentCapability = string;
 export type HandoffType =
   | "run_contract"
   | "planner_order"
@@ -31,6 +18,25 @@ export type HandoffType =
   | "test_result"
   | "planner_decision"
   | "round_summary";
+
+export interface CapabilityPermissions {
+  read_files: boolean;
+  edit_files: boolean;
+  run_commands: boolean;
+  use_network: boolean;
+}
+
+export interface CapabilitySpec {
+  id: AgentCapability;
+  label: string;
+  description: string;
+  allowed_roles: AgentWorkflowRole[];
+  requires: HandoffType[];
+  produces: HandoffType[];
+  permissions: CapabilityPermissions;
+  can_talk_to_human: boolean;
+  runtime_effects: string[];
+}
 
 export interface AgentWorkflowAgent {
   id: string;
@@ -165,6 +171,20 @@ export interface PreflightIssue {
 export interface PreflightResult {
   status: "pass" | "warning" | "error" | string;
   issues: PreflightIssue[];
+  summary: Record<string, unknown>;
+}
+
+export interface AgentWorkflowValidationIssue {
+  level: "error" | "warning";
+  code: string;
+  message: string;
+  target_type: string;
+  target_id?: string | null;
+}
+
+export interface AgentWorkflowValidationResult {
+  status: "pass" | "warning" | "error";
+  issues: AgentWorkflowValidationIssue[];
   summary: Record<string, unknown>;
 }
 

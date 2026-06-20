@@ -188,7 +188,7 @@ function ContextPacketCard({ event, runId }: { event: RunEvent; runId: string | 
         <span>tools: {tools.map(String).join(", ") || "none"}</span>
       </div>
       <details>
-        <summary>查看完整上下文包</summary>
+        <summary>View full context packet</summary>
         <pre>{JSON.stringify(value, null, 2)}</pre>
       </details>
     </div>
