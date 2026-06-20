@@ -1,77 +1,37 @@
-import type { WorkflowSpec } from "./types";
-import { codingWorkbenchWorkflow } from "./examples";
+import type { AgentWorkflowSpec } from "./types";
+import { defaultPlannerLedAgentWorkflow } from "./examples";
 
-export const workflowTemplate: WorkflowSpec = {
-  id: "new-workflow",
-  version: "0.2",
-  name: "New Workflow",
-  description: "Edit this JSON or use the canvas to shape the workflow.",
-  max_steps: 20,
-  max_agent_calls: 6,
-  max_tool_calls: 6,
-  token_budget: 40000,
-  agents: [],
-  nodes: [
-    { id: "start", type: "start" },
-    { id: "finish", type: "end" }
-  ],
-  edges: [{ from: "start", to: "finish" }],
-  stop_conditions: ["max_steps reached"]
-};
-
-export interface WorkflowTemplateCard {
-  id: "default-coding" | "blank";
-  workflow: WorkflowSpec;
+export interface AgentWorkflowTemplateCard {
+  id: "default-coding";
+  workflow: AgentWorkflowSpec;
   agentCount: number;
-  tools: string[];
   approvals: string;
   modelRequirement: string;
   knowledgeRequirement: string;
   risk: string;
 }
 
-export const workflowTemplateCards: WorkflowTemplateCard[] = [
+export const agentWorkflowTemplateCards: AgentWorkflowTemplateCard[] = [
   {
     id: "default-coding",
-    workflow: codingWorkbenchWorkflow,
+    workflow: defaultPlannerLedAgentWorkflow,
     agentCount: 3,
-    tools: [],
     approvals: "plannerOnlyHuman",
     modelRequirement: "optionalModel",
     knowledgeRequirement: "structuredHandoff",
     risk: "mediumRisk"
-  },
-  {
-    id: "blank",
-    workflow: workflowTemplate,
-    agentCount: 0,
-    tools: [],
-    approvals: "none",
-    modelRequirement: "optionalModel",
-    knowledgeRequirement: "projectKnowledge",
-    risk: "lowRisk"
   }
 ];
 
-export function instantiateWorkflowTemplate(template: WorkflowTemplateCard): WorkflowSpec {
+export function instantiateAgentWorkflowTemplate(template: AgentWorkflowTemplateCard): AgentWorkflowSpec {
   return {
     ...template.workflow,
     id: `${template.workflow.id}-${Date.now()}`,
     agents: template.workflow.agents.map((agent) => ({
       ...agent,
-      permissions: { ...agent.permissions },
-      context: {
-        ...agent.context,
-        input_keys: [...agent.context.input_keys],
-        summary_keys: [...agent.context.summary_keys]
-      },
-      tools: [...agent.tools]
-    })),
-    nodes: template.workflow.nodes.map((node) => ({
-      ...node,
-      input: node.input ? { ...node.input } : undefined
+      capabilities: [...agent.capabilities]
     })),
     edges: template.workflow.edges.map((edge) => ({ ...edge })),
-    stop_conditions: [...template.workflow.stop_conditions]
+    loop_policy: { ...template.workflow.loop_policy }
   };
 }

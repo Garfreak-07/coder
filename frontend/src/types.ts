@@ -192,6 +192,15 @@ export interface WorkflowSummary {
   agents: number;
 }
 
+export interface AgentWorkflowSummary {
+  id: string;
+  version?: string;
+  name?: string;
+  description?: string;
+  agents: number;
+  edges: number;
+  max_auto_rounds?: number | null;
+}
 export interface AgentSummary {
   id: string;
   name?: string;
@@ -203,6 +212,7 @@ export interface AgentSummary {
 
 export interface LibraryIndex {
   agents: AgentSummary[];
+  agent_workflows: AgentWorkflowSummary[];
   workflows: WorkflowSummary[];
 }
 

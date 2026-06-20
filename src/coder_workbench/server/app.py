@@ -91,6 +91,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     def library_index() -> dict[str, Any]:
         return {
             "agents": library.list_agents(),
+            "agent_workflows": library.list_agent_workflows(),
             "workflows": library.list_workflows(),
         }
 
@@ -105,6 +106,20 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="agent not found") from exc
 
+
+    @app.post("/api/v2/library/agent-workflows")
+    def save_agent_workflow(agent_workflow: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return {"agent_workflow": library.save_agent_workflow(agent_workflow)}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v2/library/agent-workflows/{workflow_id}")
+    def get_agent_workflow(workflow_id: str) -> dict[str, Any]:
+        try:
+            return {"agent_workflow": library.get_agent_workflow(workflow_id)}
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="agent workflow not found") from exc
 
     @app.get("/api/v2/agent-workflows/default")
     def get_default_agent_workflow() -> dict[str, Any]:

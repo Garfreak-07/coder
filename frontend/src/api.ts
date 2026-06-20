@@ -1,5 +1,6 @@
 import type {
   AgentSpec,
+  AgentWorkflowSpec,
   ArtifactDetail,
   BlobDetail,
   ContextPacketDetail,
@@ -103,6 +104,38 @@ export function getBlob(runId: string, blobId: string): Promise<BlobDetail> {
 
 export function getLiveRun(runId: string): Promise<LiveRunDetail> {
   return requestJson<LiveRunDetail>(`/api/v2/live-runs/${runId}`);
+}
+
+export async function getDefaultAgentWorkflow(): Promise<{
+  agent_workflow: AgentWorkflowSpec;
+  workflow: WorkflowSpec;
+}> {
+  return requestJson("/api/v2/agent-workflows/default");
+}
+
+export async function compileAgentWorkflowRemote(agentWorkflow: AgentWorkflowSpec): Promise<{
+  agent_workflow: AgentWorkflowSpec;
+  workflow: WorkflowSpec;
+}> {
+  return requestJson("/api/v2/agent-workflows/compile", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(agentWorkflow)
+  });
+}
+
+export async function getAgentWorkflow(workflowId: string): Promise<AgentWorkflowSpec> {
+  const payload = await requestJson<{ agent_workflow: AgentWorkflowSpec }>(`/api/v2/library/agent-workflows/${workflowId}`);
+  return payload.agent_workflow;
+}
+
+export async function saveAgentWorkflow(agentWorkflow: AgentWorkflowSpec): Promise<AgentWorkflowSpec> {
+  const payload = await requestJson<{ agent_workflow: AgentWorkflowSpec }>("/api/v2/library/agent-workflows", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(agentWorkflow)
+  });
+  return payload.agent_workflow;
 }
 
 export async function getWorkflow(workflowId: string): Promise<WorkflowSpec> {

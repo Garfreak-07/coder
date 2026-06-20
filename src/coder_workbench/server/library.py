@@ -5,10 +5,10 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Literal
 
-from coder_workbench.core import AgentSpec, WorkflowSpec
+from coder_workbench.core import AgentSpec, AgentWorkflowSpec, WorkflowSpec
 
 
-LibraryKind = Literal["agents", "workflows"]
+LibraryKind = Literal["agents", "agent_workflows", "workflows"]
 
 
 class LibraryStore:
@@ -16,6 +16,7 @@ class LibraryStore:
         self.root = Path(root)
         self._lock = Lock()
         (self.root / "agents").mkdir(parents=True, exist_ok=True)
+        (self.root / "agent_workflows").mkdir(parents=True, exist_ok=True)
         (self.root / "workflows").mkdir(parents=True, exist_ok=True)
 
     def list_agents(self) -> list[dict[str, Any]]:
@@ -23,6 +24,9 @@ class LibraryStore:
 
     def list_workflows(self) -> list[dict[str, Any]]:
         return self._list("workflows")
+
+    def list_agent_workflows(self) -> list[dict[str, Any]]:
+        return self._list("agent_workflows")
 
     def save_agent(self, data: dict[str, Any]) -> dict[str, Any]:
         agent = AgentSpec.model_validate(data)
@@ -36,11 +40,20 @@ class LibraryStore:
         self._write("workflows", workflow.id, payload)
         return payload
 
+    def save_agent_workflow(self, data: dict[str, Any]) -> dict[str, Any]:
+        workflow = AgentWorkflowSpec.model_validate(data)
+        payload = workflow.model_dump(mode="json", by_alias=True)
+        self._write("agent_workflows", workflow.id, payload)
+        return payload
+
     def get_agent(self, agent_id: str) -> dict[str, Any]:
         return self._read("agents", agent_id)
 
     def get_workflow(self, workflow_id: str) -> dict[str, Any]:
         return self._read("workflows", workflow_id)
+
+    def get_agent_workflow(self, workflow_id: str) -> dict[str, Any]:
+        return self._read("agent_workflows", workflow_id)
 
     def _list(self, kind: LibraryKind) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -76,6 +89,16 @@ def _summary(kind: LibraryKind, data: dict[str, Any]) -> dict[str, Any]:
             "goal": data.get("goal"),
             "model": data.get("model"),
             "tools": data.get("tools", []),
+        }
+    if kind == "agent_workflows":
+        return {
+            "id": data.get("id"),
+            "version": data.get("version"),
+            "name": data.get("name"),
+            "description": data.get("description", ""),
+            "agents": len(data.get("agents", [])),
+            "edges": len(data.get("edges", [])),
+            "max_auto_rounds": data.get("loop_policy", {}).get("max_auto_rounds"),
         }
     return {
         "id": data.get("id"),
