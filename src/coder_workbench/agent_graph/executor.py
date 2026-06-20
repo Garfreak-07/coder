@@ -39,7 +39,16 @@ class AgentGraphExecutorError(ValueError):
 
 
 class AgentGraphExecutorProtocol(Protocol):
-    def create_planner_order(self, request: str, *, emit: EmitEvent | None = None) -> PlannerOrder:
+    def create_planner_order(
+        self,
+        request: str,
+        *,
+        previous_bundle: PlannerInputBundle | None = None,
+        previous_round_summary: dict[str, Any] | None = None,
+        planner_human_response: dict[str, Any] | None = None,
+        round_number: int = 1,
+        emit: EmitEvent | None = None,
+    ) -> PlannerOrder:
         ...
 
     def create_execution_result(
@@ -92,12 +101,28 @@ class AgentGraphExecutor:
         self.runtime_settings = runtime_settings
         self.model_factory = model_factory
 
-    def create_planner_order(self, request: str, *, emit: EmitEvent | None = None) -> PlannerOrder:
+    def create_planner_order(
+        self,
+        request: str,
+        *,
+        previous_bundle: PlannerInputBundle | None = None,
+        previous_round_summary: dict[str, Any] | None = None,
+        planner_human_response: dict[str, Any] | None = None,
+        round_number: int = 1,
+        emit: EmitEvent | None = None,
+    ) -> PlannerOrder:
         payload = self._invoke_or_mock(
             artifact_type="planner_order",
             agent_id=self.agent_workflow.primary_planner_id,
-            prompt=build_planner_order_prompt(request=request, agent_workflow=self.agent_workflow),
-            mock_payload=self._mock_planner_order_payload(request),
+            prompt=build_planner_order_prompt(
+                request=request,
+                agent_workflow=self.agent_workflow,
+                previous_bundle=previous_bundle,
+                previous_round_summary=previous_round_summary,
+                planner_human_response=planner_human_response,
+                round_number=round_number,
+            ),
+            mock_payload=self._mock_planner_order_payload(request, round_number=round_number),
             emit=emit,
             failure_status_code="planner_order_schema_failed",
         )
@@ -238,7 +263,13 @@ class AgentGraphExecutor:
         emit: EmitEvent | None = None,
     ) -> dict[str, Any]:
         planner = self._agent(self.agent_workflow.primary_planner_id)
-        mock_reason = (
+        has_interrupts = bool(bundle.interrupts)
+        can_continue_from_interrupts = has_interrupts and all(
+            interrupt.continue_without_human_possible is True
+            for interrupt in bundle.interrupts
+        )
+        mock_next_action = "continue" if can_continue_from_interrupts else "ask_human" if has_interrupts else "finish"
+        mock_reason = "Worker requested Planner intervention." if has_interrupts else (
             "Planner human response recorded; AgentGraph resume completed."
             if planner_human_response
             else "Mock AgentGraph execution and test artifacts are complete."
@@ -254,14 +285,16 @@ class AgentGraphExecutor:
             mock_payload={
                 "artifact_type": "planner_decision",
                 "round": bundle.round,
-                "task_done": True,
-                "next_action": "finish",
-                "risk_level": "low",
-                "requires_human_confirmation": False,
+                "task_done": mock_next_action == "finish",
+                "next_action": mock_next_action,
+                "risk_level": "medium" if has_interrupts else "low",
+                "requires_human_confirmation": mock_next_action == "ask_human",
                 "reason": mock_reason,
-                "next_round_goal": "",
-                "remaining_auto_rounds": 0,
-                "human_message": None,
+                "next_round_goal": "Resolve the blocked work item." if mock_next_action == "continue" else "",
+                "remaining_auto_rounds": 2 if mock_next_action == "continue" else 0,
+                "human_message": "Planner needs user input to resolve the blocked work item."
+                if mock_next_action == "ask_human"
+                else None,
             },
             emit=emit,
             failure_status_code="planner_decision_schema_failed",
@@ -560,7 +593,7 @@ class AgentGraphExecutor:
             )
         return load_runtime_config()
 
-    def _mock_planner_order_payload(self, request: str) -> dict[str, Any]:
+    def _mock_planner_order_payload(self, request: str, *, round_number: int = 1) -> dict[str, Any]:
         testers = [agent for agent in self.agent_workflow.agents if _is_tester(agent)]
         workers = [
             agent
@@ -570,7 +603,7 @@ class AgentGraphExecutor:
         tester_ids = [agent.id for agent in testers]
         return {
             "artifact_type": "planner_order",
-            "round": 1,
+            "round": round_number,
             "round_goal": request,
             "plan_graph": {
                 "work_items": [

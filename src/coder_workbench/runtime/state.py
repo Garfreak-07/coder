@@ -51,6 +51,8 @@ EventType = Literal[
     "join.completed",
     "resource.deferred",
     "agent_graph.wave.completed",
+    "agent_graph.interrupt.requested",
+    "agent_graph.interrupt.captured",
     "test.local.completed",
     "test.final.completed",
     "planner.input_bundle.created",

@@ -33,11 +33,12 @@ def build_planner_input_bundle(cache: GraphRunCache) -> PlannerInputBundle:
     return PlannerInputBundle(
         round=cache.round,
         planner_order_ref=planner_order_ref,
-        plan_status=_plan_status(items),
+        plan_status=_plan_status(items, cache),
         items=items,
         final_test_summary=cache.final_test_cache.summary if cache.final_test_cache else None,
         final_test_ref=cache.final_test_cache.final_test_result_ref if cache.final_test_cache else None,
         effects=cache.hidden_effects,
+        interrupts=cache.interrupts,
     )
 
 
@@ -62,16 +63,29 @@ def build_round_summary(cache: GraphRunCache) -> PlanRunSummary:
         failed_count=sum(1 for item in ordered_state if item.status in {"failed_execution", "failed_test"}),
         blocked_count=sum(1 for item in ordered_state if item.status == "blocked"),
         ordered_state=ordered_state,
-        remaining_work=[
-            item.summary
-            for item in ordered_state
-            if item.status in {"failed_execution", "failed_test", "blocked"}
-        ],
+        remaining_work=_remaining_work(bundle, ordered_state),
         carry_forward_constraints=[],
     )
 
 
-def _plan_status(items: list[PlannerInputBundleItem]) -> PlanStatus:
+def _remaining_work(bundle: PlannerInputBundle, ordered_state: list[RoundSummaryItem]) -> list[str]:
+    remaining = [
+        item.summary
+        for item in ordered_state
+        if item.status in {"failed_execution", "failed_test", "blocked"}
+    ]
+    if bundle.plan_status == "interrupted":
+        for interrupt in bundle.interrupts:
+            detail = interrupt.reason
+            if interrupt.planner_question:
+                detail = f"{detail} Planner question: {interrupt.planner_question}"
+            remaining.append(detail)
+    return remaining
+
+
+def _plan_status(items: list[PlannerInputBundleItem], cache: GraphRunCache) -> PlanStatus:
+    if cache.interrupts:
+        return "interrupted"
     if not items:
         return "completed"
     if any(item.execution_status == "failed" or item.test_status == "fail" for item in items):

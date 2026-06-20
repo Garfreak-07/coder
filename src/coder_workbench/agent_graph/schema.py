@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 WorkItemStatus = Literal["pending", "running", "completed", "blocked", "failed"]
 ExecutionStatus = Literal["completed", "blocked", "failed"]
 TestStatus = Literal["pass", "fail", "blocked", "not_requested"]
-PlanStatus = Literal["pending", "running", "completed", "partial_failed", "blocked", "failed"]
+PlanStatus = Literal["pending", "running", "completed", "partial_failed", "blocked", "failed", "interrupted"]
 
 
 class MergeIndexedModel(BaseModel):
@@ -136,6 +136,21 @@ class PlannerInputBundleItem(MergeIndexedModel):
     refs: list[str] = Field(default_factory=list)
 
 
+class PlannerInputInterrupt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    round: int
+    work_item_id: str
+    merge_index: int
+    agent_id: str
+    blocker_type: str
+    reason: str
+    planner_question: str | None = None
+    continue_without_human_possible: bool | None = None
+    candidate_options: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_ref: str
+
+
 class PlannerInputBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -147,6 +162,7 @@ class PlannerInputBundle(BaseModel):
     final_test_summary: str | None = None
     final_test_ref: str | None = None
     effects: list[dict[str, Any]] = Field(default_factory=list)
+    interrupts: list[PlannerInputInterrupt] = Field(default_factory=list)
 
 
 class RoundSummaryItem(MergeIndexedModel):

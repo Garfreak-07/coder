@@ -81,13 +81,8 @@ class AgentGraphRunManager:
             "response": response,
             "data": data or {},
         }
-        checkpoint_data["planner_decision"] = {
-            "artifact_type": "planner_decision",
-            "round": int(checkpoint_data.get("round", 1) or 1),
-            "task_done": True,
-            "next_action": "finish",
-            "reason": "Planner human response recorded; Phase 6 resume completed.",
-        }
+        checkpoint_data.pop("planner_decision", None)
+        checkpoint_data["resume_mode"] = "planner_response"
         run.initial_data = checkpoint_data
         run.status = "queued"
         run.error = None

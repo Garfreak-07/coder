@@ -11,22 +11,35 @@ def build_planner_order_prompt(
     *,
     request: str,
     agent_workflow: AgentWorkflowSpec,
+    previous_bundle: PlannerInputBundle | None = None,
+    previous_round_summary: dict[str, Any] | None = None,
+    planner_human_response: dict[str, Any] | None = None,
+    round_number: int = 1,
 ) -> str:
-    return "\n\n".join(
-        [
-            _json_only_header("planner_order"),
-            "You are the primary Planner. Split the user request into a small AgentGraph plan.",
-            "Only use Agents that exist in the supplied AgentWorkflow.",
-            "depends_on is the only execution dependency. Do not use merge_index to force execution order.",
-            "If work items can run independently, leave depends_on empty.",
-            "merge_index is only the stable result presentation order returned to Planner.",
-            _planner_order_schema_notes(),
-            "User request:",
-            request,
-            "AgentWorkflow JSON:",
-            _compact_json(_workflow_summary(agent_workflow)),
-        ]
-    )
+    parts = [
+        _json_only_header("planner_order"),
+        "You are the primary Planner. Split the user request into a small AgentGraph plan.",
+        "Only use Agents that exist in the supplied AgentWorkflow.",
+        "depends_on is the only execution dependency. Do not use merge_index to force execution order.",
+        "If work items can run independently, leave depends_on empty.",
+        "merge_index is only the stable result presentation order returned to Planner.",
+        "If previous PlannerInputBundle or RoundSummary exists, plan only remaining or corrective work.",
+        "Do not repeat completed passed work unless necessary. New work_item_id values should be unique for this round.",
+        _planner_order_schema_notes(),
+        "Round number:",
+        str(round_number),
+        "User request:",
+        request,
+        "AgentWorkflow JSON:",
+        _compact_json(_workflow_summary(agent_workflow)),
+    ]
+    if previous_bundle:
+        parts.extend(["Previous PlannerInputBundle JSON:", _compact_json(previous_bundle.model_dump(mode="json", exclude_none=True))])
+    if previous_round_summary:
+        parts.extend(["Previous RoundSummary JSON:", _compact_json(previous_round_summary)])
+    if planner_human_response:
+        parts.extend(["Planner human response JSON:", _compact_json(planner_human_response)])
+    return "\n\n".join(parts)
 
 
 def build_worker_execution_prompt(
@@ -109,6 +122,9 @@ def build_planner_decision_prompt(
         _json_only_header("planner_decision"),
         "You are the primary Planner. You are the only Agent that can decide continue, ask_human, finish, or stop.",
         "Use ask_human only when the next step requires user judgment or approval.",
+        "If PlannerInputBundle contains interrupts, decide one of: continue when the problem can be handled within the existing user agreement; "
+        "ask_human when it exceeds the agreed direction, requires user judgment, or cannot be safely decided; "
+        "stop when continuing is unsafe or impossible; finish only if the task is complete. Do not ignore interrupts.",
         _planner_decision_schema_notes(),
         "Planner Agent JSON:",
         _compact_json(_agent_summary(planner)),

@@ -10,6 +10,7 @@ from coder_workbench.agent_graph.schema import (
     ExecutionRecord,
     FinalTestRecord,
     PlanCache,
+    PlannerInputInterrupt,
     PlannerOrder,
     TestRecord,
     WorkItem,
@@ -28,6 +29,7 @@ class GraphRunCache(BaseModel):
     final_test_cache: FinalTestRecord | None = None
     hidden_effects: list[dict[str, Any]] = Field(default_factory=list)
     hidden_effect_outputs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    interrupts: list[PlannerInputInterrupt] = Field(default_factory=list)
 
     def cache_planner_order(self, planner_order: PlannerOrder, planner_order_ref: str) -> PlanCache:
         self.round = planner_order.round
@@ -84,6 +86,11 @@ class GraphRunCache(BaseModel):
         output_ref = record.get("output_ref") or record.get("patch_ref")
         if output_ref and output is not None:
             self.hidden_effect_outputs[str(output_ref)] = output
+        return record
+
+    def record_interrupt(self, interrupt: PlannerInputInterrupt | dict[str, Any]) -> PlannerInputInterrupt:
+        record = PlannerInputInterrupt.model_validate(interrupt)
+        self.interrupts.append(record)
         return record
 
     def work_items(self) -> list[CachedWorkItem]:

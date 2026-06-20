@@ -20,7 +20,7 @@ BlockerType = Literal[
 TestStatus = Literal["pass", "fail", "blocked"]
 PlannerNextAction = Literal["continue", "ask_human", "finish", "stop"]
 ConfidenceLevel = Literal["low", "medium", "high"]
-PlanStatus = Literal["pending", "running", "completed", "partial_failed", "blocked", "failed"]
+PlanStatus = Literal["pending", "running", "completed", "partial_failed", "blocked", "failed", "interrupted"]
 PlannerArtifactType = Literal[
     "run_contract",
     "planner_order",
