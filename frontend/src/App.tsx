@@ -421,7 +421,7 @@ export function App() {
     }
   }
 
-  async function compileRuntimePreview(successStatus = "Runtime preview compiled.") {
+  async function compileRuntimePreview(successStatus = "Legacy runtime preview compiled.") {
     const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
     const validation = await validateAgentWorkflow(parsed);
     setAgentWorkflowValidation(validation);
@@ -433,7 +433,7 @@ export function App() {
       renderWorkflowCanvas(clean, workflow, false);
     }
     if (validation.status === "error") {
-      setStatus("Cannot compile runtime preview until Agent workflow validation errors are fixed.");
+      setStatus("Cannot compile legacy runtime preview until Agent workflow validation errors are fixed.");
       return null;
     }
     const payload = await compileAgentWorkflowRemote(parsed);
@@ -444,7 +444,7 @@ export function App() {
 
   async function setAdvancedRuntimeMode(enabled: boolean) {
     if (enabled && runtimePreviewDirty) {
-      setStatus("Compiling runtime preview...");
+      setStatus("Compiling legacy runtime preview...");
       try {
         const payload = await compileRuntimePreview();
         if (!payload) {
@@ -1241,7 +1241,7 @@ export function App() {
             <div>
               <strong>{showAdvancedRuntime ? workflow.name : agentWorkflow.name}</strong>
               <span>
-                {showAdvancedRuntime ? `${workflow.id} · compiled runtime graph` : `${agentWorkflow.id} · AgentWorkflowSpec`}
+                {showAdvancedRuntime ? `${workflow.id} · legacy runtime preview` : `${agentWorkflow.id} · AgentWorkflowSpec`}
               </span>
             </div>
             <div className="node-add-controls">
@@ -1251,7 +1251,7 @@ export function App() {
                   checked={showAdvancedRuntime}
                   onChange={(event) => void setAdvancedRuntimeMode(event.target.checked)}
                 />
-                View compiled runtime graph
+                View legacy runtime preview
               </label>
               {showAdvancedRuntime && (
                 <details className="advanced-node-tools">
@@ -1359,7 +1359,7 @@ export function App() {
             <span>Only Planner can ask the user</span>
             <span>Workers follow PlannerOrder</span>
             <span>Reviewers return evidence</span>
-            <span>{runtimePreviewDirty ? "Runtime preview needs compile" : `${workflow.nodes.length} hidden runtime nodes`}</span>
+            <span>{runtimePreviewDirty ? "Legacy runtime preview needs compile" : `${workflow.nodes.length} legacy runtime nodes`}</span>
           </div>
           <AgentWorkflowValidationPanel result={agentWorkflowValidation} />
           <details className="json-details">
@@ -1380,9 +1380,9 @@ export function App() {
             <textarea className="json-editor" value={jsonText} onChange={(event) => setJsonText(event.target.value)} />
           </details>
           <details className="json-details" open={showAdvancedRuntime}>
-            <summary>Compiled Runtime JSON (Advanced Legacy)</summary>
+            <summary>Legacy Runtime Preview JSON (Advanced)</summary>
             <div className="button-row">
-              <button onClick={() => void compileRuntimePreview()}>Compile Preview</button>
+              <button onClick={() => void compileRuntimePreview()}>Compile Legacy Preview</button>
               <button onClick={applyRuntimeJson}>Apply runtime JSON</button>
               <button onClick={persistRuntimeWorkflow}>Save runtime JSON</button>
               <button onClick={exportRuntimeWorkflow}>Export runtime JSON</button>
@@ -2329,13 +2329,20 @@ function filterRunHistory(runs: RunSummaryItem[], query: string, status: string)
 }
 
 function isTerminalRunEvent(type: string): boolean {
-  return type === "run.completed" || type === "run.failed" || type === "run.blocked";
+  return (
+    type === "run.completed" ||
+    type === "run.failed" ||
+    type === "run.blocked" ||
+    type === "agent_graph.run.completed" ||
+    type === "agent_graph.run.failed" ||
+    type === "agent_graph.run.blocked"
+  );
 }
 
 function statusClass(type: string | undefined): string {
-  if (type === "run.completed") return "good";
-  if (type === "run.failed") return "bad";
-  if (type === "run.blocked" || type === "approval.required") return "warn";
+  if (type === "run.completed" || type === "agent_graph.run.completed") return "good";
+  if (type === "run.failed" || type === "agent_graph.run.failed") return "bad";
+  if (type === "run.blocked" || type === "agent_graph.run.blocked" || type === "approval.required") return "warn";
   return "";
 }
 

@@ -282,7 +282,26 @@ export function subscribeRunEvents(url: string, onEvent: (event: RunEvent) => vo
     "budget.warning",
     "run.completed",
     "run.blocked",
-    "run.failed"
+    "run.failed",
+    "agent_graph.run.started",
+    "agent_graph.round.started",
+    "planner.order.produced",
+    "planner.plan_cached",
+    "agent_task.ready",
+    "agent_task.started",
+    "agent_task.completed",
+    "agent_task.blocked",
+    "join.waiting",
+    "join.completed",
+    "test.local.completed",
+    "test.final.completed",
+    "planner.input_bundle.created",
+    "round_summary.created",
+    "planner.decision.produced",
+    "planner.human_prompt",
+    "agent_graph.run.completed",
+    "agent_graph.run.blocked",
+    "agent_graph.run.failed"
   ];
   for (const type of eventTypes) {
     source.addEventListener(type, (message) => {

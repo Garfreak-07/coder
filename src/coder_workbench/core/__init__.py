@@ -12,11 +12,11 @@ from .agent_workflow import (
     assert_valid_agent_workflow,
     capability_catalog,
     capability_registry,
-    compile_agent_workflow,
     default_planner_led_agent_workflow,
     validate_agent_workflow,
     validate_agent_workflow_payload,
 )
+from .legacy_compile import compile_agent_workflow
 from .schema import (
     AgentSpec,
     ContextPolicy,

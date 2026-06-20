@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from coder_workbench.core import (
     AgentWorkflowSpec,
@@ -275,31 +276,37 @@ class AgentWorkflowApiTests(unittest.TestCase):
             detail = response.json()["detail"]
             self.assertIn("missing_primary_planner", {issue["code"] for issue in detail["issues"]})
 
-    def test_live_agent_run_compiles_agent_workflow_in_backend(self) -> None:
+    def test_live_agent_run_uses_agent_graph_runner_without_legacy_compile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
             agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
 
-            response = client.post(
-                "/api/v2/live-agent-runs",
-                json={
-                    "repo": tmp,
-                    "request": "Run the default workflow.",
-                    "agent_workflow": agent_workflow,
-                    "approved": True,
-                    "scopes": [],
-                },
-            )
+            with patch("coder_workbench.server.app.compile_agent_workflow", side_effect=AssertionError("legacy compile called")):
+                response = client.post(
+                    "/api/v2/live-agent-runs",
+                    json={
+                        "repo": tmp,
+                        "request": "Run the default workflow.",
+                        "agent_workflow": agent_workflow,
+                        "approved": True,
+                        "scopes": [],
+                    },
+                )
 
             self.assertEqual(response.status_code, 200)
             run_id = response.json()["run_id"]
             final_status = response.json()["status"]
+            detail = client.get(f"/api/v2/live-runs/{run_id}").json()
             for _ in range(50):
                 if final_status not in {"queued", "running"}:
                     break
                 time.sleep(0.02)
-                final_status = client.get(f"/api/v2/live-runs/{run_id}").json()["status"]
+                detail = client.get(f"/api/v2/live-runs/{run_id}").json()
+                final_status = detail["status"]
             self.assertEqual(final_status, "completed")
+            self.assertEqual(detail["runtime_type"], "agent_graph")
+            self.assertIn("agent_graph.run.completed", {event["type"] for event in detail["events"]})
+            self.assertNotIn("compiled_workflow", detail["result"]["data"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -569,8 +569,8 @@ def default_planner_led_agent_workflow() -> AgentWorkflowSpec:
     )
 
 
-def compile_agent_workflow(spec: AgentWorkflowSpec) -> WorkflowSpec:
-    """Compile an Agent-only workflow into the current runtime WorkflowSpec."""
+def _compile_agent_workflow_legacy_impl(spec: AgentWorkflowSpec) -> WorkflowSpec:
+    """Compile AgentWorkflowSpec into the legacy WorkflowSpec preview."""
 
     assert_valid_agent_workflow(spec)
     primary = next(agent for agent in spec.agents if agent.id == spec.primary_planner_id)

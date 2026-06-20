@@ -22,6 +22,7 @@ from coder_workbench.core import (
 from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.runtime import run_workflow
 from coder_workbench.runtime.runner import WorkflowRunner
+from coder_workbench.server.agent_manager import AgentGraphRunManager
 from coder_workbench.server.library import LibraryStore
 from coder_workbench.server.manager import RunManager
 from coder_workbench.server.settings import ProviderSettingsStore, provider_status, workflow_provider_status
@@ -80,6 +81,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     settings_store = ProviderSettingsStore(store_root)
     library = LibraryStore(Path(store_root) / "library")
     manager = RunManager(store, runner_factory=lambda workflow: WorkflowRunner(workflow, runtime_settings=settings_store.load()))
+    agent_manager = AgentGraphRunManager(store, runtime_settings_loader=settings_store.load)
 
     @app.get("/api/v2/health")
     def health() -> dict[str, Any]:
@@ -192,7 +194,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
 
     @app.get("/api/v2/live-runs")
     def list_live_runs() -> dict[str, Any]:
-        return {"runs": manager.list()}
+        return {"runs": [*agent_manager.list(), *manager.list()]}
 
     @app.post("/api/v2/runs")
     def create_run(body: RunRequest) -> dict[str, Any]:
@@ -244,7 +246,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         try:
             _raise_agent_workflow_validation(body.agent_workflow)
             agent_workflow = AgentWorkflowSpec.model_validate(body.agent_workflow)
-            workflow = compile_agent_workflow(agent_workflow)
         except AgentWorkflowValidationError as exc:
             raise HTTPException(status_code=400, detail=exc.result.model_dump(mode="json")) from exc
         except Exception as exc:
@@ -252,9 +253,8 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         repo_root = resolve_existing_dir(body.repo)
         initial_data = _initial_data_from_request(body, repo_root)
         initial_data["agent_workflow"] = agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
-        initial_data["compiled_workflow"] = workflow.model_dump(mode="json", by_alias=True)
-        live = manager.start(
-            workflow=workflow,
+        live = agent_manager.start(
+            agent_workflow=agent_workflow,
             repo_root=str(repo_root),
             request=body.request,
             initial_data=initial_data,
@@ -328,11 +328,28 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     def get_live_run(run_id: str) -> dict[str, Any]:
         try:
             live = manager.get(run_id)
+            return {
+                "id": live.id,
+                "workflow_id": live.workflow.id,
+                "repo_root": live.repo_root,
+                "request": live.request,
+                "status": live.status,
+                "events": [event.model_dump(mode="json") for event in live.events],
+                "result": live.result.model_dump(mode="json") if live.result else None,
+                "stored_run_id": live.stored_run_id,
+                "error": live.error,
+                "approval_required": manager.approval_required(live),
+            }
+        except KeyError:
+            pass
+        try:
+            live = agent_manager.get(run_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="live run not found") from exc
         return {
             "id": live.id,
-            "workflow_id": live.workflow.id,
+            "workflow_id": live.agent_workflow.id,
+            "runtime_type": "agent_graph",
             "repo_root": live.repo_root,
             "request": live.request,
             "status": live.status,
@@ -340,7 +357,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "result": live.result.model_dump(mode="json") if live.result else None,
             "stored_run_id": live.stored_run_id,
             "error": live.error,
-            "approval_required": manager.approval_required(live),
+            "approval_required": False,
         }
 
     @app.get("/api/v2/runs/{run_id}/events")
@@ -439,11 +456,51 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     def stream_live_events(run_id: str) -> StreamingResponse:
         try:
             manager.get(run_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="live run not found") from exc
+            stream = manager.stream
+        except KeyError:
+            try:
+                agent_manager.get(run_id)
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="live run not found") from exc
+            stream = agent_manager.stream
 
         def event_stream():
-            for event in manager.stream(run_id):
+            for event in stream(run_id):
+                payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
+                yield f"event: {event.type}\n"
+                yield f"data: {payload}\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.get("/api/v2/live-agent-runs/{run_id}")
+    def get_live_agent_run(run_id: str) -> dict[str, Any]:
+        try:
+            live = agent_manager.get(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live agent run not found") from exc
+        return {
+            "id": live.id,
+            "workflow_id": live.agent_workflow.id,
+            "runtime_type": "agent_graph",
+            "repo_root": live.repo_root,
+            "request": live.request,
+            "status": live.status,
+            "events": [event.model_dump(mode="json") for event in live.events],
+            "result": live.result.model_dump(mode="json") if live.result else None,
+            "stored_run_id": live.stored_run_id,
+            "error": live.error,
+            "approval_required": False,
+        }
+
+    @app.get("/api/v2/live-agent-runs/{run_id}/events")
+    def stream_live_agent_events(run_id: str) -> StreamingResponse:
+        try:
+            agent_manager.get(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live agent run not found") from exc
+
+        def event_stream():
+            for event in agent_manager.stream(run_id):
                 payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
                 yield f"event: {event.type}\n"
                 yield f"data: {payload}\n\n"

@@ -11,10 +11,10 @@ from coder_workbench.tools import ToolRegistry, default_tool_registry
 
 
 class WorkflowRunner:
-    """Small JSON-driven workflow interpreter.
+    """Legacy JSON-driven WorkflowSpec interpreter.
 
-    The runner owns lifecycle and routing. RuntimeNodeExecutor owns the details
-    of executing agent, tool, loop, and human-gate nodes.
+    This runner is retained for legacy WorkflowSpec compatibility and advanced
+    runtime preview. New AgentWorkflowSpec runs should use AgentGraphRunner.
     """
 
     def __init__(
