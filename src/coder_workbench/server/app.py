@@ -63,6 +63,13 @@ class ApprovalRequest(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
+class PlannerResponseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    response: str
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
 class RollbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -506,6 +513,21 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
                 yield f"data: {payload}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/v2/live-agent-runs/{run_id}/planner-response")
+    def submit_live_agent_planner_response(run_id: str, body: PlannerResponseRequest) -> dict[str, Any]:
+        try:
+            live = agent_manager.submit_planner_response(run_id, response=body.response, data=body.data)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live agent run not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "run_id": live.id,
+            "status": live.status,
+            "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
+            "result_url": f"/api/v2/live-agent-runs/{live.id}",
+        }
 
     frontend_path = Path(frontend_dist) if frontend_dist else Path.cwd() / "frontend" / "dist"
     if frontend_path.exists():

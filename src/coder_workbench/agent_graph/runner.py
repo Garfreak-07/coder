@@ -42,6 +42,8 @@ class AgentGraphRunner:
     ) -> RunResult:
         events = list(prior_events or [])
         data = dict(initial_data or {})
+        blocked_node_id = None
+        result_resume_checkpoint = None
 
         def emit(event_type: str, message: str, **payload: Any) -> None:
             event = RunEvent(type=event_type, message=message, payload=payload)
@@ -50,8 +52,8 @@ class AgentGraphRunner:
                 self.event_sink(event)
 
         try:
-            if resume_checkpoint or resume_after_node:
-                raise ValueError("AgentGraphRunner resume is not implemented in Phase 1")
+            if resume_after_node:
+                raise ValueError("AgentGraphRunner resume_after_node is not supported")
 
             assert_valid_agent_workflow(self.agent_workflow)
             workflow_payload = self.agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
@@ -173,12 +175,12 @@ class AgentGraphRunner:
                 plan_status=round_summary.plan_status,
             )
 
-            planner_decision = {
+            planner_decision = self._planner_decision_from_initial_data(data) or {
                 "artifact_type": "planner_decision",
                 "round": 1,
                 "task_done": True,
                 "next_action": "finish",
-                "reason": "Phase 3 AgentGraphRunner mock-mode completed dependency scheduling.",
+                "reason": "Phase 6 AgentGraphRunner mock-mode completed dependency scheduling.",
             }
             data["planner_decision"] = planner_decision
             emit(
@@ -186,12 +188,29 @@ class AgentGraphRunner:
                 "Planner decision produced",
                 artifact_type="planner_decision",
                 round=1,
-                next_action="finish",
+                next_action=planner_decision["next_action"],
             )
-            emit("agent_graph.run.completed", f"Agent graph {self.agent_workflow.id} completed")
-            status = "completed"
-            status_reason = None
-            status_code = None
+            if planner_decision["next_action"] == "ask_human":
+                prompt = planner_decision.get("human_message") or planner_decision.get("reason") or "Planner needs user input."
+                data["planner_human_prompt"] = prompt
+                emit(
+                    "planner.human_prompt",
+                    "Planner requested human input",
+                    round=1,
+                    prompt=prompt,
+                    status_code="planner_ask_human",
+                )
+                emit("agent_graph.run.blocked", "Agent graph blocked for Planner human prompt", code="planner_ask_human")
+                status = "blocked"
+                status_reason = str(prompt)
+                status_code = "planner_ask_human"
+                blocked_node_id = self.agent_workflow.primary_planner_id
+                result_resume_checkpoint = {"data": data}
+            else:
+                emit("agent_graph.run.completed", f"Agent graph {self.agent_workflow.id} completed")
+                status = "completed"
+                status_reason = None
+                status_code = None
         except Exception as exc:  # pragma: no cover - boundary safety
             status = "failed"
             status_reason = str(exc)
@@ -207,6 +226,8 @@ class AgentGraphRunner:
             estimated_tokens_used=0,
             agent_calls=0,
             tool_calls=0,
+            blocked_node_id=blocked_node_id,
+            resume_checkpoint=result_resume_checkpoint,
             status_reason=status_reason,
             status_code=status_code,
         )
@@ -281,6 +302,24 @@ class AgentGraphRunner:
         if not isinstance(value, dict):
             return None
         return PlannerOrder.model_validate(value)
+
+    def _planner_decision_from_initial_data(self, data: dict[str, Any]) -> dict[str, Any] | None:
+        value = data.get("planner_decision")
+        if not isinstance(value, dict):
+            return None
+        action = value.get("next_action")
+        if action not in {"continue", "ask_human", "finish", "stop"}:
+            raise ValueError("planner_decision.next_action must be continue, ask_human, finish, or stop")
+        payload = {
+            "artifact_type": "planner_decision",
+            "round": int(value.get("round") or 1),
+            "task_done": bool(value.get("task_done", action in {"finish", "stop"})),
+            "next_action": action,
+            "reason": str(value.get("reason") or ""),
+        }
+        if value.get("human_message") is not None:
+            payload["human_message"] = str(value["human_message"])
+        return payload
 
     def _mock_planner_order(self, request: str) -> PlannerOrder:
         work_items = []

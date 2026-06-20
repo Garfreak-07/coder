@@ -66,6 +66,37 @@ class AgentGraphRunManager:
                 raise KeyError(run_id)
             return self._runs[run_id]
 
+    def submit_planner_response(
+        self,
+        run_id: str,
+        *,
+        response: str,
+        data: dict[str, Any] | None = None,
+    ) -> LiveAgentRun:
+        run = self.get(run_id)
+        if run.status != "blocked" or not run.result or run.result.status_code != "planner_ask_human":
+            raise ValueError("run is not waiting for a Planner human response")
+        checkpoint_data = dict((run.result.resume_checkpoint or {}).get("data", {}))
+        checkpoint_data["planner_human_response"] = {
+            "response": response,
+            "data": data or {},
+        }
+        checkpoint_data["planner_decision"] = {
+            "artifact_type": "planner_decision",
+            "round": int(checkpoint_data.get("round", 1) or 1),
+            "task_done": True,
+            "next_action": "finish",
+            "reason": "Planner human response recorded; Phase 6 resume completed.",
+        }
+        run.initial_data = checkpoint_data
+        run.status = "queued"
+        run.error = None
+        run.queue = Queue()
+        prior_events = list(run.events)
+        thread = Thread(target=self._execute, args=(run, prior_events), daemon=True)
+        thread.start()
+        return run
+
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
             return [
@@ -135,7 +166,7 @@ class AgentGraphRunManager:
             except Exception:
                 continue
 
-    def _execute(self, run: LiveAgentRun) -> None:
+    def _execute(self, run: LiveAgentRun, prior_events: list[RunEvent] | None = None) -> None:
         run.status = "running"
 
         def sink(event: RunEvent) -> None:
@@ -153,6 +184,7 @@ class AgentGraphRunManager:
                 request=run.request,
                 repo_root=run.repo_root,
                 initial_data=run.initial_data,
+                prior_events=prior_events,
             )
             run.result = result
             stored = self.store.save(
