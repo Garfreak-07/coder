@@ -740,3 +740,73 @@ label {
   padding: 8px;
   white-space: pre-wrap;
 }
+
+.agent-workflow-panel {
+  grid-template-rows: auto auto auto minmax(0, 1fr) minmax(0, 1fr);
+  overflow: auto;
+}
+
+.agent-workflow-settings {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.agent-description-field {
+  grid-column: 1 / -1;
+}
+
+.agent-policy-summary {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.json-details {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+
+.json-details summary {
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.json-details[open] {
+  border-top: 1px solid #263244;
+  padding-top: 8px;
+}
+
+.json-details[open] .json-editor {
+  min-height: 180px;
+}
+
+.advanced-toggle {
+  color: #cbd5e1;
+}
+
+.agent-workflow-node {
+  border-color: #60a5fa;
+  min-width: 180px;
+  text-align: center;
+}
+
+.agent-role-planner {
+  background: #18334d;
+}
+
+.agent-role-executor {
+  background: #26324d;
+}
+
+.agent-role-tester {
+  background: #1f3a32;
+}
+
+.agent-loop-edge path {
+  stroke-dasharray: 6 4;
+}

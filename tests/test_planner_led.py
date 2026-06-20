@@ -133,6 +133,22 @@ class AgentWorkflowApiTests(unittest.TestCase):
                 ],
             )
 
+    def test_agent_workflow_library_saves_agent_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
+            agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+
+            response = client.post("/api/v2/library/agent-workflows", json=agent_workflow)
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["agent_workflow"]["id"], "default-planner-led")
+
+            index = client.get("/api/v2/library").json()
+            self.assertEqual(index["agent_workflows"][0]["id"], "default-planner-led")
+            self.assertEqual(index["agent_workflows"][0]["agents"], 3)
+
+            loaded = client.get("/api/v2/library/agent-workflows/default-planner-led").json()
+            self.assertEqual(loaded["agent_workflow"]["edges"][0]["handoff"], "planner_order")
 
 if __name__ == "__main__":
     unittest.main()

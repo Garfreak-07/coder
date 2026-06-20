@@ -15,9 +15,12 @@ import {
 } from "@xyflow/react";
 import {
   approveLiveRun,
+  compileAgentWorkflowRemote,
   deleteRun,
   getHealth,
   getAgent,
+  getAgentWorkflow,
+  getDefaultAgentWorkflow,
   getLibrary,
   getLiveRun,
   getLiveRuns,
@@ -30,6 +33,7 @@ import {
   getWorkflow,
   rollbackPatch,
   saveAgent,
+  saveAgentWorkflow,
   saveProviderSettings,
   saveWorkflow,
   startLiveRun,
@@ -38,12 +42,16 @@ import {
   retryCurrentNode,
   validateWorkflow
 } from "./api";
-import { codingWorkbenchWorkflow } from "./examples";
+import { compileAgentWorkflow, defaultPlannerLedAgentWorkflow } from "./examples";
 import { nodeTypeDescriptions, nodeTypeLabels, zhCN } from "./i18n";
 import { EventReplayList, hydrateBlobRefs, objectList, objectValue, stringList } from "./runEvents";
-import { instantiateWorkflowTemplate, workflowTemplate, workflowTemplateCards, type WorkflowTemplateCard } from "./template";
+import { agentWorkflowTemplateCards, instantiateAgentWorkflowTemplate, type AgentWorkflowTemplateCard } from "./template";
 import {
+  agentEdgeIdFromIndex,
+  agentEdgeIndexFromId,
   cleanAgent,
+  cleanAgentWorkflowEdge,
+  cloneAgentWorkflow,
   cleanEdge,
   cleanNode,
   createDefaultAgent,
@@ -54,6 +62,8 @@ import {
   formatJson,
   fromFlowEdges,
   linesToList,
+  toAgentFlowEdges,
+  toAgentFlowNodes,
   toFlowEdges,
   toFlowNodes,
   uniqueAgentId,
@@ -61,8 +71,13 @@ import {
   upsertAgent
 } from "./workflowGraph";
 import type {
+  AgentModelTier,
   AgentSpec,
+  AgentWorkflowAgent,
+  AgentWorkflowEdge,
+  AgentWorkflowSpec,
   EdgeSpec,
+  HandoffType,
   HealthStatus,
   LibraryIndex,
   LiveRunDetail,
@@ -83,7 +98,11 @@ const primaryNodeTypes: NodeType[] = ["agent", "loop"];
 const advancedNodeTypes: NodeType[] = ["start", "tool", "mcp_tool", "condition", "human_gate", "end"];
 const nodeTypes: NodeType[] = [...primaryNodeTypes, ...advancedNodeTypes];
 const loopModes: LoopMode[] = ["retry_until", "while", "for_each"];
+const agentModelTiers: AgentModelTier[] = ["best", "standard", "economy"];
+const handoffTypes: HandoffType[] = ["run_contract", "planner_order", "execution_result", "test_result", "planner_decision", "round_summary"];
 const t = zhCN;
+const initialAgentWorkflow = cloneAgentWorkflow(defaultPlannerLedAgentWorkflow);
+const initialRuntimeWorkflow = compileAgentWorkflow(initialAgentWorkflow);
 
 interface PendingPreflightRun {
   repo: string;
@@ -111,11 +130,16 @@ interface ProviderFormState {
 }
 
 export function App() {
-  const [library, setLibrary] = useState<LibraryIndex>({ agents: [], workflows: [] });
-  const [workflow, setWorkflow] = useState<WorkflowSpec>(workflowTemplate);
-  const [jsonText, setJsonText] = useState(() => formatJson(workflowTemplate));
-  const [nodes, setNodes] = useState<FlowNode[]>(() => toFlowNodes(workflowTemplate));
-  const [edges, setEdges] = useState<FlowEdge[]>(() => toFlowEdges(workflowTemplate));
+  const [library, setLibrary] = useState<LibraryIndex>({ agents: [], agent_workflows: [], workflows: [] });
+  const [agentWorkflow, setAgentWorkflow] = useState<AgentWorkflowSpec>(() => cloneAgentWorkflow(initialAgentWorkflow));
+  const [workflow, setWorkflow] = useState<WorkflowSpec>(initialRuntimeWorkflow);
+  const [jsonText, setJsonText] = useState(() => formatJson(initialAgentWorkflow));
+  const [runtimeJsonText, setRuntimeJsonText] = useState(() => formatJson(initialRuntimeWorkflow));
+  const [showAdvancedRuntime, setShowAdvancedRuntime] = useState(false);
+  const [nodes, setNodes] = useState<FlowNode[]>(() => toAgentFlowNodes(initialAgentWorkflow));
+  const [edges, setEdges] = useState<FlowEdge[]>(() => toAgentFlowEdges(initialAgentWorkflow));
+  const [selectedAgentWorkflowId, setSelectedAgentWorkflowId] = useState<string | null>("planner");
+  const [selectedAgentWorkflowEdgeId, setSelectedAgentWorkflowEdgeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>("start");
   const [status, setStatus] = useState(t.app.defaultStatus);
   const [repo, setRepo] = useState(".");
@@ -161,6 +185,15 @@ export function App() {
     () => workflow.agents.find((agent) => agent.id === selectedAgentId) ?? null,
     [selectedAgentId, workflow.agents]
   );
+  const selectedAgentWorkflowAgent = useMemo(
+    () => agentWorkflow.agents.find((agent) => agent.id === selectedAgentWorkflowId) ?? null,
+    [selectedAgentWorkflowId, agentWorkflow.agents]
+  );
+  const selectedAgentWorkflowEdge = useMemo(() => {
+    if (!selectedAgentWorkflowEdgeId) return null;
+    const edgeIndex = agentEdgeIndexFromId(selectedAgentWorkflowEdgeId);
+    return edgeIndex === null ? null : agentWorkflow.edges[edgeIndex] ?? null;
+  }, [selectedAgentWorkflowEdgeId, agentWorkflow.edges]);
   const filteredRunHistory = useMemo(
     () => filterRunHistory(runHistory, historyQuery, historyStatusFilter),
     [runHistory, historyQuery, historyStatusFilter]
@@ -330,49 +363,112 @@ export function App() {
     }
   }
 
+  function renderWorkflowCanvas(nextAgentWorkflow: AgentWorkflowSpec, nextWorkflow: WorkflowSpec, advanced = showAdvancedRuntime) {
+    setNodes(advanced ? toFlowNodes(nextWorkflow) : toAgentFlowNodes(nextAgentWorkflow));
+    setEdges(advanced ? toFlowEdges(nextWorkflow) : toAgentFlowEdges(nextAgentWorkflow));
+  }
+
+  function setCurrentAgentWorkflow(next: AgentWorkflowSpec, runtime = compileAgentWorkflow(next)) {
+    const clean = cloneAgentWorkflow(next);
+    setAgentWorkflow(clean);
+    setWorkflow(runtime);
+    setJsonText(formatJson(clean));
+    setRuntimeJsonText(formatJson(runtime));
+    renderWorkflowCanvas(clean, runtime);
+    setSelectedAgentWorkflowId(clean.agents[0]?.id ?? null);
+    setSelectedAgentWorkflowEdgeId(null);
+    setSelectedNodeId(runtime.nodes[0]?.id ?? null);
+    setSelectedEdgeId(null);
+    setSelectedAgentId(runtime.agents[0]?.id ?? null);
+  }
+
+  function updateAgentWorkflow(mutator: (current: AgentWorkflowSpec) => AgentWorkflowSpec) {
+    const next = cloneAgentWorkflow(mutator(cloneAgentWorkflow(agentWorkflow)));
+    const runtime = compileAgentWorkflow(next);
+    setAgentWorkflow(next);
+    setWorkflow(runtime);
+    setJsonText(formatJson(next));
+    setRuntimeJsonText(formatJson(runtime));
+    renderWorkflowCanvas(next, runtime);
+  }
+
+  function setAdvancedRuntimeMode(enabled: boolean) {
+    setShowAdvancedRuntime(enabled);
+    setNodes(enabled ? toFlowNodes(workflow) : toAgentFlowNodes(agentWorkflow));
+    setEdges(enabled ? toFlowEdges(workflow) : toAgentFlowEdges(agentWorkflow));
+    setSelectedEdgeId(null);
+    setSelectedAgentWorkflowEdgeId(null);
+  }
+
   function setCurrentWorkflow(next: WorkflowSpec) {
     setWorkflow(next);
-    setJsonText(formatJson(next));
+    setRuntimeJsonText(formatJson(next));
     setNodes(toFlowNodes(next));
     setEdges(toFlowEdges(next));
+    setShowAdvancedRuntime(true);
     setSelectedNodeId(next.nodes[0]?.id ?? null);
     setSelectedEdgeId(null);
     setSelectedAgentId(next.agents[0]?.id ?? null);
   }
 
-  function useTemplateCard(template: WorkflowTemplateCard) {
-    const next = instantiateWorkflowTemplate(template);
-    setCurrentWorkflow(next);
+  function useTemplateCard(template: AgentWorkflowTemplateCard) {
+    const next = instantiateAgentWorkflowTemplate(template);
+    setCurrentAgentWorkflow(next);
     setStatus(`已从模板创建：${next.name}`);
   }
 
-  async function loadWorkflow(workflowId: string) {
-    setStatus(`Loading ${workflowId}...`);
+  async function loadDefaultAgentWorkflow() {
+    setStatus("Loading default Agent workflow...");
     try {
-      setCurrentWorkflow(await getWorkflow(workflowId));
-      setStatus(`Loaded ${workflowId}`);
+      const payload = await getDefaultAgentWorkflow();
+      setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
+      setStatus(`Loaded ${payload.agent_workflow.name}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
   }
 
-  function applyJson() {
+  async function loadAgentWorkflow(workflowId: string) {
+    setStatus(`Loading Agent workflow ${workflowId}...`);
     try {
-      const parsed = JSON.parse(jsonText) as WorkflowSpec;
-      setCurrentWorkflow(parsed);
-      setStatus("JSON applied locally. Save to persist it.");
+      const agentWorkflow = await getAgentWorkflow(workflowId);
+      const payload = await compileAgentWorkflowRemote(agentWorkflow);
+      setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
+      setStatus(`Loaded Agent workflow ${workflowId}`);
     } catch (error) {
-      setStatus(error instanceof Error ? `Invalid JSON: ${error.message}` : "Invalid JSON");
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function loadWorkflow(workflowId: string) {
+    setStatus(`Loading legacy runtime workflow ${workflowId}...`);
+    try {
+      setCurrentWorkflow(await getWorkflow(workflowId));
+      setStatus(`Loaded legacy runtime workflow ${workflowId}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function applyJson() {
+    try {
+      const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
+      const payload = await compileAgentWorkflowRemote(parsed);
+      setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
+      setStatus("Agent workflow JSON applied locally. Save to persist it.");
+    } catch (error) {
+      setStatus(error instanceof Error ? `Invalid Agent workflow JSON: ${error.message}` : "Invalid Agent workflow JSON");
     }
   }
 
   async function persistWorkflow() {
     try {
-      const parsed = JSON.parse(jsonText) as WorkflowSpec;
-      const saved = await saveWorkflow(parsed);
-      setCurrentWorkflow(saved);
+      const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
+      const saved = await saveAgentWorkflow(parsed);
+      const payload = await compileAgentWorkflowRemote(saved);
+      setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
       refreshLibrary();
-      setStatus(`Saved workflow ${saved.id}`);
+      setStatus(`Saved Agent workflow ${saved.id}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -380,11 +476,11 @@ export function App() {
 
   function exportWorkflow() {
     try {
-      const parsed = JSON.parse(jsonText) as WorkflowSpec;
-      downloadJson(`${parsed.id || "workflow"}.json`, parsed);
-      setStatus(`Exported ${parsed.id || "workflow"}`);
+      const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
+      downloadJson(`${parsed.id || "agent-workflow"}.json`, parsed);
+      setStatus(`Exported Agent workflow ${parsed.id || "agent-workflow"}`);
     } catch (error) {
-      setStatus(error instanceof Error ? `Cannot export invalid JSON: ${error.message}` : "Cannot export invalid JSON");
+      setStatus(error instanceof Error ? `Cannot export invalid Agent workflow JSON: ${error.message}` : "Cannot export invalid Agent workflow JSON");
     }
   }
 
@@ -392,18 +488,51 @@ export function App() {
     if (!file) return;
     file
       .text()
-      .then((text) => {
-        const parsed = JSON.parse(text) as WorkflowSpec;
-        setCurrentWorkflow(parsed);
-        setStatus(`Imported ${parsed.id}`);
+      .then(async (text) => {
+        const parsed = JSON.parse(text) as AgentWorkflowSpec;
+        const payload = await compileAgentWorkflowRemote(parsed);
+        setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
+        setStatus(`Imported Agent workflow ${payload.agent_workflow.id}`);
       })
       .catch((error) => setStatus(error instanceof Error ? `Import failed: ${error.message}` : "Import failed"));
+  }
+
+  function applyRuntimeJson() {
+    try {
+      const parsed = JSON.parse(runtimeJsonText) as WorkflowSpec;
+      setCurrentWorkflow(parsed);
+      setStatus("Legacy runtime JSON applied locally.");
+    } catch (error) {
+      setStatus(error instanceof Error ? `Invalid runtime JSON: ${error.message}` : "Invalid runtime JSON");
+    }
+  }
+
+  async function persistRuntimeWorkflow() {
+    try {
+      const parsed = JSON.parse(runtimeJsonText) as WorkflowSpec;
+      const saved = await saveWorkflow(parsed);
+      setCurrentWorkflow(saved);
+      refreshLibrary();
+      setStatus(`Saved legacy runtime workflow ${saved.id}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function exportRuntimeWorkflow() {
+    try {
+      const parsed = JSON.parse(runtimeJsonText) as WorkflowSpec;
+      downloadJson(`${parsed.id || "runtime-workflow"}.json`, parsed);
+      setStatus(`Exported legacy runtime workflow ${parsed.id || "runtime-workflow"}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? `Cannot export invalid runtime JSON: ${error.message}` : "Cannot export invalid runtime JSON");
+    }
   }
 
   function updateWorkflow(mutator: (current: WorkflowSpec) => WorkflowSpec) {
     const next = mutator(workflow);
     setWorkflow(next);
-    setJsonText(formatJson(next));
+    setRuntimeJsonText(formatJson(next));
     setNodes(toFlowNodes(next));
     setEdges(toFlowEdges(next));
   }
@@ -476,6 +605,28 @@ export function App() {
     if (nextId) setSelectedAgentId(nextId);
   }
 
+  function updateSelectedAgentWorkflowAgent(patch: Partial<AgentWorkflowAgent>) {
+    if (!selectedAgentWorkflowAgent) return;
+    updateAgentWorkflow((current) => ({
+      ...current,
+      agents: current.agents.map((agent) =>
+        agent.id === selectedAgentWorkflowAgent.id ? { ...agent, ...patch, id: agent.id, role: agent.role } : agent
+      )
+    }));
+  }
+
+  function updateSelectedAgentWorkflowEdge(patch: Partial<AgentWorkflowEdge>) {
+    if (!selectedAgentWorkflowEdgeId) return;
+    const edgeIndex = agentEdgeIndexFromId(selectedAgentWorkflowEdgeId);
+    if (edgeIndex === null) return;
+    updateAgentWorkflow((current) => ({
+      ...current,
+      edges: current.edges.map((edge, index) =>
+        index === edgeIndex ? cleanAgentWorkflowEdge({ ...edge, ...patch }) : edge
+      )
+    }));
+    setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(edgeIndex));
+  }
   async function persistSelectedAgent() {
     if (!selectedAgent) return;
     try {
@@ -512,7 +663,7 @@ export function App() {
           nodes: currentWorkflow.nodes.filter((node) => !removed.has(node.id)),
           edges: currentWorkflow.edges.filter((edge) => !removed.has(edge.from) && !removed.has(edge.to))
         };
-        setJsonText(formatJson(nextWorkflow));
+        setRuntimeJsonText(formatJson(nextWorkflow));
         setEdges(toFlowEdges(nextWorkflow));
         setSelectedNodeId((current) => (current && removed.has(current) ? nextWorkflow.nodes[0]?.id ?? null : current));
         return nextWorkflow;
@@ -520,6 +671,13 @@ export function App() {
     }
   }, []);
 
+  const onAgentNodesChange = useCallback((changes: NodeChange[]) => {
+    setNodes((current) => applyNodeChanges(changes.filter((change) => change.type !== "remove"), current));
+  }, []);
+
+  const onAgentEdgesChange = useCallback((changes: EdgeChange[]) => {
+    setEdges((current) => applyEdgeChanges(changes.filter((change) => change.type !== "remove"), current));
+  }, []);
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
       setEdges((current) => {
@@ -527,7 +685,7 @@ export function App() {
         const specEdges = fromFlowEdges(nextEdges, workflow);
         setWorkflow((currentWorkflow) => {
           const nextWorkflow = { ...currentWorkflow, edges: specEdges };
-          setJsonText(formatJson(nextWorkflow));
+          setRuntimeJsonText(formatJson(nextWorkflow));
           return nextWorkflow;
         });
         return nextEdges;
@@ -543,7 +701,7 @@ export function App() {
         const specEdges = fromFlowEdges(nextEdges, workflow);
         setWorkflow((currentWorkflow) => {
           const nextWorkflow = { ...currentWorkflow, edges: specEdges };
-          setJsonText(formatJson(nextWorkflow));
+          setRuntimeJsonText(formatJson(nextWorkflow));
           return nextWorkflow;
         });
         return nextEdges;
@@ -554,15 +712,17 @@ export function App() {
 
   async function runWorkflow(approvedOverride = approved) {
     setPreflightLoading(true);
-    setStatus("正在运行工作流 Preflight...");
+    setStatus("正在编译 Agent 工作流并运行 Preflight...");
     try {
-      const parsed = JSON.parse(jsonText) as WorkflowSpec;
+      const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
+      const compiled = await compileAgentWorkflowRemote(parsed);
+      setCurrentAgentWorkflow(compiled.agent_workflow, compiled.workflow);
       const scopes = linesToList(scopesText);
-      const result = await validateWorkflow(parsed);
+      const result = await validateWorkflow(compiled.workflow);
       setPendingPreflight({
         repo,
         request,
-        workflow: parsed,
+        workflow: compiled.workflow,
         approved: approvedOverride,
         scopes,
         result
@@ -695,7 +855,7 @@ export function App() {
         <section className="panel">
           <div className="panel-title">{t.templates.title}</div>
           <div className="template-list">
-            {workflowTemplateCards.map((template) => (
+            {agentWorkflowTemplateCards.map((template) => (
               <TemplateCard key={template.id} template={template} onUse={useTemplateCard} />
             ))}
           </div>
@@ -703,20 +863,33 @@ export function App() {
 
         <section className="panel">
           <div className="panel-title">{t.library.title}</div>
-          <button onClick={() => setCurrentWorkflow(codingWorkbenchWorkflow)}>{t.library.loadExample}</button>
+          <button onClick={loadDefaultAgentWorkflow}>{t.library.loadExample}</button>
           <button onClick={refreshLibrary}>{t.library.refresh}</button>
           <div className="list">
-            {library.workflows.length === 0 ? (
+            {library.agent_workflows.length === 0 ? (
               <div className="muted">{t.library.empty}</div>
             ) : (
-              library.workflows.map((item) => (
-                <button className="list-item" key={item.id} onClick={() => loadWorkflow(item.id)}>
+              library.agent_workflows.map((item) => (
+                <button className="list-item" key={item.id} onClick={() => loadAgentWorkflow(item.id)}>
                   <span>{item.name ?? item.id}</span>
-                  <small>{t.library.nodeEdgeCount(item.nodes, item.edges)}</small>
+                  <small>{item.agents} agents / {item.edges} handoffs / {item.max_auto_rounds ?? 3} rounds</small>
                 </button>
               ))
             )}
           </div>
+          {library.workflows.length > 0 && (
+            <details className="advanced-node-tools">
+              <summary>高级遗留 runtime workflows</summary>
+              <div className="list compact-list">
+                {library.workflows.map((item) => (
+                  <button className="list-item" key={item.id} onClick={() => loadWorkflow(item.id)}>
+                    <span>{item.name ?? item.id}</span>
+                    <small>{t.library.nodeEdgeCount(item.nodes, item.edges)}</small>
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
         </section>
 
         <section className="panel">
@@ -822,42 +995,59 @@ export function App() {
         <section className="canvas-panel">
           <div className="toolbar">
             <div>
-              <strong>{workflow.name}</strong>
-              <span>{workflow.id}</span>
+              <strong>{showAdvancedRuntime ? workflow.name : agentWorkflow.name}</strong>
+              <span>
+                {showAdvancedRuntime ? `${workflow.id} · 编译后 runtime graph` : `${agentWorkflow.id} · AgentWorkflowSpec`}
+              </span>
             </div>
             <div className="node-add-controls">
-              <div className="button-row">
-                {primaryNodeTypes.map((type) => (
-                  <button key={type} onClick={() => addWorkflowNode(type)}>
-                    {t.canvas.addNode(type)}
-                  </button>
-                ))}
-              </div>
-              <details className="advanced-node-tools">
-                <summary>高级运行时节点</summary>
-                <div className="button-row">
-                  {advancedNodeTypes.map((type) => (
-                    <button key={type} onClick={() => addWorkflowNode(type)}>
-                      {t.canvas.addNode(type)}
-                    </button>
-                  ))}
-                </div>
-              </details>
+              <label className="checkbox-row advanced-toggle">
+                <input
+                  type="checkbox"
+                  checked={showAdvancedRuntime}
+                  onChange={(event) => setAdvancedRuntimeMode(event.target.checked)}
+                />
+                查看编译后运行时图
+              </label>
+              {showAdvancedRuntime && (
+                <details className="advanced-node-tools">
+                  <summary>高级遗留 runtime 节点</summary>
+                  <div className="button-row">
+                    {[...primaryNodeTypes, ...advancedNodeTypes].map((type) => (
+                      <button key={type} onClick={() => addWorkflowNode(type)}>
+                        {t.canvas.addNode(type)}
+                      </button>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           </div>
           <ReactFlow
             nodes={nodes}
             edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
+            onNodesChange={showAdvancedRuntime ? onNodesChange : onAgentNodesChange}
+            onEdgesChange={showAdvancedRuntime ? onEdgesChange : onAgentEdgesChange}
+            onConnect={showAdvancedRuntime ? onConnect : undefined}
+            nodesConnectable={showAdvancedRuntime}
+            deleteKeyCode={showAdvancedRuntime ? "Backspace" : null}
             onNodeClick={(_, node) => {
-              setSelectedNodeId(node.id);
-              setSelectedEdgeId(null);
+              if (showAdvancedRuntime) {
+                setSelectedNodeId(node.id);
+                setSelectedEdgeId(null);
+              } else {
+                setSelectedAgentWorkflowId(node.id);
+                setSelectedAgentWorkflowEdgeId(null);
+              }
             }}
             onEdgeClick={(_, edge) => {
-              setSelectedEdgeId(edge.id);
-              setSelectedNodeId(null);
+              if (showAdvancedRuntime) {
+                setSelectedEdgeId(edge.id);
+                setSelectedNodeId(null);
+              } else {
+                setSelectedAgentWorkflowEdgeId(edge.id);
+                setSelectedAgentWorkflowId(null);
+              }
             }}
             fitView
           >
@@ -867,72 +1057,197 @@ export function App() {
           </ReactFlow>
         </section>
 
-        <section className="editor-panel">
-          <div className="panel-title">{t.json.title}</div>
-          <div className="button-row">
-            <button onClick={applyJson}>{t.json.apply}</button>
-            <button onClick={persistWorkflow}>{t.json.save}</button>
-            <button onClick={exportWorkflow}>{t.json.export}</button>
-            <label className="file-button">
-              {t.json.import}
+        <section className="editor-panel agent-workflow-panel">
+          <div className="panel-title">Agent 工作流</div>
+          <div className="agent-workflow-settings">
+            <label>
+              工作流名称
               <input
-                type="file"
-                accept="application/json,.json"
-                onChange={(event) => importWorkflow(event.target.files?.[0] ?? null)}
+                value={agentWorkflow.name}
+                onChange={(event) => updateAgentWorkflow((current) => ({ ...current, name: event.target.value }))}
+              />
+            </label>
+            <label>
+              工作流 ID
+              <input
+                value={agentWorkflow.id}
+                onChange={(event) => updateAgentWorkflow((current) => ({ ...current, id: event.target.value }))}
+              />
+            </label>
+            <label>
+              最大自动轮次
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={agentWorkflow.loop_policy.max_auto_rounds}
+                onChange={(event) =>
+                  updateAgentWorkflow((current) => ({
+                    ...current,
+                    loop_policy: { ...current.loop_policy, max_auto_rounds: Number(event.target.value) }
+                  }))
+                }
+              />
+            </label>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={agentWorkflow.loop_policy.user_can_change}
+                onChange={(event) =>
+                  updateAgentWorkflow((current) => ({
+                    ...current,
+                    loop_policy: { ...current.loop_policy, user_can_change: event.target.checked }
+                  }))
+                }
+              />
+              用户可以调整轮次
+            </label>
+            <label className="agent-description-field">
+              描述
+              <textarea
+                value={agentWorkflow.description}
+                onChange={(event) => updateAgentWorkflow((current) => ({ ...current, description: event.target.value }))}
+                rows={3}
               />
             </label>
           </div>
-          <textarea className="json-editor" value={jsonText} onChange={(event) => setJsonText(event.target.value)} />
+          <div className="summary-grid agent-policy-summary">
+            <span>只有 Planner 可以询问用户</span>
+            <span>Executor 只按 PlannerOrder 执行</span>
+            <span>Tester 返回 TestResult 证据</span>
+            <span>{workflow.nodes.length} 个隐藏 runtime 节点</span>
+          </div>
+          <details className="json-details">
+            <summary>AgentWorkflowSpec JSON（高级）</summary>
+            <div className="button-row">
+              <button onClick={applyJson}>{t.json.apply}</button>
+              <button onClick={persistWorkflow}>{t.json.save}</button>
+              <button onClick={exportWorkflow}>{t.json.export}</button>
+              <label className="file-button">
+                {t.json.import}
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => importWorkflow(event.target.files?.[0] ?? null)}
+                />
+              </label>
+            </div>
+            <textarea className="json-editor" value={jsonText} onChange={(event) => setJsonText(event.target.value)} />
+          </details>
+          <details className="json-details" open={showAdvancedRuntime}>
+            <summary>编译后 runtime JSON（高级遗留）</summary>
+            <div className="button-row">
+              <button onClick={applyRuntimeJson}>应用 runtime JSON</button>
+              <button onClick={persistRuntimeWorkflow}>保存 runtime JSON</button>
+              <button onClick={exportRuntimeWorkflow}>导出 runtime JSON</button>
+            </div>
+            <textarea
+              className="json-editor"
+              value={runtimeJsonText}
+              onChange={(event) => setRuntimeJsonText(event.target.value)}
+            />
+          </details>
         </section>
       </main>
 
       <aside className="inspector">
         <section className="panel">
-          <div className="panel-title">{t.inspector.title}</div>
-          {selectedNode ? (
-            <NodeInspector node={selectedNode} workflow={workflow} onChange={updateSelectedNode} />
-          ) : selectedEdge ? (
-            <EdgeInspector edge={selectedEdge} nodes={workflow.nodes} onChange={updateSelectedEdge} />
+          <div className="panel-title">{showAdvancedRuntime ? "Runtime 检查器" : "Agent 检查器"}</div>
+          {showAdvancedRuntime ? (
+            selectedNode ? (
+              <NodeInspector node={selectedNode} workflow={workflow} onChange={updateSelectedNode} />
+            ) : selectedEdge ? (
+              <EdgeInspector edge={selectedEdge} nodes={workflow.nodes} onChange={updateSelectedEdge} />
+            ) : (
+              <div className="muted">{t.inspector.empty}</div>
+            )
+          ) : selectedAgentWorkflowAgent ? (
+            <AgentWorkflowAgentInspector agent={selectedAgentWorkflowAgent} onChange={updateSelectedAgentWorkflowAgent} />
+          ) : selectedAgentWorkflowEdge ? (
+            <AgentWorkflowEdgeInspector
+              edge={selectedAgentWorkflowEdge}
+              agents={agentWorkflow.agents}
+              onChange={updateSelectedAgentWorkflowEdge}
+            />
           ) : (
-            <div className="muted">{t.inspector.empty}</div>
+            <div className="muted">选择一个 Agent 或交接边。</div>
           )}
         </section>
 
         <section className="panel">
-          <div className="panel-title">{t.inspector.agents}</div>
-          <div className="button-row">
-            <button onClick={addAgent}>{t.inspector.addAgent}</button>
-            <button disabled={!selectedAgent} onClick={persistSelectedAgent}>
-              {t.inspector.saveAgent}
-            </button>
-          </div>
-          <div className="list compact-list">
-            {workflow.agents.map((agent) => (
-              <button
-                className={`list-item ${agent.id === selectedAgentId ? "selected" : ""}`}
-                key={agent.id}
-                onClick={() => setSelectedAgentId(agent.id)}
-              >
-                <span>{agent.name ?? agent.id}</span>
-                <small>{agent.role}</small>
-              </button>
-            ))}
-            {workflow.agents.length === 0 && <div className="muted">{t.inspector.noAgents}</div>}
-          </div>
-          {library.agents.length > 0 && (
+          {showAdvancedRuntime ? (
             <>
-              <div className="panel-subtitle">{t.inspector.libraryAgents}</div>
+              <div className="panel-title">Runtime Agents（高级遗留）</div>
+              <div className="button-row">
+                <button onClick={addAgent}>{t.inspector.addAgent}</button>
+                <button disabled={!selectedAgent} onClick={persistSelectedAgent}>
+                  {t.inspector.saveAgent}
+                </button>
+              </div>
               <div className="list compact-list">
-                {library.agents.map((agent) => (
-                  <button className="list-item" key={agent.id} onClick={() => loadAgentIntoWorkflow(agent.id)}>
+                {workflow.agents.map((agent) => (
+                  <button
+                    className={`list-item ${agent.id === selectedAgentId ? "selected" : ""}`}
+                    key={agent.id}
+                    onClick={() => setSelectedAgentId(agent.id)}
+                  >
                     <span>{agent.name ?? agent.id}</span>
                     <small>{agent.role}</small>
+                  </button>
+                ))}
+                {workflow.agents.length === 0 && <div className="muted">{t.inspector.noAgents}</div>}
+              </div>
+              {library.agents.length > 0 && (
+                <>
+                  <div className="panel-subtitle">{t.inspector.libraryAgents}</div>
+                  <div className="list compact-list">
+                    {library.agents.map((agent) => (
+                      <button className="list-item" key={agent.id} onClick={() => loadAgentIntoWorkflow(agent.id)}>
+                        <span>{agent.name ?? agent.id}</span>
+                        <small>{agent.role}</small>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+              {selectedAgent && <AgentInspector agent={selectedAgent} onChange={updateSelectedAgent} />}
+            </>
+          ) : (
+            <>
+              <div className="panel-title">Agent 拓扑</div>
+              <div className="list compact-list">
+                {agentWorkflow.agents.map((agent) => (
+                  <button
+                    className={`list-item ${agent.id === selectedAgentWorkflowId ? "selected" : ""}`}
+                    key={agent.id}
+                    onClick={() => {
+                      setSelectedAgentWorkflowId(agent.id);
+                      setSelectedAgentWorkflowEdgeId(null);
+                    }}
+                  >
+                    <span>{agent.name}</span>
+                    <small>{agent.role} · {agent.model_tier}</small>
+                  </button>
+                ))}
+              </div>
+              <div className="panel-subtitle">结构化交接</div>
+              <div className="list compact-list">
+                {agentWorkflow.edges.map((edge, index) => (
+                  <button
+                    className={`list-item ${agentEdgeIdFromIndex(index) === selectedAgentWorkflowEdgeId ? "selected" : ""}`}
+                    key={`${edge.from}-${edge.to}-${edge.handoff}`}
+                    onClick={() => {
+                      setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(index));
+                      setSelectedAgentWorkflowId(null);
+                    }}
+                  >
+                    <span>{edge.from} → {edge.to}</span>
+                    <small>{edge.handoff}{edge.loop ? " · loop" : ""}</small>
                   </button>
                 ))}
               </div>
             </>
           )}
-          {selectedAgent && <AgentInspector agent={selectedAgent} onChange={updateSelectedAgent} />}
         </section>
 
         <section className="panel events-panel">
@@ -1374,14 +1689,14 @@ function TemplateCard({
   template,
   onUse
 }: {
-  template: WorkflowTemplateCard;
-  onUse: (template: WorkflowTemplateCard) => void;
+  template: AgentWorkflowTemplateCard;
+  onUse: (template: AgentWorkflowTemplateCard) => void;
 }) {
   const isDefaultCoding = template.id === "default-coding";
   const name = isDefaultCoding ? t.templates.defaultCodingName : t.templates.blankName;
   const purpose = isDefaultCoding ? t.templates.defaultCodingPurpose : t.templates.blankPurpose;
   const approvals =
-    template.approvals === "requiredApprovals" ? t.templates.requiredApprovals : "无强制审批";
+    template.approvals === "plannerOnlyHuman" ? t.templates.plannerOnlyHuman : t.templates.requiredApprovals;
   const modelRequirement =
     template.modelRequirement === "optionalModel" ? t.templates.optionalModel : template.modelRequirement;
   const knowledgeRequirement =
@@ -1400,9 +1715,6 @@ function TemplateCard({
       <div className="template-meta">
         <span>
           {t.templates.agents}: {template.agentCount}
-        </span>
-        <span>
-          {t.templates.tools}: {template.tools.length > 0 ? template.tools.join(", ") : "无"}
         </span>
         <span>
           {t.templates.approvals}: {approvals}
@@ -1770,6 +2082,86 @@ function statusClass(type: string | undefined): string {
   return "";
 }
 
+function AgentWorkflowAgentInspector({
+  agent,
+  onChange
+}: {
+  agent: AgentWorkflowAgent;
+  onChange: (patch: Partial<AgentWorkflowAgent>) => void;
+}) {
+  return (
+    <div className="form-stack agent-editor">
+      <div className="summary-grid">
+        <span>{agent.role}</span>
+        <span>{agent.can_talk_to_human ? "可询问用户" : "不直接询问用户"}</span>
+      </div>
+      <label>
+        名称
+        <input value={agent.name} onChange={(event) => onChange({ name: event.target.value })} />
+      </label>
+      <label>
+        模型层级
+        <select value={agent.model_tier} onChange={(event) => onChange({ model_tier: event.target.value as AgentModelTier })}>
+          {agentModelTiers.map((tier) => (
+            <option key={tier} value={tier}>
+              {tier}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={agent.can_talk_to_human}
+          disabled={agent.role !== "planner"}
+          onChange={(event) => onChange({ can_talk_to_human: event.target.checked })}
+        />
+        允许询问用户（仅 Planner）
+      </label>
+      <div className="panel-subtitle">能力</div>
+      <div className="chip-row">
+        {agent.capabilities.map((capability) => (
+          <span className="chip" key={capability}>{capability}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AgentWorkflowEdgeInspector({
+  edge,
+  agents,
+  onChange
+}: {
+  edge: AgentWorkflowEdge;
+  agents: AgentWorkflowAgent[];
+  onChange: (patch: Partial<AgentWorkflowEdge>) => void;
+}) {
+  const from = agents.find((agent) => agent.id === edge.from);
+  const to = agents.find((agent) => agent.id === edge.to);
+  return (
+    <div className="form-stack">
+      <div className="summary-grid">
+        <span>{from?.name ?? edge.from}</span>
+        <span>{to?.name ?? edge.to}</span>
+      </div>
+      <label>
+        交接 artifact
+        <select value={edge.handoff} onChange={(event) => onChange({ handoff: event.target.value as HandoffType })}>
+          {handoffTypes.map((handoff) => (
+            <option key={handoff} value={handoff}>
+              {handoff}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={Boolean(edge.loop)} onChange={(event) => onChange({ loop: event.target.checked })} />
+        这是回到 Planner 的循环边
+      </label>
+    </div>
+  );
+}
 function NodeInspector({
   node,
   workflow,
