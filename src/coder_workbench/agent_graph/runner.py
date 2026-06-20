@@ -4,6 +4,7 @@ from typing import Any
 
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.agent_graph.context import upstream_refs_for_item
+from coder_workbench.agent_graph.merge import build_planner_input_bundle, build_round_summary
 from coder_workbench.agent_graph.scheduler import AgentGraphScheduler
 from coder_workbench.agent_graph.schema import ExecutionRecord, PlannerOrder, TestRecord
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec, assert_valid_agent_workflow
@@ -149,24 +150,25 @@ class AgentGraphRunner:
             data["scheduler_status"] = dict(scheduler.status_by_id)
             data["graph_run_cache"] = cache.as_runtime_payload()
 
-            planner_input_bundle = self._mock_planner_input_bundle(cache)
-            data["planner_input_bundle"] = planner_input_bundle
+            planner_input_bundle = build_planner_input_bundle(cache)
+            data["planner_input_bundle"] = planner_input_bundle.model_dump(mode="json", exclude_none=True)
             emit(
                 "planner.input_bundle.created",
                 "Compact PlannerInputBundle created",
                 artifact_type="planner_input_bundle",
                 round=1,
-                items=len(planner_input_bundle["items"]),
+                items=len(planner_input_bundle.items),
+                plan_status=planner_input_bundle.plan_status,
             )
 
-            round_summary = self._mock_round_summary(cache)
-            data["round_summary"] = round_summary
+            round_summary = build_round_summary(cache)
+            data["round_summary"] = round_summary.model_dump(mode="json")
             emit(
                 "round_summary.created",
                 "Round summary created",
                 artifact_type="round_summary",
                 round=1,
-                plan_status=round_summary["plan_status"],
+                plan_status=round_summary.plan_status,
             )
 
             planner_decision = {
@@ -310,76 +312,9 @@ class AgentGraphRunner:
             }
         )
 
-    def _mock_planner_input_bundle(self, cache: GraphRunCache) -> dict[str, Any]:
-        return {
-            "artifact_type": "planner_input_bundle",
-            "round": cache.round,
-            "planner_order_ref": cache.plan_cache.planner_order_ref if cache.plan_cache else "memory:planner_order:round-1",
-            "plan_status": "completed",
-            "items": [
-                {
-                    "work_item_id": item.work_item_id,
-                    "order_index": item.order_index,
-                    "task_summary": item.task_summary,
-                    "execution_status": cache.execution_cache[item.work_item_id].status
-                    if item.work_item_id in cache.execution_cache
-                    else "not_started",
-                    "execution_summary": cache.execution_cache[item.work_item_id].execution_summary
-                    if item.work_item_id in cache.execution_cache
-                    else "",
-                    "test_status": _merged_test_status(cache.test_cache.get(item.work_item_id, []), item.tester_agent_ids),
-                    "test_summary": _merged_test_summary(cache.test_cache.get(item.work_item_id, []), item.tester_agent_ids),
-                    "refs": cache.refs_for_work_item(item.work_item_id),
-                }
-                for item in cache.work_items()
-            ],
-        }
-
-    def _mock_round_summary(self, cache: GraphRunCache) -> dict[str, Any]:
-        ordered_state = [
-            {
-                "work_item_id": item.work_item_id,
-                "order_index": item.order_index,
-                "status": "completed",
-                "summary": "Phase 2 mock item completed through ExecutionCache/TestCache.",
-                "refs": cache.refs_for_work_item(item.work_item_id),
-            }
-            for item in cache.work_items()
-        ]
-        return {
-            "artifact_type": "round_summary",
-            "round": cache.round,
-            "planner_order_ref": cache.plan_cache.planner_order_ref if cache.plan_cache else "memory:planner_order:round-1",
-            "plan_status": "completed",
-            "completed_count": len(ordered_state),
-            "failed_count": 0,
-            "blocked_count": 0,
-            "ordered_state": ordered_state,
-            "remaining_work": [],
-            "carry_forward_constraints": [],
-        }
-
 
 def _is_tester(agent: AgentWorkflowAgent) -> bool:
     return agent.role in {"tester", "reviewer"} or any("test" in capability for capability in agent.capabilities)
-
-
-def _merged_test_status(records: list[TestRecord], tester_agent_ids: list[str]) -> str:
-    if not tester_agent_ids:
-        return "not_requested"
-    if any(record.status == "fail" for record in records):
-        return "fail"
-    if any(record.status == "blocked" for record in records):
-        return "blocked"
-    return "pass" if records else "not_requested"
-
-
-def _merged_test_summary(records: list[TestRecord], tester_agent_ids: list[str]) -> str:
-    if not tester_agent_ids:
-        return ""
-    if not records:
-        return "Test was requested but no TestRecord was written."
-    return " ".join(record.test_summary for record in records)
 
 
 def _max_concurrency_from_data(data: dict[str, Any]) -> int:
