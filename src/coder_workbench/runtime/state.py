@@ -12,6 +12,7 @@ EventType = Literal[
     "node.started",
     "node.completed",
     "node.skipped",
+    "node.retry_requested",
     "loop.started",
     "loop.iteration.started",
     "loop.iteration.completed",
@@ -62,6 +63,8 @@ class RunState(BaseModel):
     agent_calls: int = 0
     tool_calls: int = 0
     status: Literal["running", "completed", "blocked", "failed"] = "running"
+    status_reason: str | None = None
+    status_code: str | None = None
     current_node: str | None = None
     _event_sink: Any = PrivateAttr(default=None)
 
@@ -93,6 +96,8 @@ class RunResult(BaseModel):
     tool_calls: int
     blocked_node_id: str | None = None
     resume_checkpoint: dict[str, Any] | None = None
+    status_reason: str | None = None
+    status_code: str | None = None
 
 
 def summarize_value(value: Any, max_chars: int = 800) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,7 +166,17 @@ def _project_index(args: dict[str, Any], runtime_context: dict[str, Any]) -> dic
     scope = _list_value(args.get("scope")) or _list_value(runtime_context.get("scopes"))
     files = summarize_project(repo_root, scope, max_files=int(args.get("max_files", 800)))
     modules = build_module_map(files)
-    return {"files": files, "modules": modules, "file_count": len(files), "scopes": scope}
+    summary = _project_summary(repo_root, files, scope)
+    return {
+        "files": files,
+        "modules": modules,
+        "file_count": len(files),
+        "scopes": scope,
+        "summary": summary,
+        "important_files": summary["important_files"],
+        "detected_frameworks": summary["detected_frameworks"],
+        "candidate_check_commands": summary["candidate_check_commands"],
+    }
 
 
 def _recommend_modules(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
@@ -247,3 +258,88 @@ def _command_is_approved(approval_key: str, runtime_context: dict[str, Any]) -> 
         data.get("preapprove_all")
         or (isinstance(approvals, dict) and approvals.get(approval_key) is True)
     )
+
+
+def _project_summary(repo_root: Path, files: list[dict[str, Any]], scopes: list[str]) -> dict[str, Any]:
+    paths = {str(file.get("path", "")) for file in files}
+    important_names = {
+        "README.md",
+        "pyproject.toml",
+        "requirements.txt",
+        "package.json",
+        "frontend/package.json",
+        "Cargo.toml",
+        "go.mod",
+        ".github/workflows/ci.yml",
+    }
+    important_files = sorted(path for path in paths if path in important_names or path.endswith(("/package.json", "/pyproject.toml")))
+    frameworks = _detect_frameworks(repo_root, paths)
+    candidate_checks = _candidate_check_commands(repo_root, paths)
+    return {
+        "file_count": len(files),
+        "scopes": scopes,
+        "important_files": important_files[:20],
+        "detected_frameworks": frameworks,
+        "candidate_check_commands": candidate_checks,
+    }
+
+
+def _detect_frameworks(repo_root: Path, paths: set[str]) -> list[str]:
+    frameworks: list[str] = []
+    if "pyproject.toml" in paths or "requirements.txt" in paths:
+        frameworks.append("python")
+    package_paths = [path for path in paths if path == "package.json" or path.endswith("/package.json")]
+    if package_paths:
+        frameworks.append("node")
+    if any(path.endswith("vite.config.ts") or path.endswith("vite.config.js") for path in paths):
+        frameworks.append("vite")
+    if any(path.endswith("next.config.js") or path.endswith("next.config.mjs") or path.endswith("next.config.ts") for path in paths):
+        frameworks.append("nextjs")
+    if "Cargo.toml" in paths:
+        frameworks.append("rust")
+    if "go.mod" in paths:
+        frameworks.append("go")
+    if ".github/workflows/ci.yml" in paths or any(path.startswith(".github/workflows/") for path in paths):
+        frameworks.append("github_actions")
+    return frameworks
+
+
+def _candidate_check_commands(repo_root: Path, paths: set[str]) -> list[str]:
+    commands: list[str] = []
+    if "tests" in {Path(path).parts[0] for path in paths if Path(path).parts}:
+        commands.append("python -m unittest discover -s tests")
+    if "src" in {Path(path).parts[0] for path in paths if Path(path).parts}:
+        commands.append("python -m compileall src tests")
+    for package_path in sorted(path for path in paths if path == "package.json" or path.endswith("/package.json")):
+        package_dir = "." if package_path == "package.json" else str(Path(package_path).parent).replace("\\", "/")
+        scripts = _package_scripts(repo_root / package_path)
+        prefix = "" if package_dir == "." else f"--prefix {package_dir} "
+        if "test" in scripts:
+            commands.append(f"npm {prefix}run test".strip())
+        if "build" in scripts:
+            commands.append(f"npm {prefix}run build".strip())
+    if "Cargo.toml" in paths:
+        commands.append("cargo test")
+    if "go.mod" in paths:
+        commands.append("go test ./...")
+    return _dedupe(commands)
+
+
+def _package_scripts(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    scripts = payload.get("scripts")
+    return scripts if isinstance(scripts, dict) else {}
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

@@ -44,6 +44,8 @@ roadmap.
 
 ## Install
 
+Requires Python 3.11 or newer.
+
 ```powershell
 git clone https://github.com/Garfreak-07/Coder.git
 cd Coder

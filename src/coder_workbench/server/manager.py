@@ -62,7 +62,7 @@ class RunManager:
         reason: str | None = None,
     ) -> LiveRun:
         run = self.get(run_id)
-        if run.status != "blocked" or not run.result or not run.result.resume_checkpoint or not run.result.blocked_node_id:
+        if run.status != "blocked" or not self._is_approval_blocked_result(run.result):
             raise ValueError("run is not waiting for approval")
 
         checkpoint = dict(run.result.resume_checkpoint)
@@ -126,6 +126,39 @@ class RunManager:
         thread.start()
         return run
 
+    def retry_current_node(self, run_id: str) -> LiveRun:
+        run = self.get(run_id)
+        if (
+            run.status != "blocked"
+            or not run.result
+            or not run.result.resume_checkpoint
+            or not run.result.blocked_node_id
+        ):
+            raise ValueError("run does not have a retryable blocked node")
+
+        checkpoint = dict(run.result.resume_checkpoint)
+        run.status = "queued"
+        run.error = None
+        run.queue = Queue()
+        retry_event = RunEvent(
+            type="node.retry_requested",
+            node_id=run.result.blocked_node_id,
+            message=f"Retry requested for node {run.result.blocked_node_id}",
+            payload={
+                "run_id": run.id,
+                "node_id": run.result.blocked_node_id,
+                "reason": "Retry current node",
+                "actor": "local_user",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        run.events.append(retry_event)
+        run.queue.put(retry_event)
+        prior_events = list(run.events)
+        thread = Thread(target=self._execute, args=(run, checkpoint, run.result.blocked_node_id, prior_events), daemon=True)
+        thread.start()
+        return run
+
     def get(self, run_id: str) -> LiveRun:
         with self._lock:
             if run_id not in self._runs:
@@ -144,9 +177,15 @@ class RunManager:
                     "events": len(run.events),
                     "stored_run_id": run.stored_run_id,
                     "error": run.error,
+                    "status_reason": run.result.status_reason if run.result else run.error,
+                    "status_code": run.result.status_code if run.result else None,
+                    "approval_required": self._is_approval_blocked_result(run.result),
                 }
                 for run in self._runs.values()
             ]
+
+    def approval_required(self, run: LiveRun) -> bool:
+        return self._is_approval_blocked_result(run.result)
 
     def _load_persisted_live_runs(self) -> None:
         for payload in self.store.list_live():
@@ -161,8 +200,8 @@ class RunManager:
                 ]
                 status = payload.get("status", "failed")
                 if status in {"queued", "running"}:
-                    status = "blocked" if self._is_recoverable_blocked_result(result) else "failed"
-                if status == "blocked" and not self._is_recoverable_blocked_result(result):
+                    status = "blocked" if self._is_approval_blocked_result(result) else "failed"
+                if status == "blocked" and not (result and result.status == "blocked" and result.blocked_node_id):
                     status = "failed"
                 live = LiveRun(
                     id=str(payload["id"]),
@@ -181,12 +220,32 @@ class RunManager:
                 continue
 
     def _is_recoverable_blocked_result(self, result: RunResult | None) -> bool:
+        return self._is_approval_blocked_result(result)
+
+    def _is_approval_blocked_result(self, result: RunResult | None) -> bool:
         return bool(
             result
             and result.status == "blocked"
             and result.blocked_node_id
             and result.resume_checkpoint
+            and self._pending_approval_event(result)
         )
+
+    def _pending_approval_event(self, result: RunResult) -> RunEvent | None:
+        if not result.blocked_node_id:
+            return None
+        approval_events = [
+            event
+            for event in result.events
+            if event.type == "approval.required" and event.node_id == result.blocked_node_id
+        ]
+        if not approval_events:
+            return None
+        latest_approval = approval_events[-1]
+        latest_record = next((event for event in reversed(result.events) if event.type == "approval.recorded"), None)
+        if latest_record and latest_record.created_at >= latest_approval.created_at:
+            return None
+        return latest_approval
 
     def stream(self, run_id: str):
         run = self.get(run_id)

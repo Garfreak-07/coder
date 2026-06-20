@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from coder_workbench.core import WorkflowSpec
 from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.runtime import RunEvent, RunResult
 from coder_workbench.runtime.runner import WorkflowRunner
+from coder_workbench.server.manager import RunManager
 from coder_workbench.server.storage import RunStore
 from coder_workbench.tools import default_tool_registry
 
@@ -19,6 +21,16 @@ class StaticExecutor:
 
     def run(self, agent, context: dict[str, Any]) -> dict[str, Any]:
         return dict(self.result)
+
+
+class SequenceExecutor:
+    def __init__(self, results: list[dict[str, Any]]) -> None:
+        self.results = list(results)
+
+    def run(self, agent, context: dict[str, Any]) -> dict[str, Any]:
+        if len(self.results) > 1:
+            return dict(self.results.pop(0))
+        return dict(self.results[0])
 
 
 class ArtifactRuntimeTests(unittest.TestCase):
@@ -57,8 +69,59 @@ class ArtifactRuntimeTests(unittest.TestCase):
 
             self.assertEqual(result.status, "blocked")
             self.assertEqual(result.blocked_node_id, "agent")
+            self.assertEqual(result.status_code, "artifact_validation_failed")
             self.assertEqual(result.artifacts, {})
             self.assertTrue(any(event.type == "artifact.validation_failed" for event in result.events))
+
+    def test_live_recovery_preserves_non_approval_artifact_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / ".coder")
+            workflow = _single_agent_workflow("plan_artifact")
+            executor = StaticExecutor({"artifact_type": "plan_artifact"})
+            manager = RunManager(store, runner_factory=lambda spec: WorkflowRunner(spec, agent_executor=executor))
+            run = manager.start(workflow, tmp, "plan work", {})
+
+            _wait_for_status(run, "blocked")
+            restored = RunManager(store, runner_factory=lambda spec: WorkflowRunner(spec, agent_executor=executor)).get(run.id)
+
+            self.assertIsNotNone(restored.result)
+            assert restored.result is not None
+            self.assertEqual(restored.status, "blocked")
+            self.assertEqual(restored.result.status_code, "artifact_validation_failed")
+            self.assertFalse(restored.result.events[-1].type == "approval.required")
+            with self.assertRaisesRegex(ValueError, "not waiting for approval"):
+                RunManager(store, runner_factory=lambda spec: WorkflowRunner(spec, agent_executor=executor)).approve(restored.id)
+
+    def test_live_retry_current_node_reexecutes_blocked_artifact_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(Path(tmp) / ".coder")
+            workflow = _single_agent_workflow("plan_artifact")
+            executor = SequenceExecutor(
+                [
+                    {"artifact_type": "plan_artifact"},
+                    {
+                        "artifact_type": "plan_artifact",
+                        "summary": "Retry produced a valid plan.",
+                        "target_files": ["src/example.py"],
+                        "required_context": [],
+                        "implementation_steps": ["Patch file"],
+                        "risks": [],
+                        "recommended_checks": [],
+                        "executor_instructions": "Return a patch artifact.",
+                    },
+                ]
+            )
+            manager = RunManager(store, runner_factory=lambda spec: WorkflowRunner(spec, agent_executor=executor))
+            run = manager.start(workflow, tmp, "plan work", {})
+
+            _wait_for_status(run, "blocked")
+            manager.retry_current_node(run.id)
+            _wait_for_status(run, "completed")
+
+            self.assertIsNotNone(run.result)
+            assert run.result is not None
+            self.assertEqual(run.result.status, "completed")
+            self.assertIn("agent_result", run.result.data)
 
 
 class ArtifactStorageTests(unittest.TestCase):
@@ -190,6 +253,43 @@ class ArtifactStorageTests(unittest.TestCase):
             self.assertEqual(output_ref["size_chars"], len(large_output))
             blob = store.get_blob(output_ref["blob_id"])
             self.assertEqual(blob["content"], large_output)
+
+    def test_delete_run_removes_orphan_blob_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            large_output = "check output\n" + ("x" * 9000)
+            result = RunResult(
+                status="completed",
+                data={},
+                summaries={},
+                events=[
+                    RunEvent(
+                        type="tool.result",
+                        message="tool result",
+                        payload={
+                            "tool": "run_check",
+                            "result": {"status": "completed", "output": large_output},
+                        },
+                    )
+                ],
+                estimated_tokens_used=0,
+                agent_calls=0,
+                tool_calls=1,
+            )
+            store = RunStore(Path(tmp) / ".coder")
+            stored = store.save("workflow", "/repo", "check", result)
+            loaded = store.get_tool_result(
+                stored.id,
+                store.get_events(stored.id)["events"][0]["payload"]["tool_result_id"],
+            )
+            blob_id = loaded["output"]["blob_id"]
+            self.assertEqual(store.get_blob(blob_id)["content"], large_output)
+
+            deletion = store.delete(stored.id)
+
+            self.assertEqual(deletion["orphan_blobs_removed"], 1)
+            self.assertEqual(store.list(), [])
+            with self.assertRaises(KeyError):
+                store.get_blob(blob_id)
 
 
 class WorkflowPreflightTests(unittest.TestCase):
@@ -355,6 +455,15 @@ def _single_agent_workflow(artifact_type: str) -> WorkflowSpec:
             ],
         }
     )
+
+
+def _wait_for_status(run, status: str, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if run.status == status:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"timed out waiting for {status}, last status={run.status}")
 
 
 if __name__ == "__main__":

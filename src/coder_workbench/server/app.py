@@ -184,6 +184,21 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "result_url": f"/api/v2/live-runs/{live.id}",
         }
 
+    @app.post("/api/v2/live-runs/{run_id}/retry-current-node")
+    def retry_current_live_node(run_id: str) -> dict[str, Any]:
+        try:
+            live = manager.retry_current_node(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live run not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "run_id": live.id,
+            "status": live.status,
+            "events_url": f"/api/v2/live-runs/{live.id}/events",
+            "result_url": f"/api/v2/live-runs/{live.id}",
+        }
+
     @app.post("/api/v2/patches/rollback")
     def rollback_patch_endpoint(body: RollbackRequest) -> dict[str, Any]:
         repo_root = resolve_existing_dir(body.repo)
@@ -205,6 +220,13 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             raise HTTPException(status_code=404, detail="run not found") from exc
         return stored.model_dump(mode="json")
 
+    @app.delete("/api/v2/runs/{run_id}")
+    def delete_run(run_id: str) -> dict[str, Any]:
+        try:
+            return store.delete(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+
     @app.get("/api/v2/live-runs/{run_id}")
     def get_live_run(run_id: str) -> dict[str, Any]:
         try:
@@ -221,6 +243,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "result": live.result.model_dump(mode="json") if live.result else None,
             "stored_run_id": live.stored_run_id,
             "error": live.error,
+            "approval_required": manager.approval_required(live),
         }
 
     @app.get("/api/v2/runs/{run_id}/events")
