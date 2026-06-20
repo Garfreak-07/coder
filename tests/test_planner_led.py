@@ -58,6 +58,120 @@ class PlannerLedArtifactTests(unittest.TestCase):
 
         self.assertEqual(artifact["next_action"], "finish")
 
+    def test_planner_order_accepts_agent_graph_plan_graph(self) -> None:
+        artifact = validate_artifact(
+            {
+                "artifact_type": "planner_order",
+                "round": 1,
+                "round_goal": "Split the work by Agent.",
+                "plan_graph": {
+                    "work_items": [
+                        {
+                            "work_item_id": "frontend-errors",
+                            "merge_index": 2,
+                            "assignee_agent_id": "frontend",
+                            "task_summary": "Show validation errors.",
+                            "depends_on": ["backend-validation"],
+                            "tester_agent_ids": ["frontend-tester"],
+                        },
+                        {
+                            "work_item_id": "backend-validation",
+                            "order_index": 1,
+                            "assignee_agent_id": "backend",
+                            "task_summary": "Return validation details.",
+                            "depends_on": [],
+                            "tester_agent_ids": ["backend-tester"],
+                        },
+                    ],
+                    "final_tester_agent_id": "qa",
+                },
+            }
+        )
+
+        self.assertEqual(artifact["plan_graph"]["work_items"][0]["merge_index"], 2)
+        self.assertEqual(artifact["plan_graph"]["work_items"][1]["merge_index"], 1)
+        self.assertNotIn("order_index", str(artifact))
+        self.assertEqual(artifact["instructions_for_executor"], [])
+
+    def test_execution_result_accepts_agent_graph_work_item_fields(self) -> None:
+        artifact = validate_artifact(
+            {
+                "artifact_type": "execution_result",
+                "round": 1,
+                "work_item_id": "backend-validation",
+                "merge_index": 1,
+                "agent_id": "backend",
+                "status": "completed",
+                "summary": "Backend validation now returns field-level errors.",
+                "proposed_changes": [
+                    {
+                        "path": "src/api.py",
+                        "action": "update",
+                        "patch_ref": "artifact:patch:backend-validation",
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(artifact["work_item_id"], "backend-validation")
+        self.assertEqual(artifact["merge_index"], 1)
+        self.assertEqual(artifact["agent_id"], "backend")
+        self.assertEqual(artifact["proposed_changes"][0]["path"], "src/api.py")
+
+    def test_test_result_accepts_agent_graph_tester_fields(self) -> None:
+        artifact = validate_artifact(
+            {
+                "artifact_type": "test_result",
+                "round": 1,
+                "work_item_id": "frontend-errors",
+                "order_index": 2,
+                "tester_agent_id": "frontend-tester",
+                "status": "pass",
+                "summary": "Validation errors render in the form.",
+                "evidence": ["artifact:test:frontend-errors"],
+            }
+        )
+
+        self.assertEqual(artifact["work_item_id"], "frontend-errors")
+        self.assertEqual(artifact["merge_index"], 2)
+        self.assertNotIn("order_index", str(artifact))
+        self.assertEqual(artifact["tester_agent_id"], "frontend-tester")
+
+    def test_round_summary_accepts_agent_graph_ordered_state(self) -> None:
+        artifact = validate_artifact(
+            {
+                "artifact_type": "round_summary",
+                "round": 1,
+                "planner_order_ref": "artifact:planner-order:round-1",
+                "plan_status": "partial_failed",
+                "completed_count": 1,
+                "failed_count": 1,
+                "blocked_count": 0,
+                "ordered_state": [
+                    {
+                        "work_item_id": "backend-validation",
+                        "merge_index": 1,
+                        "status": "completed",
+                        "summary": "Backend validation completed.",
+                        "refs": ["artifact:execution:backend-validation"],
+                    },
+                    {
+                        "work_item_id": "frontend-errors",
+                        "merge_index": 2,
+                        "status": "failed_test",
+                        "summary": "Frontend test still fails.",
+                        "refs": ["artifact:test:frontend-errors"],
+                    },
+                ],
+                "remaining_work": ["Fix frontend validation rendering."],
+            }
+        )
+
+        self.assertEqual(artifact["plan_status"], "partial_failed")
+        self.assertEqual(artifact["planner_order_summary"], "")
+        self.assertEqual([item["work_item_id"] for item in artifact["ordered_state"]], ["backend-validation", "frontend-errors"])
+        self.assertEqual(artifact["remaining_work"], ["Fix frontend validation rendering."])
+
 
 class AgentWorkflowCompilerTests(unittest.TestCase):
     def test_default_agent_workflow_compiles_to_hidden_runtime_graph(self) -> None:
