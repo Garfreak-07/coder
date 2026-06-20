@@ -3,17 +3,24 @@ import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 import { nodeTypeLabels } from "./i18n";
 import type { AgentSpec, AgentWorkflowEdge, AgentWorkflowSpec, EdgeSpec, NodeSpec, NodeType, WorkflowSpec } from "./types";
 
-
 const agentPositions: Record<string, { x: number; y: number }> = {
   planner: { x: 60, y: 105 },
   executor: { x: 365, y: 105 },
-  tester: { x: 670, y: 105 }
+  worker: { x: 365, y: 105 },
+  tester: { x: 670, y: 105 },
+  reviewer: { x: 670, y: 255 }
 };
 
 const roleLabels: Record<string, string> = {
   planner: "Planner",
   executor: "Executor",
-  tester: "Tester"
+  worker: "Worker",
+  tester: "Tester",
+  reviewer: "Reviewer",
+  writer: "Writer",
+  researcher: "Researcher",
+  summarizer: "Summarizer",
+  custom: "Custom"
 };
 
 export function cloneAgentWorkflow(workflow: AgentWorkflowSpec): AgentWorkflowSpec {
@@ -24,7 +31,12 @@ export function cloneAgentWorkflow(workflow: AgentWorkflowSpec): AgentWorkflowSp
       capabilities: [...agent.capabilities]
     })),
     edges: workflow.edges.map((edge) => ({ ...edge })),
-    loop_policy: { ...workflow.loop_policy }
+    loop_policy: { ...workflow.loop_policy },
+    ui: {
+      layout: Object.fromEntries(
+        Object.entries(workflow.ui?.layout ?? {}).map(([agentId, position]) => [agentId, { ...position }])
+      )
+    }
   };
 }
 
@@ -32,9 +44,9 @@ export function toAgentFlowNodes(workflow: AgentWorkflowSpec): FlowNode[] {
   return workflow.agents.map((agent, index) => ({
     id: agent.id,
     type: "default",
-    position: agentPositions[agent.role] ?? { x: 80 + index * 280, y: 120 },
+    position: workflow.ui?.layout?.[agent.id] ?? agentPositions[agent.role] ?? { x: 80 + index * 280, y: 120 },
     data: {
-      label: `${agent.name}\n${roleLabels[agent.role] ?? agent.role} · ${agent.model_tier}${agent.can_talk_to_human ? " · can ask user" : ""}`
+      label: `${agent.name}\n${roleLabels[agent.role] ?? agent.role} - ${agent.model_tier}${agent.can_talk_to_human ? " - can ask user" : ""}`
     },
     className: `workflow-node agent-workflow-node agent-role-${agent.role}`
   }));
@@ -45,7 +57,7 @@ export function toAgentFlowEdges(workflow: AgentWorkflowSpec): FlowEdge[] {
     id: agentEdgeIdFromIndex(index),
     source: edge.from,
     target: edge.to,
-    label: edge.loop ? `${edge.handoff} · loop` : edge.handoff,
+    label: edge.label ?? (edge.loop ? "loop" : undefined),
     animated: Boolean(edge.loop),
     className: edge.loop ? "agent-loop-edge" : "agent-handoff-edge"
   }));
@@ -64,10 +76,12 @@ export function cleanAgentWorkflowEdge(edge: AgentWorkflowEdge): AgentWorkflowEd
   return {
     from: edge.from,
     to: edge.to,
-    handoff: edge.handoff,
-    ...(edge.loop ? { loop: true } : {})
+    ...(edge.handoff ? { handoff: edge.handoff } : {}),
+    ...(edge.loop ? { loop: true } : {}),
+    ...(edge.label ? { label: edge.label } : {})
   };
 }
+
 export function toFlowNodes(workflow: WorkflowSpec): FlowNode[] {
   return workflow.nodes.map((node, index) => ({
     id: node.id,
@@ -81,16 +95,16 @@ export function toFlowNodes(workflow: WorkflowSpec): FlowNode[] {
 }
 
 export function nodeDisplayLabel(node: NodeSpec, workflow: WorkflowSpec): string {
-  const typeLabel = nodeTypeLabels[node.type];
+  const typeLabel = nodeTypeLabels[node.type] ?? node.type;
   if (node.type === "agent") {
     const agent = workflow.agents.find((candidate) => candidate.id === node.agent_id);
-    return `${typeLabel}: ${agent?.name ?? node.agent_id ?? "未选择"}\n${node.id}`;
+    return `${typeLabel}: ${agent?.name ?? node.agent_id ?? "Unassigned"}\n${node.id}`;
   }
   if (node.type === "tool" || node.type === "mcp_tool") {
-    return `${typeLabel}: ${node.tool ?? "未配置"}\n${node.id}`;
+    return `${typeLabel}: ${node.tool ?? "Unconfigured"}\n${node.id}`;
   }
   if (node.type === "loop") {
-    return `${typeLabel}: ${node.loop_mode ?? "retry_until"} ×${node.max_iterations ?? 3}\n${node.id}`;
+    return `${typeLabel}: ${node.loop_mode ?? "retry_until"} x${node.max_iterations ?? 3}\n${node.id}`;
   }
   return `${typeLabel}\n${node.id}`;
 }

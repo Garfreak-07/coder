@@ -188,6 +188,21 @@ export async function startLiveRun(input: {
   });
 }
 
+export async function startLiveAgentRun(input: {
+  repo: string;
+  request: string;
+  agent_workflow: AgentWorkflowSpec;
+  approved: boolean;
+  scopes: string[];
+  initial_data?: Record<string, unknown>;
+}): Promise<{ run_id: string; status: string; events_url: string; result_url: string }> {
+  return requestJson("/api/v2/live-agent-runs", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input)
+  });
+}
+
 export async function approveLiveRun(
   runId: string,
   input: { approved?: boolean; reason?: string } = {}

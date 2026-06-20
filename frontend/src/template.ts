@@ -32,6 +32,11 @@ export function instantiateAgentWorkflowTemplate(template: AgentWorkflowTemplate
       capabilities: [...agent.capabilities]
     })),
     edges: template.workflow.edges.map((edge) => ({ ...edge })),
-    loop_policy: { ...template.workflow.loop_policy }
+    loop_policy: { ...template.workflow.loop_policy },
+    ui: {
+      layout: Object.fromEntries(
+        Object.entries(template.workflow.ui?.layout ?? {}).map(([agentId, position]) => [agentId, { ...position }])
+      )
+    }
   };
 }

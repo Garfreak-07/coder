@@ -2147,7 +2147,7 @@ function AgentWorkflowEdgeInspector({
       </div>
       <label>
         交接 artifact
-        <select value={edge.handoff} onChange={(event) => onChange({ handoff: event.target.value as HandoffType })}>
+        <select value={edge.handoff ?? ""} onChange={(event) => onChange({ handoff: event.target.value as HandoffType })}>
           {handoffTypes.map((handoff) => (
             <option key={handoff} value={handoff}>
               {handoff}

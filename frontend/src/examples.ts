@@ -13,9 +13,10 @@ const baseContext: Omit<ContextPolicy, "input_keys" | "summary_keys"> = {
 
 export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
   id: "default-planner-led",
-  version: "0.3",
+  version: "0.4",
   name: "Planner-led Agent Workflow",
   description: "Planner decides. Executor changes only by order. Tester returns evidence. Runtime hides graph details.",
+  primary_planner_id: "planner",
   agents: [
     {
       id: "planner",
@@ -23,7 +24,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
       role: "planner",
       model_tier: "best",
       can_talk_to_human: true,
-      capabilities: ["negotiate_contract", "make_plan", "judge_completion", "judge_risk", "make_next_decision"]
+      capabilities: ["negotiate_contract", "make_plan", "judge_completion", "judge_risk", "make_next_decision", "round_summarize"]
     },
     {
       id: "executor",
@@ -43,11 +44,18 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
     }
   ],
   edges: [
-    { from: "planner", to: "executor", handoff: "planner_order" },
-    { from: "executor", to: "tester", handoff: "execution_result" },
-    { from: "tester", to: "planner", handoff: "test_result", loop: true }
+    { from: "planner", to: "executor" },
+    { from: "executor", to: "tester" },
+    { from: "tester", to: "planner", loop: true }
   ],
-  loop_policy: { max_auto_rounds: 3, user_can_change: true }
+  loop_policy: { max_auto_rounds: 3, user_can_change: true },
+  ui: {
+    layout: {
+      planner: { x: 60, y: 120 },
+      executor: { x: 360, y: 120 },
+      tester: { x: 660, y: 120 }
+    }
+  }
 };
 
 export function compileAgentWorkflow(spec: AgentWorkflowSpec): WorkflowSpec {

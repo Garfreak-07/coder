@@ -5,7 +5,14 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Literal
 
-from coder_workbench.core import AgentSpec, AgentWorkflowSpec, WorkflowSpec
+from coder_workbench.core import (
+    AgentSpec,
+    AgentWorkflowSpec,
+    AgentWorkflowValidationError,
+    WorkflowSpec,
+    assert_valid_agent_workflow,
+    validate_agent_workflow_payload,
+)
 
 
 LibraryKind = Literal["agents", "agent_workflows", "workflows"]
@@ -41,8 +48,12 @@ class LibraryStore:
         return payload
 
     def save_agent_workflow(self, data: dict[str, Any]) -> dict[str, Any]:
+        validation = validate_agent_workflow_payload(data)
+        if validation.status == "error":
+            raise AgentWorkflowValidationError(validation)
         workflow = AgentWorkflowSpec.model_validate(data)
-        payload = workflow.model_dump(mode="json", by_alias=True)
+        assert_valid_agent_workflow(workflow)
+        payload = workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
         self._write("agent_workflows", workflow.id, payload)
         return payload
 

@@ -1,13 +1,24 @@
 
 export type AgentModelTier = "best" | "standard" | "economy";
-export type AgentWorkflowRole = "planner" | "executor" | "tester";
+export type AgentWorkflowRole =
+  | "planner"
+  | "executor"
+  | "worker"
+  | "tester"
+  | "reviewer"
+  | "writer"
+  | "researcher"
+  | "summarizer"
+  | "custom";
 export type AgentCapability =
   | "negotiate_contract"
   | "make_plan"
   | "judge_completion"
   | "judge_risk"
   | "make_next_decision"
+  | "round_summarize"
   | "modify_files"
+  | "generate_text"
   | "follow_planner_order"
   | "return_execution_result"
   | "model_review"
@@ -33,8 +44,9 @@ export interface AgentWorkflowAgent {
 export interface AgentWorkflowEdge {
   from: string;
   to: string;
-  handoff: HandoffType;
+  handoff?: HandoffType | null;
   loop?: boolean;
+  label?: string | null;
 }
 
 export interface AgentWorkflowLoopPolicy {
@@ -47,9 +59,13 @@ export interface AgentWorkflowSpec {
   version: string;
   name: string;
   description: string;
+  primary_planner_id: string;
   agents: AgentWorkflowAgent[];
   edges: AgentWorkflowEdge[];
   loop_policy: AgentWorkflowLoopPolicy;
+  ui?: {
+    layout?: Record<string, { x: number; y: number }>;
+  };
 }
 export type NodeType = "start" | "agent" | "tool" | "mcp_tool" | "condition" | "loop" | "human_gate" | "end";
 export type LoopMode = "while" | "for_each" | "retry_until";

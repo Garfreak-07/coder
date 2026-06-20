@@ -30,7 +30,9 @@ request confirmation. Runtime internals such as context selection, artifact
 storage, loop routing, path guards, patch safety, approvals, and replay stay
 behind that agent-only surface.
 
-Current implementation work should follow [docs/requirements.md](docs/requirements.md).
+Current implementation work follows the v0.4 AgentWorkflow builder track:
+ordinary users create Agents, choose capabilities, connect Agents, set loop
+limits, save, and run while runtime graph details stay internal.
 
 ## Core Artifacts
 
@@ -49,7 +51,13 @@ only for old saved workflows.
 ## Current Capabilities
 
 - `AgentWorkflowSpec` for the user-visible Planner / Executor / Tester layer.
+- v0.4 Agent workflow validation with one primary Planner, arbitrary Agent
+  count, hidden handoff inference, and deterministic save-blocking errors.
+- Initial capability registry for Planner, Executor/Worker, and Tester/Reviewer
+  capabilities.
 - Compiler from Agent-only workflow to the internal runtime `WorkflowSpec`.
+- Product-level `/api/v2/live-agent-runs` endpoint that validates and compiles
+  Agent workflows on the backend before starting a live run.
 - FastAPI runtime API and React + TypeScript workbench.
 - Mock-mode executor for local development without model credentials.
 - Structured artifact validation, event emission, storage, and replay.

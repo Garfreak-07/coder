@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 
-from coder_workbench.core import compile_agent_workflow, default_planner_led_agent_workflow
+from coder_workbench.core import (
+    AgentWorkflowSpec,
+    capability_registry,
+    compile_agent_workflow,
+    default_planner_led_agent_workflow,
+    validate_agent_workflow_payload,
+)
 from coder_workbench.core.artifacts import supported_artifact_types, validate_artifact
 from coder_workbench.runtime.runner import WorkflowRunner
 from coder_workbench.server.app import create_app
@@ -57,7 +64,10 @@ class AgentWorkflowCompilerTests(unittest.TestCase):
         workflow = compile_agent_workflow(agent_workflow)
 
         self.assertEqual(agent_workflow.name, workflow.name)
+        self.assertEqual(agent_workflow.version, "0.4")
+        self.assertEqual(agent_workflow.primary_planner_id, "planner")
         self.assertEqual([agent.role for agent in agent_workflow.agents], ["planner", "executor", "tester"])
+        self.assertIsNone(agent_workflow.edges[0].handoff)
         self.assertEqual(workflow.max_tool_calls, 0)
         self.assertIn("planner_loop", {node.id for node in workflow.nodes})
         self.assertEqual(
@@ -71,6 +81,96 @@ class AgentWorkflowCompilerTests(unittest.TestCase):
                 "round_summary",
             ],
         )
+
+    def test_capability_registry_contains_initial_user_choices(self) -> None:
+        registry = capability_registry()
+
+        self.assertIn("modify_files", registry)
+        self.assertEqual(registry["modify_files"].produces, ["execution_result"])
+        self.assertIn("planner", registry["make_next_decision"].allowed_roles)
+        self.assertTrue(registry["make_next_decision"].can_talk_to_human)
+
+    def test_valid_workflow_can_have_more_than_three_agents(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["agents"].append(
+            {
+                "id": "reviewer",
+                "name": "Reviewer Agent",
+                "role": "reviewer",
+                "model_tier": "standard",
+                "can_talk_to_human": False,
+                "capabilities": ["model_review", "return_test_result"],
+            }
+        )
+        payload["edges"].extend(
+            [
+                {"from": "executor", "to": "reviewer"},
+                {"from": "reviewer", "to": "planner", "loop": True},
+            ]
+        )
+
+        validation = validate_agent_workflow_payload(payload)
+        self.assertEqual(validation.status, "pass")
+
+        workflow = compile_agent_workflow(AgentWorkflowSpec.model_validate(payload))
+        self.assertIn("agent_reviewer", {node.id for node in workflow.nodes})
+
+    def test_validation_reports_missing_primary_planner(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload.pop("primary_planner_id")
+
+        validation = validate_agent_workflow_payload(payload)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("missing_primary_planner", {issue.code for issue in validation.issues})
+
+    def test_validation_rejects_non_primary_human_access(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["agents"][1]["can_talk_to_human"] = True
+
+        validation = validate_agent_workflow_payload(payload)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("non_primary_agent_can_talk_to_human", {issue.code for issue in validation.issues})
+
+    def test_validation_rejects_duplicate_agent_ids(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["agents"][1]["id"] = "tester"
+
+        validation = validate_agent_workflow_payload(payload)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("duplicate_agent_id", {issue.code for issue in validation.issues})
+
+    def test_validation_rejects_unknown_capability(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["agents"][1]["capabilities"].append("invent_runtime")
+
+        validation = validate_agent_workflow_payload(payload)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("unknown_capability", {issue.code for issue in validation.issues})
+
+    def test_validation_rejects_capability_on_wrong_role(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["agents"][1]["capabilities"] = ["make_next_decision"]
+
+        validation = validate_agent_workflow_payload(payload)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("capability_role_not_allowed", {issue.code for issue in validation.issues})
+
+    def test_validation_rejects_missing_upstream_artifact(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["edges"] = [
+            {"from": "planner", "to": "tester"},
+            {"from": "tester", "to": "planner", "loop": True},
+        ]
+
+        validation = validate_agent_workflow_payload(payload)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("unsatisfied_capability_input", {issue.code for issue in validation.issues})
 
     def test_default_planner_led_workflow_runs_in_mock_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -148,7 +248,58 @@ class AgentWorkflowApiTests(unittest.TestCase):
             self.assertEqual(index["agent_workflows"][0]["agents"], 3)
 
             loaded = client.get("/api/v2/library/agent-workflows/default-planner-led").json()
-            self.assertEqual(loaded["agent_workflow"]["edges"][0]["handoff"], "planner_order")
+            self.assertNotIn("handoff", loaded["agent_workflow"]["edges"][0])
+
+    def test_agent_workflow_validate_api_reports_deterministic_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
+            agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+            agent_workflow["agents"][1]["capabilities"].append("invent_runtime")
+
+            response = client.post("/api/v2/agent-workflows/validate", json=agent_workflow)
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["status"], "error")
+            self.assertIn("unknown_capability", {issue["code"] for issue in payload["issues"]})
+
+    def test_agent_workflow_library_blocks_invalid_save(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
+            agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+            agent_workflow.pop("primary_planner_id")
+
+            response = client.post("/api/v2/library/agent-workflows", json=agent_workflow)
+
+            self.assertEqual(response.status_code, 400)
+            detail = response.json()["detail"]
+            self.assertIn("missing_primary_planner", {issue["code"] for issue in detail["issues"]})
+
+    def test_live_agent_run_compiles_agent_workflow_in_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
+            agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+
+            response = client.post(
+                "/api/v2/live-agent-runs",
+                json={
+                    "repo": tmp,
+                    "request": "Run the default workflow.",
+                    "agent_workflow": agent_workflow,
+                    "approved": True,
+                    "scopes": [],
+                },
+            )
+
+            self.assertEqual(response.status_code, 200)
+            run_id = response.json()["run_id"]
+            final_status = response.json()["status"]
+            for _ in range(50):
+                if final_status not in {"queued", "running"}:
+                    break
+                time.sleep(0.02)
+                final_status = client.get(f"/api/v2/live-runs/{run_id}").json()["status"]
+            self.assertEqual(final_status, "completed")
 
 if __name__ == "__main__":
     unittest.main()

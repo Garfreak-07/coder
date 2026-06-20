@@ -9,7 +9,16 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from coder_workbench.core import AgentWorkflowSpec, WorkflowSpec, compile_agent_workflow, default_planner_led_agent_workflow, load_workflow
+from coder_workbench.core import (
+    AgentWorkflowSpec,
+    AgentWorkflowValidationError,
+    WorkflowSpec,
+    capability_catalog,
+    compile_agent_workflow,
+    default_planner_led_agent_workflow,
+    load_workflow,
+    validate_agent_workflow_payload,
+)
 from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.runtime import run_workflow
 from coder_workbench.runtime.runner import WorkflowRunner
@@ -29,6 +38,17 @@ class RunRequest(BaseModel):
     request: str
     workflow_path: str | None = None
     workflow: dict[str, Any] | None = None
+    approved: bool = False
+    scopes: list[str] = Field(default_factory=list)
+    initial_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str
+    request: str
+    agent_workflow: dict[str, Any]
     approved: bool = False
     scopes: list[str] = Field(default_factory=list)
     initial_data: dict[str, Any] = Field(default_factory=dict)
@@ -67,6 +87,10 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "status": "ok",
             "tools": default_tool_registry().names(),
         }
+
+    @app.get("/api/v2/capabilities")
+    def get_capabilities() -> dict[str, Any]:
+        return {"capabilities": capability_catalog()}
 
     @app.get("/api/v2/providers/settings")
     def get_provider_settings() -> dict[str, Any]:
@@ -111,6 +135,8 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     def save_agent_workflow(agent_workflow: dict[str, Any]) -> dict[str, Any]:
         try:
             return {"agent_workflow": library.save_agent_workflow(agent_workflow)}
+        except AgentWorkflowValidationError as exc:
+            raise HTTPException(status_code=400, detail=exc.result.model_dump(mode="json")) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -126,21 +152,28 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         agent_workflow = default_planner_led_agent_workflow()
         workflow = compile_agent_workflow(agent_workflow)
         return {
-            "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True),
+            "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
             "workflow": workflow.model_dump(mode="json", by_alias=True),
         }
 
     @app.post("/api/v2/agent-workflows/compile")
     def compile_agent_workflow_endpoint(agent_workflow: dict[str, Any]) -> dict[str, Any]:
         try:
+            _raise_agent_workflow_validation(agent_workflow)
             spec = AgentWorkflowSpec.model_validate(agent_workflow)
             workflow = compile_agent_workflow(spec)
+        except AgentWorkflowValidationError as exc:
+            raise HTTPException(status_code=400, detail=exc.result.model_dump(mode="json")) from exc
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
-            "agent_workflow": spec.model_dump(mode="json", by_alias=True),
+            "agent_workflow": spec.model_dump(mode="json", by_alias=True, exclude_none=True),
             "workflow": workflow.model_dump(mode="json", by_alias=True),
         }
+
+    @app.post("/api/v2/agent-workflows/validate")
+    def validate_agent_workflow_endpoint(agent_workflow: dict[str, Any]) -> dict[str, Any]:
+        return validate_agent_workflow_payload(agent_workflow).model_dump(mode="json")
 
     @app.post("/api/v2/library/workflows")
     def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -193,6 +226,33 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         workflow = _load_workflow_from_request(body)
         repo_root = resolve_existing_dir(body.repo)
         initial_data = _initial_data_from_request(body, repo_root)
+        live = manager.start(
+            workflow=workflow,
+            repo_root=str(repo_root),
+            request=body.request,
+            initial_data=initial_data,
+        )
+        return {
+            "run_id": live.id,
+            "status": live.status,
+            "events_url": f"/api/v2/live-runs/{live.id}/events",
+            "result_url": f"/api/v2/live-runs/{live.id}",
+        }
+
+    @app.post("/api/v2/live-agent-runs")
+    def create_live_agent_run(body: AgentRunRequest) -> dict[str, Any]:
+        try:
+            _raise_agent_workflow_validation(body.agent_workflow)
+            agent_workflow = AgentWorkflowSpec.model_validate(body.agent_workflow)
+            workflow = compile_agent_workflow(agent_workflow)
+        except AgentWorkflowValidationError as exc:
+            raise HTTPException(status_code=400, detail=exc.result.model_dump(mode="json")) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        repo_root = resolve_existing_dir(body.repo)
+        initial_data = _initial_data_from_request(body, repo_root)
+        initial_data["agent_workflow"] = agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
+        initial_data["compiled_workflow"] = workflow.model_dump(mode="json", by_alias=True)
         live = manager.start(
             workflow=workflow,
             repo_root=str(repo_root),
@@ -403,6 +463,12 @@ def _load_workflow_from_request(body: RunRequest) -> WorkflowSpec:
     if body.workflow_path:
         return load_workflow(body.workflow_path)
     raise HTTPException(status_code=400, detail="workflow or workflow_path is required")
+
+
+def _raise_agent_workflow_validation(agent_workflow: dict[str, Any]) -> None:
+    validation = validate_agent_workflow_payload(agent_workflow)
+    if validation.status == "error":
+        raise AgentWorkflowValidationError(validation)
 
 
 def _initial_data_from_request(body: RunRequest, repo_root: Path) -> dict[str, Any]:
