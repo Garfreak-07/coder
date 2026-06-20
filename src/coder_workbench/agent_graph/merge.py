@@ -16,7 +16,7 @@ def build_planner_input_bundle(cache: GraphRunCache) -> PlannerInputBundle:
     items = [
         PlannerInputBundleItem(
             work_item_id=item.work_item_id,
-            order_index=item.order_index,
+            merge_index=item.merge_index,
             task_summary=item.task_summary,
             execution_status=cache.execution_cache[item.work_item_id].status
             if item.work_item_id in cache.execution_cache
@@ -47,7 +47,7 @@ def build_round_summary(cache: GraphRunCache) -> PlanRunSummary:
     ordered_state = [
         RoundSummaryItem(
             work_item_id=item.work_item_id,
-            order_index=item.order_index,
+            merge_index=item.merge_index,
             status=_round_item_status(item),
             summary=_round_item_summary(item),
             refs=item.refs,

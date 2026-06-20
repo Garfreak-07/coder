@@ -106,7 +106,7 @@ class AgentGraphRunner:
                     cache.record_execution(
                         ExecutionRecord(
                             work_item_id=item.work_item_id,
-                            order_index=item.order_index,
+                            merge_index=item.merge_index,
                             agent_id=item.assignee_agent_id,
                             status="blocked",
                             execution_summary=f"Blocked by failed upstream work item(s): {', '.join(blocked.blocked_by)}.",
@@ -261,7 +261,7 @@ class AgentGraphRunner:
             round=cache.round,
             work_item_id=item.work_item_id,
             assigned_agent_id=item.assignee_agent_id,
-            order_index=item.order_index,
+            merge_index=item.merge_index,
         )
         emit(
             "agent_task.started",
@@ -273,7 +273,7 @@ class AgentGraphRunner:
         execution_record = cache.record_execution(
             ExecutionRecord(
                 work_item_id=item.work_item_id,
-                order_index=item.order_index,
+                merge_index=item.merge_index,
                 agent_id=item.assignee_agent_id,
                 status="completed",
                 execution_summary="Phase 3 mock execution completed from an AgentTaskEnvelope.",
@@ -291,7 +291,7 @@ class AgentGraphRunner:
             test_record = cache.record_test(
                 TestRecord(
                     work_item_id=item.work_item_id,
-                    order_index=item.order_index,
+                    merge_index=item.merge_index,
                     tester_agent_id=tester_agent_id,
                     status="pass",
                     test_summary="Phase 3 mock test evidence recorded.",
@@ -344,7 +344,7 @@ class AgentGraphRunner:
             work_items.append(
                 {
                     "work_item_id": f"{_safe_id(agent.id)}-work",
-                    "order_index": index,
+                    "merge_index": index,
                     "assignee_agent_id": agent.id,
                     "task_summary": f"Phase 3 mock task for {agent.name or agent.id}.",
                     "depends_on": [],

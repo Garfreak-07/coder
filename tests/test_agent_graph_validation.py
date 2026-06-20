@@ -71,7 +71,7 @@ class AgentGraphPlannerOrderValidationTests(unittest.TestCase):
                     "work_items": [
                         {
                             "work_item_id": "isolated-work",
-                            "order_index": 1,
+                            "merge_index": 1,
                             "assignee_agent_id": "isolated",
                             "task_summary": "Should not run.",
                             "depends_on": [],
@@ -97,7 +97,7 @@ class AgentGraphPlannerOrderValidationTests(unittest.TestCase):
                     "work_items": [
                         {
                             "work_item_id": "executor-work",
-                            "order_index": 1,
+                            "merge_index": 1,
                             "assignee_agent_id": "executor",
                             "task_summary": "Run work.",
                             "depends_on": [],
@@ -123,7 +123,7 @@ class AgentGraphPlannerOrderValidationTests(unittest.TestCase):
                     "work_items": [
                         {
                             "work_item_id": "executor-work",
-                            "order_index": 1,
+                            "merge_index": 1,
                             "assignee_agent_id": "executor",
                             "task_summary": "Run work.",
                             "depends_on": [],
@@ -139,6 +139,74 @@ class AgentGraphPlannerOrderValidationTests(unittest.TestCase):
 
         self.assertEqual(validation.status, "error")
         self.assertIn("final_tester_missing_aggregate_tests", {issue.code for issue in validation.issues})
+
+    def test_planner_order_rejects_duplicate_merge_index(self) -> None:
+        workflow = default_planner_led_agent_workflow()
+        planner_order = PlannerOrder.model_validate(
+            {
+                "round": 1,
+                "round_goal": "Merge deterministically.",
+                "plan_graph": {
+                    "work_items": [
+                        {
+                            "work_item_id": "first",
+                            "merge_index": 1,
+                            "assignee_agent_id": "executor",
+                            "task_summary": "Run first.",
+                            "depends_on": [],
+                            "tester_agent_ids": [],
+                        },
+                        {
+                            "work_item_id": "second",
+                            "merge_index": 1,
+                            "assignee_agent_id": "executor",
+                            "task_summary": "Run second.",
+                            "depends_on": [],
+                            "tester_agent_ids": [],
+                        },
+                    ]
+                },
+            }
+        )
+
+        validation = validate_planner_order(workflow, planner_order)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("duplicate_merge_index", {issue.code for issue in validation.issues})
+
+    def test_planner_order_depends_on_must_be_dag(self) -> None:
+        workflow = default_planner_led_agent_workflow()
+        planner_order = PlannerOrder.model_validate(
+            {
+                "round": 1,
+                "round_goal": "Reject dependency cycles.",
+                "plan_graph": {
+                    "work_items": [
+                        {
+                            "work_item_id": "a",
+                            "merge_index": 1,
+                            "assignee_agent_id": "executor",
+                            "task_summary": "Run A.",
+                            "depends_on": ["b"],
+                            "tester_agent_ids": [],
+                        },
+                        {
+                            "work_item_id": "b",
+                            "merge_index": 2,
+                            "assignee_agent_id": "executor",
+                            "task_summary": "Run B.",
+                            "depends_on": ["a"],
+                            "tester_agent_ids": [],
+                        },
+                    ]
+                },
+            }
+        )
+
+        validation = validate_planner_order(workflow, planner_order)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("planner_order_dependency_cycle", {issue.code for issue in validation.issues})
 
 
 def _workflow_with_two_testers_and_final_tester() -> dict:

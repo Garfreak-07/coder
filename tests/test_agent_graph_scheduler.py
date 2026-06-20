@@ -11,12 +11,12 @@ from coder_workbench.core import default_planner_led_agent_workflow
 
 def item(
     work_item_id: str,
-    order_index: int,
+    merge_index: int,
     depends_on: list[str] | None = None,
 ) -> WorkItem:
     return WorkItem(
         work_item_id=work_item_id,
-        order_index=order_index,
+        merge_index=merge_index,
         assignee_agent_id=f"{work_item_id}-agent",
         task_summary=f"Task {work_item_id}",
         depends_on=depends_on or [],
@@ -41,17 +41,17 @@ class AgentGraphSchedulerTests(unittest.TestCase):
         scheduler.mark_completed("c")
         self.assertEqual([ready.work_item_id for ready in scheduler.ready_items()], ["b"])
 
-    def test_ready_queue_respects_max_concurrency_and_order_index(self) -> None:
+    def test_merge_index_does_not_make_independent_items_wait(self) -> None:
         scheduler = AgentGraphScheduler(
             [
-                item("third", 3),
-                item("first", 1),
-                item("second", 2),
+                item("b", 2),
+                item("a", 1),
+                item("c", 3, ["a"]),
             ],
-            max_concurrency=2,
+            max_concurrency=3,
         )
 
-        self.assertEqual([ready.work_item_id for ready in scheduler.ready_items()], ["first", "second"])
+        self.assertCountEqual([ready.work_item_id for ready in scheduler.ready_items()], ["a", "b"])
 
     def test_failed_upstream_blocks_downstream(self) -> None:
         scheduler = AgentGraphScheduler([item("a", 1), item("b", 2, ["a"])])
@@ -74,7 +74,7 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                 "work_items": [
                     {
                         "work_item_id": "first",
-                        "order_index": 1,
+                        "merge_index": 1,
                         "assignee_agent_id": "executor",
                         "task_summary": "Run first.",
                         "depends_on": [],
@@ -82,7 +82,7 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                     },
                     {
                         "work_item_id": "second",
-                        "order_index": 2,
+                        "merge_index": 2,
                         "assignee_agent_id": "executor",
                         "task_summary": "Run second.",
                         "depends_on": ["first"],
@@ -90,7 +90,7 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                     },
                     {
                         "work_item_id": "third",
-                        "order_index": 3,
+                        "merge_index": 3,
                         "assignee_agent_id": "executor",
                         "task_summary": "Run third.",
                         "depends_on": [],

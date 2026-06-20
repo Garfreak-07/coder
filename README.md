@@ -48,6 +48,21 @@ The default workflow uses six validated artifact types:
 Legacy `plan_artifact`, `patch_artifact`, and `review_artifact` are retained
 only for old saved workflows.
 
+## AgentGraph Plan Semantics
+
+AgentGraph `PlannerOrder.plan_graph.work_items` separates execution dependencies
+from result presentation:
+
+1. Planner may emit work items in any list order.
+2. `depends_on` is the only semantic execution dependency.
+3. Work items with empty `depends_on` are ready together by default.
+4. `merge_index` controls stable result presentation back to Planner.
+5. `merge_index` does not make earlier work items block later independent work.
+6. Resource limits such as `max_concurrency` may limit dispatch, but do not
+   create dependency meaning.
+7. `PlannerInputBundle` and `round_summary.ordered_state` are sorted by
+   `merge_index`.
+
 ## Current Capabilities
 
 - `AgentWorkflowSpec` for the user-visible Planner / Executor / Tester layer.

@@ -17,7 +17,7 @@ class AgentGraphSchemaTests(unittest.TestCase):
             WorkItem.model_validate(
                 {
                     "work_item_id": "",
-                    "order_index": 1,
+                    "merge_index": 1,
                     "assignee_agent_id": "executor",
                     "task_summary": "Do the work.",
                     "depends_on": [],
@@ -26,17 +26,19 @@ class AgentGraphSchemaTests(unittest.TestCase):
             )
 
         item = WorkItem.model_validate(
-            {
-                "work_item_id": "executor-work",
-                "order_index": 1,
-                "assignee_agent_id": "executor",
+                {
+                    "work_item_id": "executor-work",
+                    "order_index": 1,
+                    "assignee_agent_id": "executor",
                 "task_summary": "Do the work.",
                 "depends_on": [],
                 "tester_agent_ids": ["tester"],
             }
         )
 
+        self.assertEqual(item.merge_index, 1)
         self.assertEqual(item.order_index, 1)
+        self.assertNotIn("order_index", item.model_dump(mode="json"))
         self.assertEqual(item.tester_agent_ids, ["tester"])
 
 
@@ -50,7 +52,7 @@ class AgentGraphCacheTests(unittest.TestCase):
                     "work_items": [
                         {
                             "work_item_id": "backend-work",
-                            "order_index": 1,
+                            "merge_index": 1,
                             "assignee_agent_id": "backend",
                             "task_summary": "Backend only.",
                             "depends_on": [],
@@ -58,7 +60,7 @@ class AgentGraphCacheTests(unittest.TestCase):
                         },
                         {
                             "work_item_id": "frontend-work",
-                            "order_index": 2,
+                            "merge_index": 2,
                             "assignee_agent_id": "frontend",
                             "task_summary": "Frontend only.",
                             "depends_on": [],
@@ -81,7 +83,7 @@ class AgentGraphCacheTests(unittest.TestCase):
         cache.record_execution(
             ExecutionRecord(
                 work_item_id="backend-work",
-                order_index=1,
+                merge_index=1,
                 agent_id="backend",
                 status="completed",
                 execution_summary="Backend done.",
@@ -91,7 +93,7 @@ class AgentGraphCacheTests(unittest.TestCase):
         cache.record_test(
             TestRecord(
                 work_item_id="backend-work",
-                order_index=1,
+                merge_index=1,
                 tester_agent_id="backend-tester",
                 status="pass",
                 test_summary="Backend tests pass.",

@@ -8,16 +8,18 @@ from coder_workbench.agent_graph.schema import ExecutionRecord, PlannerOrder, Te
 
 
 class AgentGraphMergeTests(unittest.TestCase):
-    def test_planner_input_bundle_is_compact_and_ordered_by_order_index(self) -> None:
+    def test_planner_input_bundle_is_compact_and_ordered_by_merge_index(self) -> None:
         cache = _cache_with_out_of_order_items()
 
         bundle = build_planner_input_bundle(cache)
 
         self.assertEqual([item.work_item_id for item in bundle.items], ["first", "second"])
+        self.assertEqual([item.merge_index for item in bundle.items], [1, 2])
         self.assertEqual(bundle.plan_status, "partial_failed")
         self.assertEqual(bundle.items[0].refs, ["artifact:execution:first", "artifact:test:first"])
         self.assertEqual(bundle.items[1].test_status, "fail")
         payload = bundle.model_dump(mode="json")
+        self.assertNotIn("order_index", str(payload))
         self.assertNotIn("raw", str(payload).lower())
         self.assertNotIn("full", str(payload).lower())
 
@@ -43,7 +45,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
                 "work_items": [
                     {
                         "work_item_id": "second",
-                        "order_index": 2,
+                        "merge_index": 2,
                         "assignee_agent_id": "executor",
                         "task_summary": "Second item.",
                         "depends_on": [],
@@ -51,7 +53,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
                     },
                     {
                         "work_item_id": "first",
-                        "order_index": 1,
+                        "merge_index": 1,
                         "assignee_agent_id": "executor",
                         "task_summary": "First item.",
                         "depends_on": [],
@@ -66,7 +68,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
     cache.record_execution(
         ExecutionRecord(
             work_item_id="first",
-            order_index=1,
+            merge_index=1,
             agent_id="executor",
             status="completed",
             execution_summary="First done.",
@@ -76,7 +78,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
     cache.record_test(
         TestRecord(
             work_item_id="first",
-            order_index=1,
+            merge_index=1,
             tester_agent_id="tester",
             status="pass",
             test_summary="First test passed.",
@@ -86,7 +88,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
     cache.record_execution(
         ExecutionRecord(
             work_item_id="second",
-            order_index=2,
+            merge_index=2,
             agent_id="executor",
             status="completed",
             execution_summary="Second done.",
@@ -96,7 +98,7 @@ def _cache_with_out_of_order_items() -> GraphRunCache:
     cache.record_test(
         TestRecord(
             work_item_id="second",
-            order_index=2,
+            merge_index=2,
             tester_agent_id="tester",
             status="fail",
             test_summary="Second test failed.",

@@ -15,12 +15,13 @@ class BlockedWorkItem(BaseModel):
 class AgentGraphScheduler:
     """Dependency scheduler for PlannerOrder work items.
 
-    It enforces wait-all dependencies and dispatches ready work items in
-    Planner order_index order.
+    Only depends_on creates an execution dependency. merge_index is reserved
+    for result presentation back to Planner and does not make earlier items
+    block later independent items.
     """
 
     def __init__(self, work_items: list[WorkItem], *, max_concurrency: int = 4) -> None:
-        self.work_items = sorted(work_items, key=lambda item: item.order_index)
+        self.work_items = sorted(work_items, key=lambda item: item.work_item_id)
         self.max_concurrency = max(1, max_concurrency)
         self.status_by_id: dict[str, WorkItemStatus] = {item.work_item_id: "pending" for item in self.work_items}
 

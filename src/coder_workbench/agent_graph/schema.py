@@ -12,11 +12,30 @@ TestStatus = Literal["pass", "fail", "blocked", "not_requested"]
 PlanStatus = Literal["pending", "running", "completed", "partial_failed", "blocked", "failed"]
 
 
-class WorkItem(BaseModel):
+class MergeIndexedModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    merge_index: int = Field(ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_order_index(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "order_index" not in data:
+            return data
+        migrated = dict(data)
+        order_index = migrated.pop("order_index")
+        if "merge_index" in migrated and migrated["merge_index"] != order_index:
+            raise ValueError("merge_index and legacy order_index must match when both are provided")
+        migrated.setdefault("merge_index", order_index)
+        return migrated
+
+    @property
+    def order_index(self) -> int:
+        return self.merge_index
+
+
+class WorkItem(MergeIndexedModel):
     work_item_id: str
-    order_index: int = Field(ge=1)
     assignee_agent_id: str
     task_summary: str
     depends_on: list[str] = Field(default_factory=list)
@@ -53,13 +72,10 @@ class CachedWorkItem(WorkItem):
     status: WorkItemStatus = "pending"
 
 
-class AgentTaskEnvelope(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class AgentTaskEnvelope(MergeIndexedModel):
     artifact_type: Literal["agent_task"] = "agent_task"
     round: int = Field(ge=1)
     work_item_id: str
-    order_index: int = Field(ge=1)
     assigned_agent_id: str
     task_summary: str
     constraints: list[str] = Field(default_factory=list)
@@ -67,22 +83,16 @@ class AgentTaskEnvelope(BaseModel):
     planner_order_ref: str
 
 
-class ExecutionRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class ExecutionRecord(MergeIndexedModel):
     work_item_id: str
-    order_index: int = Field(ge=1)
     agent_id: str
     status: ExecutionStatus
     execution_summary: str
     execution_result_ref: str
 
 
-class TestRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class TestRecord(MergeIndexedModel):
     work_item_id: str
-    order_index: int = Field(ge=1)
     tester_agent_id: str
     status: TestStatus
     test_summary: str
@@ -107,11 +117,8 @@ class PlanCache(BaseModel):
     work_items: list[CachedWorkItem]
 
 
-class PlannerInputBundleItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class PlannerInputBundleItem(MergeIndexedModel):
     work_item_id: str
-    order_index: int = Field(ge=1)
     task_summary: str
     execution_status: ExecutionStatus | Literal["not_started"]
     execution_summary: str
@@ -133,11 +140,8 @@ class PlannerInputBundle(BaseModel):
     effects: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class RoundSummaryItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
+class RoundSummaryItem(MergeIndexedModel):
     work_item_id: str
-    order_index: int = Field(ge=1)
     status: str
     summary: str
     refs: list[str] = Field(default_factory=list)

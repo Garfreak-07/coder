@@ -52,7 +52,7 @@ class GraphRunCache(BaseModel):
         envelope = AgentTaskEnvelope(
             round=self.round,
             work_item_id=item.work_item_id,
-            order_index=item.order_index,
+            merge_index=item.merge_index,
             assigned_agent_id=item.assignee_agent_id,
             task_summary=item.task_summary,
             constraints=[
@@ -87,7 +87,7 @@ class GraphRunCache(BaseModel):
         return record
 
     def work_items(self) -> list[CachedWorkItem]:
-        return sorted(self.plan_cache.work_items if self.plan_cache else [], key=lambda item: item.order_index)
+        return sorted(self.plan_cache.work_items if self.plan_cache else [], key=lambda item: item.merge_index)
 
     def refs_for_work_item(self, work_item_id: str) -> list[str]:
         refs: list[str] = []
