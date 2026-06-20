@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from coder_workbench.core import WorkflowSpec, load_workflow
+from coder_workbench.core import AgentWorkflowSpec, WorkflowSpec, compile_agent_workflow, default_planner_led_agent_workflow, load_workflow
 from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.runtime import run_workflow
 from coder_workbench.runtime.runner import WorkflowRunner
@@ -104,6 +104,28 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             return {"agent": library.get_agent(agent_id)}
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="agent not found") from exc
+
+
+    @app.get("/api/v2/agent-workflows/default")
+    def get_default_agent_workflow() -> dict[str, Any]:
+        agent_workflow = default_planner_led_agent_workflow()
+        workflow = compile_agent_workflow(agent_workflow)
+        return {
+            "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True),
+            "workflow": workflow.model_dump(mode="json", by_alias=True),
+        }
+
+    @app.post("/api/v2/agent-workflows/compile")
+    def compile_agent_workflow_endpoint(agent_workflow: dict[str, Any]) -> dict[str, Any]:
+        try:
+            spec = AgentWorkflowSpec.model_validate(agent_workflow)
+            workflow = compile_agent_workflow(spec)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "agent_workflow": spec.model_dump(mode="json", by_alias=True),
+            "workflow": workflow.model_dump(mode="json", by_alias=True),
+        }
 
     @app.post("/api/v2/library/workflows")
     def save_workflow(workflow: dict[str, Any]) -> dict[str, Any]:

@@ -14,6 +14,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from coder_workbench.core.artifacts import artifact_summary
 from coder_workbench.runtime import RunEvent, RunResult
+from coder_workbench.server.storage_objects import (
+    collect_blob_ids,
+    context_packet_summary,
+    embedded_context_packet,
+    embedded_tool_result,
+    externalize_large_values,
+)
 
 
 BLOB_STRING_THRESHOLD = 8192
@@ -472,20 +479,7 @@ class RunStore:
         return refs
 
     def _externalize_large_values(self, value: Any) -> Any:
-        if isinstance(value, str):
-            if len(value) >= BLOB_STRING_THRESHOLD:
-                blob_id = self._write_blob(value)
-                return {
-                    "blob_id": blob_id,
-                    "size_chars": len(value),
-                    "media_type": "text/plain; charset=utf-8",
-                }
-            return value
-        if isinstance(value, list):
-            return [self._externalize_large_values(item) for item in value]
-        if isinstance(value, dict):
-            return {key: self._externalize_large_values(item) for key, item in value.items()}
-        return value
+        return externalize_large_values(value, write_blob=self._write_blob, threshold=BLOB_STRING_THRESHOLD)
 
     def _write_blob(self, content: str) -> str:
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -550,20 +544,7 @@ class RunStore:
         return blob_ids
 
     def _collect_blob_ids(self, value: Any, blob_ids: set[str]) -> None:
-        if isinstance(value, dict):
-            blob_id = value.get("blob_id")
-            if isinstance(blob_id, str):
-                try:
-                    self._safe_blob_id(blob_id)
-                except KeyError:
-                    pass
-                else:
-                    blob_ids.add(blob_id)
-            for item in value.values():
-                self._collect_blob_ids(item, blob_ids)
-        elif isinstance(value, list):
-            for item in value:
-                self._collect_blob_ids(item, blob_ids)
+        collect_blob_ids(value, blob_ids, validate_blob_id=self._safe_blob_id)
 
     def _prune_empty_blob_parents(self, path: Path) -> None:
         current = path
@@ -651,45 +632,13 @@ class RunStore:
         return events
 
     def _embedded_context_packet(self, event: RunEvent, packet_id: str) -> dict[str, Any] | None:
-        if event.type != "agent.context_packet":
-            return None
-        if str(event.payload.get("packet_id") or event.id) != packet_id:
-            return None
-        packet = event.payload.get("packet")
-        return packet if isinstance(packet, dict) else None
+        return embedded_context_packet(event, packet_id)
 
     def _embedded_tool_result(self, event: RunEvent, tool_result_id: str) -> dict[str, Any] | None:
-        if event.type != "tool.result":
-            return None
-        if str(event.payload.get("tool_result_id") or event.id) != tool_result_id:
-            return None
-        result = event.payload.get("result")
-        return result if isinstance(result, dict) else None
+        return embedded_tool_result(event, tool_result_id)
 
     def _context_packet_summary(self, packet: Any) -> dict[str, Any]:
-        if not isinstance(packet, dict):
-            return {"type": type(packet).__name__}
-
-        agent = packet.get("agent") if isinstance(packet.get("agent"), dict) else {}
-        token_estimate = packet.get("token_estimate") if isinstance(packet.get("token_estimate"), dict) else {}
-        loop = packet.get("loop") if isinstance(packet.get("loop"), dict) else {}
-        selected_state_keys = packet.get("selected_state_keys")
-        state_summaries = packet.get("state_summaries")
-        allowed_tools = packet.get("allowed_tools")
-
-        summary = {
-            "agent_id": agent.get("id"),
-            "agent_name": agent.get("name"),
-            "node_id": packet.get("node_id"),
-            "selected_state_keys": selected_state_keys if isinstance(selected_state_keys, list) else [],
-            "state_summary_keys": sorted(state_summaries.keys()) if isinstance(state_summaries, dict) else [],
-            "tool_count": len(allowed_tools) if isinstance(allowed_tools, list) else 0,
-            "estimated_tokens": token_estimate.get("packet"),
-            "budget": token_estimate.get("budget"),
-            "loop_node_id": loop.get("node_id"),
-            "loop_iteration": loop.get("iteration"),
-        }
-        return {key: value for key, value in summary.items() if value is not None}
+        return context_packet_summary(packet)
 
     def save_live(self, payload: dict[str, Any]) -> None:
         run_id = str(payload.get("id") or "")

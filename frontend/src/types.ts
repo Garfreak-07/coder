@@ -1,3 +1,56 @@
+
+export type AgentModelTier = "best" | "standard" | "economy";
+export type AgentWorkflowRole = "planner" | "executor" | "tester";
+export type AgentCapability =
+  | "negotiate_contract"
+  | "make_plan"
+  | "judge_completion"
+  | "judge_risk"
+  | "make_next_decision"
+  | "modify_files"
+  | "follow_planner_order"
+  | "return_execution_result"
+  | "model_review"
+  | "optional_check_command"
+  | "return_test_result";
+export type HandoffType =
+  | "run_contract"
+  | "planner_order"
+  | "execution_result"
+  | "test_result"
+  | "planner_decision"
+  | "round_summary";
+
+export interface AgentWorkflowAgent {
+  id: string;
+  name: string;
+  role: AgentWorkflowRole;
+  model_tier: AgentModelTier;
+  can_talk_to_human: boolean;
+  capabilities: AgentCapability[];
+}
+
+export interface AgentWorkflowEdge {
+  from: string;
+  to: string;
+  handoff: HandoffType;
+  loop?: boolean;
+}
+
+export interface AgentWorkflowLoopPolicy {
+  max_auto_rounds: number;
+  user_can_change: boolean;
+}
+
+export interface AgentWorkflowSpec {
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  agents: AgentWorkflowAgent[];
+  edges: AgentWorkflowEdge[];
+  loop_policy: AgentWorkflowLoopPolicy;
+}
 export type NodeType = "start" | "agent" | "tool" | "mcp_tool" | "condition" | "loop" | "human_gate" | "end";
 export type LoopMode = "while" | "for_each" | "retry_until";
 

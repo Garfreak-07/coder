@@ -6,6 +6,8 @@ import unittest
 from coder_workbench.core import compile_agent_workflow, default_planner_led_agent_workflow
 from coder_workbench.core.artifacts import supported_artifact_types, validate_artifact
 from coder_workbench.runtime.runner import WorkflowRunner
+from coder_workbench.server.app import create_app
+from fastapi.testclient import TestClient
 
 
 class PlannerLedArtifactTests(unittest.TestCase):
@@ -94,6 +96,42 @@ class AgentWorkflowCompilerTests(unittest.TestCase):
                 ],
             )
             self.assertEqual(result.data["planner_decision"]["next_action"], "finish")
+
+
+class AgentWorkflowApiTests(unittest.TestCase):
+    def test_default_agent_workflow_api_returns_compiled_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
+
+            response = client.get("/api/v2/agent-workflows/default")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["agent_workflow"]["id"], "default-planner-led")
+            self.assertEqual(payload["workflow"]["max_tool_calls"], 0)
+            self.assertIn("planner_loop", {node["id"] for node in payload["workflow"]["nodes"]})
+
+    def test_agent_workflow_compile_api_accepts_agent_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
+            agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+
+            response = client.post("/api/v2/agent-workflows/compile", json=agent_workflow)
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["workflow"]["id"], "default-planner-led-runtime")
+            self.assertEqual(
+                [agent["artifact_type"] for agent in payload["workflow"]["agents"]],
+                [
+                    "run_contract",
+                    "planner_order",
+                    "execution_result",
+                    "test_result",
+                    "planner_decision",
+                    "round_summary",
+                ],
+            )
 
 
 if __name__ == "__main__":
