@@ -164,6 +164,9 @@ export interface RunSummaryItem {
   estimated_tokens_used?: number;
   stored_run_id?: string | null;
   error?: string | null;
+  status_reason?: string | null;
+  status_code?: string | null;
+  approval_required?: boolean;
 }
 
 export interface RunResult {
@@ -176,6 +179,8 @@ export interface RunResult {
   tool_calls: number;
   blocked_node_id?: string | null;
   resume_checkpoint?: Record<string, unknown> | null;
+  status_reason?: string | null;
+  status_code?: string | null;
 }
 
 export interface StoredRunDetail {
@@ -225,6 +230,7 @@ export interface LiveRunDetail {
   result?: RunResult | null;
   stored_run_id?: string | null;
   error?: string | null;
+  approval_required?: boolean;
 }
 
 export interface HealthStatus {

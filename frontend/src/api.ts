@@ -166,6 +166,19 @@ export async function approveLiveRun(
   });
 }
 
+export async function retryCurrentNode(runId: string): Promise<{ run_id: string; status: string; events_url: string; result_url: string }> {
+  return requestJson(`/api/v2/live-runs/${runId}/retry-current-node`, {
+    method: "POST",
+    headers: jsonHeaders
+  });
+}
+
+export function deleteRun(runId: string): Promise<{ run_id: string; deleted: boolean; orphan_blobs_removed: number }> {
+  return requestJson(`/api/v2/runs/${runId}`, {
+    method: "DELETE"
+  });
+}
+
 export async function rollbackPatch(input: {
   repo: string;
   snapshot_id: string;
@@ -188,6 +201,7 @@ export function subscribeRunEvents(url: string, onEvent: (event: RunEvent) => vo
     "node.started",
     "node.completed",
     "node.skipped",
+    "node.retry_requested",
     "loop.started",
     "loop.iteration.started",
     "loop.iteration.completed",

@@ -806,13 +806,26 @@ Implemented:
   mock-mode behavior before agent execution;
 - durable blocked live-run recovery after API process restart, including
   approval resume from persisted checkpoints;
+- live recovery distinguishes approval-required blocks from non-approval
+  contract blocks such as artifact schema validation failure;
+- retry-current-node API/UI for blocked live runs with persisted checkpoints;
 - token budget overflow handling that compacts or drops low-priority context
   before blocking when the compacted packet still exceeds budget;
+- standardized `status_code` and `status_reason` fields on run results and run
+  history metadata;
 - `runs/index.sqlite` run index for listing run metadata without reading full
   run payloads;
+- stored run deletion with orphan Blob cleanup for content no remaining run
+  references;
+- project summary output with important files, detected frameworks, and
+  candidate check commands;
 - Patch Approval panel links to related PatchArtifact/ContextPacket events and
   displays rollback progress and result status;
+- loop replay grouping by iteration in the run event panel;
+- run history filtering and search in the UI;
 - GitHub Actions CI for Python tests, Python compile checks, and frontend build;
+- CI coverage for Python 3.11 and 3.12, with Python 3.11 as the minimum
+  supported runtime;
 - lazy loading for additional stored run events in the UI;
 - FastAPI runtime API;
 - live background runs;
@@ -826,22 +839,22 @@ Implemented:
 Near-term work should prioritize the `Coder v0.3 - Trust Runtime` foundation:
 
 1. Kernel contracts:
-   - enforce artifact schema failures in live recovery paths as clearly as
-     synchronous runs.
+   - continue tightening failure semantics as new artifact types and recovery
+     paths are added.
 2. Storage separation:
    - continue moving snapshots and any remaining raw outputs into Blob storage
      and object references;
-   - add orphan blob cleanup when deleting historical runs.
+   - expand historical run retention controls now that delete cleanup exists.
 3. Default workflow productization:
    - keep all file writes on the patch preview -> approval -> snapshot -> apply
      path.
 4. Recovery and replay:
-   - add retry-current-node behavior;
-   - group loop replay by iteration and show each iteration's ContextPacket and
-     Artifact links.
+   - refine retry-current-node UX for failed runs once failed checkpoints are
+     persisted;
+   - add richer loop iteration filters and collapse controls.
 5. Experience hardening:
    - improve project summaries and candidate check detection;
-   - add run history filtering/search and standardized failure reasons.
+   - standardize more failure reason copy across UI surfaces.
 
 ## Non-goals for the next phase
 

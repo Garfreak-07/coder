@@ -76,7 +76,7 @@ class WorkflowRunner:
         try:
             while queue and state.status == "running":
                 if sum(state.visited_nodes.values()) >= self.workflow.max_steps:
-                    self._block(state, "max_steps reached")
+                    self._block(state, "max_steps reached", code="max_steps")
                     break
 
                 node_id = queue.pop(0)
@@ -123,6 +123,8 @@ class WorkflowRunner:
             state.emit(f"run.{state.status}", f"Workflow {state.status}")
         except Exception as exc:  # pragma: no cover - boundary safety
             state.status = "failed"
+            state.status_reason = str(exc)
+            state.status_code = "runtime_exception"
             state.emit("run.failed", f"Workflow failed: {exc}", error=str(exc))
 
         return RunResult(
@@ -136,18 +138,22 @@ class WorkflowRunner:
             tool_calls=state.tool_calls,
             blocked_node_id=state.current_node if state.status == "blocked" else None,
             resume_checkpoint=self._checkpoint(state) if state.status == "blocked" else None,
+            status_reason=state.status_reason,
+            status_code=state.status_code,
         )
 
     def _run_agent_node(self, state: RunState, node_id: str) -> dict[str, Any]:
         node = self.nodes[node_id]
         assert node.agent_id
         if state.agent_calls >= self.workflow.max_agent_calls:
-            self._block(state, "max_agent_calls reached")
+            self._block(state, "max_agent_calls reached", code="max_agent_calls")
             return {"status": "blocked"}
         agent = self.agents[node.agent_id]
         policy_violations = self._agent_tool_policy_violations(agent)
         if policy_violations:
             state.status = "failed"
+            state.status_reason = "agent tool policy violation"
+            state.status_code = "agent_tool_policy_violation"
             return {
                 "status": "failed",
                 "error": "agent tool policy violation",
@@ -196,7 +202,7 @@ class WorkflowRunner:
                 token_budget=state.token_budget,
                 context_reductions=reductions,
             )
-            self._block(state, "token budget exceeded")
+            self._block(state, "token budget exceeded", code="token_budget_exceeded")
             return {
                 "status": "blocked",
                 "reason": "token budget exceeded",
@@ -240,7 +246,7 @@ class WorkflowRunner:
                 artifact_type=candidate_type,
                 errors=[{"loc": ["artifact_type"], "msg": f"unsupported artifact type: {candidate_type}"}],
             )
-            self._block(state, "artifact validation failed")
+            self._block(state, "artifact validation failed", code="artifact_validation_failed")
             return result
 
         artifact_id = f"artifact_{uuid4().hex}"
@@ -254,7 +260,7 @@ class WorkflowRunner:
                 artifact_type=exc.artifact_type,
                 errors=exc.errors,
             )
-            self._block(state, "artifact validation failed")
+            self._block(state, "artifact validation failed", code="artifact_validation_failed")
             return result
 
         summary = artifact_summary(artifact)
@@ -332,7 +338,7 @@ class WorkflowRunner:
         node = self.nodes[node_id]
         assert node.tool
         if state.tool_calls >= self.workflow.max_tool_calls:
-            self._block(state, "max_tool_calls reached")
+            self._block(state, "max_tool_calls reached", code="max_tool_calls")
             return {"status": "blocked"}
         state.tool_calls += 1
         args = self._resolve_inputs(node.input, state)
@@ -341,6 +347,8 @@ class WorkflowRunner:
         if capability is None:
             message = f"Tool {node.tool!r} is not registered."
             state.status = "failed"
+            state.status_reason = message
+            state.status_code = "unknown_tool"
             return {"status": "failed", "error": message}
         if node.type == "mcp_tool":
             args = dict(args)
@@ -379,7 +387,11 @@ class WorkflowRunner:
                 node_id=node_id,
                 **approval_payload,
             )
-            self._block(state, str(result.get("message") or "tool approval required"))
+            self._block(
+                state,
+                str(result.get("message") or "tool approval required"),
+                code=str(result.get("approval_type") or "tool_approval_required"),
+            )
         return result
 
     def _agent_tool_policy_violations(self, agent: Any) -> list[dict[str, Any]]:
@@ -437,7 +449,7 @@ class WorkflowRunner:
         state.set_value(node.output_key or node.id, result)
         if not approved:
             state.emit("approval.required", "Workflow paused for approval", node_id=node_id, **result)
-            self._block(state, "approval required")
+            self._block(state, "approval required", code="approval_required")
         return result
 
     def _next_nodes(self, state: RunState, node_id: str) -> list[str]:
@@ -477,9 +489,11 @@ class WorkflowRunner:
             return [self._resolve_inputs(item, state) for item in value]
         return value
 
-    def _block(self, state: RunState, reason: str) -> None:
+    def _block(self, state: RunState, reason: str, *, code: str | None = None) -> None:
         state.status = "blocked"
-        state.emit("run.blocked", reason, node_id=state.current_node)
+        state.status_reason = reason
+        state.status_code = code or _status_code_from_reason(reason)
+        state.emit("run.blocked", reason, node_id=state.current_node, reason=reason, code=state.status_code)
 
     def _checkpoint(self, state: RunState) -> dict[str, Any]:
         return {
@@ -493,6 +507,13 @@ class WorkflowRunner:
             "tool_calls": state.tool_calls,
             "current_node": state.current_node,
         }
+
+
+def _status_code_from_reason(reason: str) -> str:
+    normalized = reason.strip().lower().replace(" ", "_").replace("-", "_")
+    if not normalized:
+        return "blocked"
+    return "".join(char for char in normalized if char.isalnum() or char == "_")[:80]
 
 
 def run_workflow(

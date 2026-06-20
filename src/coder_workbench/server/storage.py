@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -40,6 +41,8 @@ class StoredRunMetadata(BaseModel):
     agent_calls: int
     tool_calls: int
     estimated_tokens_used: int
+    status_reason: str | None = None
+    status_code: str | None = None
 
 
 class RunStore:
@@ -79,6 +82,8 @@ class RunStore:
                 agent_calls=result.agent_calls,
                 tool_calls=result.tool_calls,
                 estimated_tokens_used=result.estimated_tokens_used,
+                status_reason=result.status_reason,
+                status_code=result.status_code,
             )
             (run_dir / "metadata.json").write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
             self._upsert_index(metadata, updated_at=time.time())
@@ -122,6 +127,44 @@ class RunStore:
             self._rebuild_index(runs)
         return runs
 
+    def delete(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            run_dir = self._run_dir(run_id)
+            legacy_path = self._legacy_path(run_id)
+            if run_dir.exists():
+                candidate_blob_ids = self._blob_ids_in_path(run_dir)
+                shutil.rmtree(run_dir)
+            elif legacy_path.exists():
+                candidate_blob_ids = self._blob_ids_in_path(legacy_path)
+                legacy_path.unlink()
+            else:
+                raise KeyError(run_id)
+            self._delete_index(self._safe_run_id(run_id))
+            removed_blobs = self.cleanup_orphan_blobs(candidate_blob_ids)
+        return {
+            "run_id": run_id,
+            "deleted": True,
+            "orphan_blobs_removed": removed_blobs,
+        }
+
+    def cleanup_orphan_blobs(self, candidate_blob_ids: set[str] | None = None) -> int:
+        referenced = self._referenced_blob_ids()
+        candidates = candidate_blob_ids if candidate_blob_ids is not None else self._stored_blob_ids()
+        removed = 0
+        for blob_id in candidates:
+            if blob_id in referenced:
+                continue
+            try:
+                path = self._blob_path(blob_id)
+            except KeyError:
+                continue
+            if not path.exists():
+                continue
+            path.unlink()
+            self._prune_empty_blob_parents(path.parent)
+            removed += 1
+        return removed
+
     def _scan_run_metadata(self) -> list[dict[str, Any]]:
         runs: list[dict[str, Any]] = []
         items = list(self.runs_dir.glob("*/metadata.json")) + list(self.runs_dir.glob("*.json"))
@@ -145,6 +188,8 @@ class RunStore:
                     "agent_calls": stored.result.agent_calls,
                     "tool_calls": stored.result.tool_calls,
                     "estimated_tokens_used": stored.result.estimated_tokens_used,
+                    "status_reason": stored.result.status_reason,
+                    "status_code": stored.result.status_code,
                 }
             )
         return runs
@@ -167,6 +212,7 @@ class RunStore:
                 )
                 """
             )
+            self._ensure_index_columns(connection)
 
     def _upsert_index(self, metadata: StoredRunMetadata, *, updated_at: float) -> None:
         with sqlite3.connect(self.index_path) as connection:
@@ -174,9 +220,10 @@ class RunStore:
                 """
                 INSERT INTO runs (
                     id, workflow_id, repo_root, request, status, events,
-                    agent_calls, tool_calls, estimated_tokens_used, updated_at
+                    agent_calls, tool_calls, estimated_tokens_used,
+                    status_reason, status_code, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     workflow_id=excluded.workflow_id,
                     repo_root=excluded.repo_root,
@@ -186,6 +233,8 @@ class RunStore:
                     agent_calls=excluded.agent_calls,
                     tool_calls=excluded.tool_calls,
                     estimated_tokens_used=excluded.estimated_tokens_used,
+                    status_reason=excluded.status_reason,
+                    status_code=excluded.status_code,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -198,9 +247,22 @@ class RunStore:
                     metadata.agent_calls,
                     metadata.tool_calls,
                     metadata.estimated_tokens_used,
+                    metadata.status_reason,
+                    metadata.status_code,
                     updated_at,
                 ),
             )
+
+    def _ensure_index_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)").fetchall()}
+        if "status_reason" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN status_reason TEXT")
+        if "status_code" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN status_code TEXT")
+
+    def _delete_index(self, run_id: str) -> None:
+        with sqlite3.connect(self.index_path) as connection:
+            connection.execute("DELETE FROM runs WHERE id = ?", (run_id,))
 
     def _list_from_index(self) -> list[dict[str, Any]]:
         with sqlite3.connect(self.index_path) as connection:
@@ -208,7 +270,8 @@ class RunStore:
             rows = connection.execute(
                 """
                 SELECT id, workflow_id, repo_root, request, status, events,
-                       agent_calls, tool_calls, estimated_tokens_used
+                       agent_calls, tool_calls, estimated_tokens_used,
+                       status_reason, status_code
                 FROM runs
                 ORDER BY updated_at DESC
                 """
@@ -223,9 +286,10 @@ class RunStore:
                     """
                     INSERT OR REPLACE INTO runs (
                         id, workflow_id, repo_root, request, status, events,
-                        agent_calls, tool_calls, estimated_tokens_used, updated_at
+                        agent_calls, tool_calls, estimated_tokens_used,
+                        status_reason, status_code, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run["id"],
@@ -237,6 +301,8 @@ class RunStore:
                         int(run["agent_calls"]),
                         int(run["tool_calls"]),
                         int(run["estimated_tokens_used"]),
+                        run.get("status_reason"),
+                        run.get("status_code"),
                         time.time() + index,
                     ),
                 )
@@ -433,6 +499,80 @@ class RunStore:
     def _blob_path(self, blob_id: str) -> Path:
         digest = self._safe_blob_id(blob_id)
         return self.blobs_dir / "sha256" / digest[:2] / f"sha256-{digest}"
+
+    def _stored_blob_ids(self) -> set[str]:
+        blob_ids: set[str] = set()
+        root = self.blobs_dir / "sha256"
+        if not root.exists():
+            return blob_ids
+        for path in root.glob("*/*"):
+            name = path.name
+            if not path.is_file() or not name.startswith("sha256-"):
+                continue
+            digest = name.removeprefix("sha256-")
+            if len(digest) == 64:
+                blob_ids.add(f"sha256:{digest}")
+        return blob_ids
+
+    def _referenced_blob_ids(self) -> set[str]:
+        blob_ids: set[str] = set()
+        run_items = self.runs_dir.iterdir() if self.runs_dir.exists() else []
+        for run_dir in run_items:
+            if run_dir.is_dir():
+                blob_ids.update(self._blob_ids_in_path(run_dir))
+            elif run_dir.is_file() and run_dir.suffix == ".json":
+                blob_ids.update(self._blob_ids_in_path(run_dir))
+        return blob_ids
+
+    def _blob_ids_in_path(self, path: Path) -> set[str]:
+        blob_ids: set[str] = set()
+        paths = [path] if path.is_file() else list(path.rglob("*"))
+        for item in paths:
+            if not item.is_file() or item.suffix not in {".json", ".jsonl"}:
+                continue
+            try:
+                text = item.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if item.suffix == ".jsonl":
+                for line in text.splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        self._collect_blob_ids(json.loads(line), blob_ids)
+                    except json.JSONDecodeError:
+                        continue
+                continue
+            try:
+                self._collect_blob_ids(json.loads(text), blob_ids)
+            except json.JSONDecodeError:
+                continue
+        return blob_ids
+
+    def _collect_blob_ids(self, value: Any, blob_ids: set[str]) -> None:
+        if isinstance(value, dict):
+            blob_id = value.get("blob_id")
+            if isinstance(blob_id, str):
+                try:
+                    self._safe_blob_id(blob_id)
+                except KeyError:
+                    pass
+                else:
+                    blob_ids.add(blob_id)
+            for item in value.values():
+                self._collect_blob_ids(item, blob_ids)
+        elif isinstance(value, list):
+            for item in value:
+                self._collect_blob_ids(item, blob_ids)
+
+    def _prune_empty_blob_parents(self, path: Path) -> None:
+        current = path
+        while current != self.blobs_dir and self.blobs_dir in current.parents:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
 
     def _write_events(self, path: Path, events: list[RunEvent]) -> None:
         lines = [json.dumps(event.model_dump(mode="json"), ensure_ascii=False) for event in events]

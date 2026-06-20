@@ -15,6 +15,7 @@ import {
 } from "@xyflow/react";
 import {
   approveLiveRun,
+  deleteRun,
   getBlob,
   getArtifact,
   getContextPacket,
@@ -37,6 +38,7 @@ import {
   startLiveRun,
   subscribeRunEvents,
   testProvider,
+  retryCurrentNode,
   validateWorkflow
 } from "./api";
 import { codingWorkbenchWorkflow } from "./examples";
@@ -111,6 +113,8 @@ export function App() {
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [runHistory, setRunHistory] = useState<RunSummaryItem[]>([]);
   const [liveRuns, setLiveRuns] = useState<RunSummaryItem[]>([]);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState("all");
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [providerSettings, setProviderSettings] = useState<ProviderSettings | null>(null);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
@@ -138,6 +142,10 @@ export function App() {
   const selectedAgent = useMemo(
     () => workflow.agents.find((agent) => agent.id === selectedAgentId) ?? null,
     [selectedAgentId, workflow.agents]
+  );
+  const filteredRunHistory = useMemo(
+    () => filterRunHistory(runHistory, historyQuery, historyStatusFilter),
+    [runHistory, historyQuery, historyStatusFilter]
   );
 
   useEffect(() => {
@@ -600,6 +608,42 @@ export function App() {
     }
   }
 
+  async function retryBlockedNode(runId = activeRunId) {
+    if (!runId) {
+      setStatus("No blocked live run selected.");
+      return;
+    }
+    setStatus(`Retrying current node for live run ${runId}...`);
+    try {
+      const run = await retryCurrentNode(runId);
+      setActiveRunId(run.run_id);
+      setStatus(`Live run ${run.run_id}: ${run.status}`);
+      subscribeToRun(run.run_id, run.events_url);
+      refreshRuntimeInfo();
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function deleteStoredRun(runId: string) {
+    if (!window.confirm(`Delete stored run ${runId}? This also removes blobs no other run references.`)) {
+      return;
+    }
+    setStatus(`Deleting stored run ${runId}...`);
+    try {
+      const result = await deleteRun(runId);
+      setSelectedRunDetail(null);
+      setSelectedRunKind(null);
+      setEvents([]);
+      setEventCursor(0);
+      setEventHasMore(false);
+      refreshRuntimeInfo();
+      setStatus(`Deleted ${result.run_id}; removed ${result.orphan_blobs_removed} orphan blob(s).`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function subscribeToRun(runId: string, eventsUrl: string) {
     const source = subscribeRunEvents(
       eventsUrl,
@@ -727,14 +771,31 @@ export function App() {
             {liveRuns.length === 0 && <div className="muted">{t.runtime.noLiveRuns}</div>}
           </div>
           <div className="panel-subtitle">{t.runtime.storedHistory}</div>
+          <div className="history-filters">
+            <input
+              placeholder="Search runs"
+              value={historyQuery}
+              onChange={(event) => setHistoryQuery(event.target.value)}
+            />
+            <select value={historyStatusFilter} onChange={(event) => setHistoryStatusFilter(event.target.value)}>
+              <option value="all">All statuses</option>
+              <option value="completed">Completed</option>
+              <option value="blocked">Blocked</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
           <div className="list compact-list">
-            {runHistory.slice(0, 5).map((run) => (
+            {filteredRunHistory.slice(0, 20).map((run) => (
               <button className="list-item" key={run.id} onClick={() => openStoredRun(run.id)}>
                 <span>{run.workflow_id}</span>
-                <small>{run.status} / {run.events} events</small>
+                <small>
+                  {run.status}
+                  {run.status_code ? `:${run.status_code}` : ""} / {run.events} events
+                </small>
               </button>
             ))}
             {runHistory.length === 0 && <div className="muted">{t.runtime.noStoredRuns}</div>}
+            {runHistory.length > 0 && filteredRunHistory.length === 0 && <div className="muted">No runs match the filter.</div>}
           </div>
         </section>
       </aside>
@@ -852,8 +913,15 @@ export function App() {
             activeRunId={activeRunId}
             onAttach={(runId) => openLiveRun(runId, true)}
             onOpenStored={(runId) => openStoredRun(runId)}
+            onRetryCurrentNode={(runId) => retryBlockedNode(runId)}
+            onDeleteStored={(runId) => deleteStoredRun(runId)}
           />
-          <RunSummary events={events} onApprovalDecision={approveAndResumeRun} />
+          <RunSummary
+            events={events}
+            canRetryCurrentNode={Boolean(activeRunId)}
+            onApprovalDecision={approveAndResumeRun}
+            onRetryCurrentNode={() => retryBlockedNode()}
+          />
           <PatchPanel
             events={events}
             runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
@@ -864,33 +932,10 @@ export function App() {
           {events.length === 0 ? (
             <div className="muted">{t.events.empty}</div>
           ) : (
-            events.map((event, index) => (
-              <div className="event-row" id={eventDomId(event)} key={event.id ?? `${event.type}-${index}`}>
-                <div className="event-heading">
-                  <strong>{event.type}</strong>
-                  {event.node_id && <code>{event.node_id}</code>}
-                </div>
-                <span>{event.message ?? ""}</span>
-                {event.type === "agent.context_packet" && (
-                  <ContextPacketCard
-                    event={event}
-                    runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
-                  />
-                )}
-                {event.type === "artifact.produced" && (
-                  <ArtifactCard
-                    event={event}
-                    runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
-                  />
-                )}
-                {event.type !== "agent.context_packet" &&
-                  event.type !== "artifact.produced" &&
-                  event.payload &&
-                  Object.keys(event.payload).length > 0 && (
-                  <pre>{JSON.stringify(event.payload, null, 2)}</pre>
-                )}
-              </div>
-            ))
+            <EventReplayList
+              events={events}
+              runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
+            />
           )}
           {selectedRunKind === "stored" && eventHasMore && (
             <button onClick={loadMoreStoredEvents} disabled={eventsLoadingMore}>
@@ -1115,6 +1160,107 @@ function toolRisk(node: NodeSpec): "low" | "medium" | "high" {
   if (node.tool === "apply_patch" || node.tool === "rollback_patch") return "high";
   if (node.tool === "run_check" || node.tool === "propose_patch") return "medium";
   return "low";
+}
+
+interface LoopReplayGroup {
+  kind: "loop";
+  key: string;
+  nodeId: string;
+  iteration: number;
+  events: RunEvent[];
+}
+
+type ReplayItem = RunEvent | LoopReplayGroup;
+
+function EventReplayList({ events, runId }: { events: RunEvent[]; runId: string | null }) {
+  return (
+    <>
+      {groupReplayEvents(events).map((item, index) => {
+        if (isLoopReplayGroup(item)) {
+          const contextLinks = item.events.filter((event) => event.type === "agent.context_packet").length;
+          const artifactLinks = item.events.filter((event) => event.type === "artifact.produced").length;
+          return (
+            <div className="loop-replay-group" key={item.key}>
+              <div className="event-heading">
+                <strong>Loop iteration</strong>
+                <code>{item.nodeId}</code>
+                <span>#{item.iteration}</span>
+              </div>
+              <div className="summary-grid">
+                <span>{item.events.length} events</span>
+                <span>{contextLinks} ContextPacket links</span>
+                <span>{artifactLinks} Artifact links</span>
+              </div>
+              {item.events.map((event, eventIndex) => (
+                <EventRow event={event} key={event.id ?? `${event.type}-${eventIndex}`} runId={runId} />
+              ))}
+            </div>
+          );
+        }
+        return <EventRow event={item} key={item.id ?? `${item.type}-${index}`} runId={runId} />;
+      })}
+    </>
+  );
+}
+
+function EventRow({ event, runId }: { event: RunEvent; runId: string | null }) {
+  return (
+    <div className="event-row" id={eventDomId(event)}>
+      <div className="event-heading">
+        <strong>{event.type}</strong>
+        {event.node_id && <code>{event.node_id}</code>}
+      </div>
+      <span>{event.message ?? ""}</span>
+      {event.type === "agent.context_packet" && <ContextPacketCard event={event} runId={runId} />}
+      {event.type === "artifact.produced" && <ArtifactCard event={event} runId={runId} />}
+      {event.type !== "agent.context_packet" &&
+        event.type !== "artifact.produced" &&
+        event.payload &&
+        Object.keys(event.payload).length > 0 && <pre>{JSON.stringify(event.payload, null, 2)}</pre>}
+    </div>
+  );
+}
+
+function isLoopReplayGroup(item: ReplayItem): item is LoopReplayGroup {
+  return "kind" in item && item.kind === "loop";
+}
+
+function groupReplayEvents(events: RunEvent[]): ReplayItem[] {
+  const items: ReplayItem[] = [];
+  let group: LoopReplayGroup | null = null;
+  for (const event of events) {
+    if (event.type === "loop.iteration.started") {
+      if (group) items.push(group);
+      const meta = loopEventMeta(event);
+      group = {
+        kind: "loop",
+        key: `loop-${meta.nodeId}-${meta.iteration}-${event.id ?? items.length}`,
+        nodeId: meta.nodeId,
+        iteration: meta.iteration,
+        events: [event]
+      };
+      continue;
+    }
+    if (group) {
+      group.events.push(event);
+      if (event.type === "loop.iteration.completed" && loopEventMeta(event).nodeId === group.nodeId) {
+        items.push(group);
+        group = null;
+      }
+      continue;
+    }
+    items.push(event);
+  }
+  if (group) items.push(group);
+  return items;
+}
+
+function loopEventMeta(event: RunEvent): { nodeId: string; iteration: number } {
+  const payload = objectValue(event.payload);
+  return {
+    nodeId: String(event.node_id ?? payload?.node_id ?? "loop"),
+    iteration: Number(payload?.iteration ?? 0)
+  };
 }
 
 function ContextPacketCard({ event, runId }: { event: RunEvent; runId: string | null }) {
@@ -1746,13 +1892,17 @@ function RunDetailCard({
   kind,
   activeRunId,
   onAttach,
-  onOpenStored
+  onOpenStored,
+  onRetryCurrentNode,
+  onDeleteStored
 }: {
   detail: StoredRunDetail | LiveRunDetail | null;
   kind: "live" | "stored" | null;
   activeRunId: string | null;
   onAttach: (runId: string) => void;
   onOpenStored: (runId: string) => void;
+  onRetryCurrentNode: (runId: string) => void;
+  onDeleteStored: (runId: string) => void;
 }) {
   if (!detail || !kind) return null;
   const result = "result" in detail ? detail.result : null;
@@ -1760,6 +1910,8 @@ function RunDetailCard({
   const events = kind === "stored" ? result?.events.length ?? 0 : (detail as LiveRunDetail).events.length;
   const liveDetail = kind === "live" ? (detail as LiveRunDetail) : null;
   const canAttach = liveDetail?.status === "queued" || liveDetail?.status === "running" || liveDetail?.status === "blocked";
+  const canApprove = liveDetail?.status === "blocked" && Boolean(liveDetail.approval_required);
+  const canRetry = liveDetail?.status === "blocked" && !liveDetail.approval_required && Boolean(result?.resume_checkpoint);
 
   return (
     <div className="run-detail-card">
@@ -1774,7 +1926,9 @@ function RunDetailCard({
         {result && <span>{result.tool_calls} tool calls</span>}
         {result && <span>{result.estimated_tokens_used} est. tokens</span>}
         {result?.blocked_node_id && <span>blocked at {result.blocked_node_id}</span>}
+        {result?.status_code && <span>{result.status_code}</span>}
       </div>
+      {result?.status_reason && <div className="muted">Reason: {result.status_reason}</div>}
       <div className="muted">Repo: {detail.repo_root}</div>
       <div className="muted">Request: {detail.request}</div>
       {liveDetail?.stored_run_id && (
@@ -1783,10 +1937,12 @@ function RunDetailCard({
         </button>
       )}
       {canAttach && (
-        <button disabled={activeRunId === detail.id && liveDetail?.status === "blocked"} onClick={() => onAttach(detail.id)}>
-          {liveDetail?.status === "blocked" ? "Use this blocked run for approval" : "Reattach event stream"}
+        <button disabled={activeRunId === detail.id && canApprove} onClick={() => onAttach(detail.id)}>
+          {canApprove ? "Use this blocked run for approval" : "Reattach event stream"}
         </button>
       )}
+      {canRetry && <button onClick={() => onRetryCurrentNode(detail.id)}>Retry current node</button>}
+      {kind === "stored" && <button onClick={() => onDeleteStored(detail.id)}>Delete stored run</button>}
       {liveDetail?.error && <div className="muted">Error: {liveDetail.error}</div>}
     </div>
   );
@@ -1842,21 +1998,25 @@ function storedToolResultIds(events: RunEvent[]): string[] {
 
 function RunSummary({
   events,
-  onApprovalDecision
+  canRetryCurrentNode,
+  onApprovalDecision,
+  onRetryCurrentNode
 }: {
   events: RunEvent[];
+  canRetryCurrentNode: boolean;
   onApprovalDecision: (approved: boolean, reason?: string) => void;
+  onRetryCurrentNode: () => void;
 }) {
   const [reason, setReason] = useState("");
   const latest = events.at(-1);
   const agentCalls = events.filter((event) => event.type === "agent.called").length;
   const toolCalls = events.filter((event) => event.type === "tool.called").length;
   const selectedEdges = events.filter((event) => event.type === "edge.selected").length;
-  const needsApproval = events.some((event) => event.type === "approval.required");
   const approvalRequests = events.filter((event) => event.type === "approval.required");
   const approvalRecords = events.filter((event) => event.type === "approval.recorded");
-  const latestApproval = approvalRequests.at(-1);
+  const latestApproval = pendingApprovalEvent(events);
   const isBlocked = latest?.type === "run.blocked";
+  const latestPayload = objectValue(latest?.payload);
 
   if (events.length === 0) return null;
 
@@ -1871,13 +2031,23 @@ function RunSummary({
         <span>{toolCalls} tool calls</span>
         <span>{selectedEdges} edges</span>
       </div>
-      {needsApproval && isBlocked && (
+      {latestApproval && isBlocked && (
         <div className="approval-actions">
           <input placeholder="Optional approval/rejection reason" value={reason} onChange={(event) => setReason(event.target.value)} />
           <div className="button-row">
             <button onClick={() => onApprovalDecision(true, reason || undefined)}>Approve and resume</button>
             <button onClick={() => onApprovalDecision(false, reason || "Rejected by local user")}>Reject</button>
           </div>
+        </div>
+      )}
+      {!latestApproval && isBlocked && (
+        <div className="approval-card">
+          <div className="panel-subtitle">Blocked</div>
+          <div className="summary-grid">
+            <span>{String(latestPayload?.code ?? "blocked")}</span>
+            <span>{String(latestPayload?.reason ?? latest?.message ?? "")}</span>
+          </div>
+          {canRetryCurrentNode && <button onClick={onRetryCurrentNode}>Retry current node</button>}
         </div>
       )}
       {latestApproval && isBlocked && (
@@ -1914,6 +2084,39 @@ function upsertEvent(events: RunEvent[], next: RunEvent): RunEvent[] {
 
 function mergeEvents(events: RunEvent[], incoming: RunEvent[]): RunEvent[] {
   return incoming.reduce((current, event) => upsertEvent(current, event), events);
+}
+
+function pendingApprovalEvent(events: RunEvent[]): RunEvent | null {
+  const latestApproval = [...events].reverse().find((event) => event.type === "approval.required");
+  if (!latestApproval) return null;
+  const latestRecord = [...events].reverse().find((event) => event.type === "approval.recorded");
+  if (!latestRecord) return latestApproval;
+  const approvalTime = Date.parse(String(latestApproval.created_at ?? ""));
+  const recordTime = Date.parse(String(latestRecord.created_at ?? ""));
+  if (Number.isFinite(approvalTime) && Number.isFinite(recordTime) && recordTime >= approvalTime) {
+    return null;
+  }
+  return latestApproval;
+}
+
+function filterRunHistory(runs: RunSummaryItem[], query: string, status: string): RunSummaryItem[] {
+  const needle = query.trim().toLowerCase();
+  return runs.filter((run) => {
+    if (status !== "all" && run.status !== status) return false;
+    if (!needle) return true;
+    return [
+      run.id,
+      run.workflow_id,
+      run.repo_root,
+      run.request,
+      run.status,
+      run.status_code ?? "",
+      run.status_reason ?? ""
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(needle);
+  });
 }
 
 function isTerminalRunEvent(type: string): boolean {
