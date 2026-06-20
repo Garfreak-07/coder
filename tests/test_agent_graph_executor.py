@@ -104,6 +104,7 @@ class AgentGraphExecutorTests(unittest.TestCase):
         self.assertEqual(record.agent_id, "executor")
         self.assertEqual(record.execution_summary, "Implemented the task.")
         self.assertEqual(record.artifact_payload["proposed_changes"][0]["path"], "src/app.py")
+        self.assertIn("continue_without_human_possible", model.prompts[0])
         self.assertEqual(
             [event["type"] for event in events],
             ["agent_graph.agent_call.started", "agent_graph.agent_call.completed"],
@@ -144,6 +145,10 @@ class AgentGraphExecutorTests(unittest.TestCase):
 
         self.assertEqual(record.status, "blocked")
         self.assertIn("did not match execution_result schema", record.execution_summary)
+        assert record.artifact_payload is not None
+        self.assertEqual(record.artifact_payload["blocker_type"], "schema_validation_failed")
+        self.assertFalse(record.artifact_payload["continue_without_human_possible"])
+        self.assertIn("Worker output failed schema validation", record.artifact_payload["planner_question"])
         self.assertIn("agent_graph.agent_call.repair_failed", [event["type"] for event in events])
 
     def test_valid_tester_json_becomes_test_record(self) -> None:

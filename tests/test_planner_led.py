@@ -12,7 +12,12 @@ from coder_workbench.core import (
     default_planner_led_agent_workflow,
     validate_agent_workflow_payload,
 )
-from coder_workbench.core.artifacts import supported_artifact_types, validate_artifact
+from coder_workbench.core.artifacts import (
+    ArtifactValidationError,
+    artifact_summary,
+    supported_artifact_types,
+    validate_artifact,
+)
 from coder_workbench.runtime.runner import WorkflowRunner
 from coder_workbench.server.app import create_app
 from fastapi.testclient import TestClient
@@ -117,6 +122,54 @@ class PlannerLedArtifactTests(unittest.TestCase):
         self.assertEqual(artifact["merge_index"], 1)
         self.assertEqual(artifact["agent_id"], "backend")
         self.assertEqual(artifact["proposed_changes"][0]["path"], "src/api.py")
+
+    def test_execution_result_accepts_blocker_protocol(self) -> None:
+        artifact = validate_artifact(
+            {
+                "artifact_type": "execution_result",
+                "round": 1,
+                "work_item_id": "auth-work",
+                "merge_index": 1,
+                "agent_id": "backend_agent",
+                "status": "blocked",
+                "summary": "Auth scope is unclear.",
+                "needs_planner_decision": True,
+                "blocker_type": "scope_boundary",
+                "planner_question": "Can this task modify auth middleware?",
+                "continue_without_human_possible": False,
+                "candidate_options": [
+                    {
+                        "option_id": "ask_user",
+                        "summary": "Ask user whether auth middleware is in scope.",
+                        "risk_level": "high",
+                        "requires_human": True,
+                    }
+                ],
+            },
+            expected_type="execution_result",
+        )
+
+        summary = artifact_summary(artifact)
+
+        self.assertEqual(artifact["blocker_type"], "scope_boundary")
+        self.assertEqual(artifact["candidate_options"][0]["option_id"], "ask_user")
+        self.assertEqual(summary["blocker_type"], "scope_boundary")
+        self.assertTrue(summary["needs_planner_decision"])
+        self.assertFalse(summary["continue_without_human_possible"])
+        self.assertEqual(summary["candidate_options"], 1)
+
+    def test_execution_result_rejects_unknown_blocker_type(self) -> None:
+        with self.assertRaises(ArtifactValidationError):
+            validate_artifact(
+                {
+                    "artifact_type": "execution_result",
+                    "status": "blocked",
+                    "summary": "Blocked by an unsupported category.",
+                    "needs_planner_decision": True,
+                    "blocker_type": "unknown_blocker",
+                },
+                expected_type="execution_result",
+            )
 
     def test_test_result_accepts_agent_graph_tester_fields(self) -> None:
         artifact = validate_artifact(

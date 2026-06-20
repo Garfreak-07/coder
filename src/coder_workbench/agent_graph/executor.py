@@ -599,6 +599,10 @@ class AgentGraphExecutor:
             "summary": "Agent output did not match execution_result schema after one repair.",
             "unexpected_issues": ["schema_validation_failed"],
             "needs_planner_decision": True,
+            "blocker_type": "schema_validation_failed",
+            "planner_question": "Worker output failed schema validation. Should Planner retry, reassign, or ask the user?",
+            "candidate_options": [],
+            "continue_without_human_possible": False,
         }
 
     def _blocked_test_payload(self, item: WorkItem, tester_agent_id: str, round_number: int) -> dict[str, Any]:

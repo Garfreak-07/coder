@@ -7,6 +7,16 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 RiskLevel = Literal["low", "medium", "high"]
 ExecutionStatus = Literal["completed", "blocked", "failed"]
+BlockerType = Literal[
+    "technical_blocker",
+    "ambiguity",
+    "scope_boundary",
+    "risk_boundary",
+    "dependency_missing",
+    "context_missing",
+    "plan_conflict",
+    "schema_validation_failed",
+]
 TestStatus = Literal["pass", "fail", "blocked"]
 PlannerNextAction = Literal["continue", "ask_human", "finish", "stop"]
 ConfidenceLevel = Literal["low", "medium", "high"]
@@ -130,6 +140,15 @@ class PlannerOrderArtifact(PlannerArtifactBase):
     stop_and_return_to_planner_when: list[str] = Field(default_factory=list)
 
 
+class PlannerOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    option_id: str
+    summary: str
+    risk_level: RiskLevel = "low"
+    requires_human: bool = False
+
+
 class ExecutionResultArtifact(PlannerArtifactBase, OptionalMergeIndexedArtifact):
     artifact_type: Literal["execution_result"] = "execution_result"
     round: int = Field(default=1, ge=1)
@@ -146,6 +165,10 @@ class ExecutionResultArtifact(PlannerArtifactBase, OptionalMergeIndexedArtifact)
     unexpected_issues: list[str] = Field(default_factory=list)
     out_of_contract: bool = False
     needs_planner_decision: bool = False
+    blocker_type: BlockerType | None = None
+    planner_question: str | None = None
+    candidate_options: list[PlannerOption] = Field(default_factory=list)
+    continue_without_human_possible: bool | None = None
     tester_notes: list[str] = Field(default_factory=list)
 
 
@@ -255,7 +278,10 @@ def planner_artifact_summary(artifact: dict) -> dict:
             "proposed_changes": len(artifact.get("proposed_changes", [])),
             "changed_files": artifact.get("changed_files", []),
             "unexpected_issues": len(artifact.get("unexpected_issues", [])),
+            "blocker_type": artifact.get("blocker_type"),
             "needs_planner_decision": artifact.get("needs_planner_decision"),
+            "continue_without_human_possible": artifact.get("continue_without_human_possible"),
+            "candidate_options": len(artifact.get("candidate_options", [])),
         }
     if artifact_type == "test_result":
         return {

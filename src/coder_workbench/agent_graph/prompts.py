@@ -40,6 +40,10 @@ def build_worker_execution_prompt(
             _json_only_header("execution_result"),
             "You are a Worker Agent. Return execution facts only.",
             "Do not ask the human. Do not make global continue/finish decisions.",
+            "If you cannot safely complete the work item, return status=\"blocked\", "
+            "needs_planner_decision=true, blocker_type, planner_question, candidate_options, "
+            "and continue_without_human_possible.",
+            "Do not ask the human directly. Do not decide whether to continue the whole workflow.",
             "If changes are needed, describe them in proposed_changes; do not claim files were modified directly.",
             _execution_result_schema_notes(),
             "Assigned Agent JSON:",
@@ -149,7 +153,11 @@ def _execution_result_schema_notes() -> str:
         "Required execution_result fields: artifact_type, status, summary.\n"
         "Allowed status values: completed, blocked, failed.\n"
         "Optional fields include proposed_changes, changed_files, created_files, deleted_files, patch_refs, "
-        "outputs, unexpected_issues, out_of_contract, needs_planner_decision, tester_notes."
+        "outputs, unexpected_issues, out_of_contract, needs_planner_decision, blocker_type, "
+        "planner_question, candidate_options, continue_without_human_possible, tester_notes.\n"
+        "Allowed blocker_type values: technical_blocker, ambiguity, scope_boundary, risk_boundary, "
+        "dependency_missing, context_missing, plan_conflict, schema_validation_failed.\n"
+        "candidate_options is a list of objects with option_id, summary, risk_level, and requires_human."
     )
 
 
