@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from coder_workbench.agent_graph.cache import GraphRunCache
+from coder_workbench.agent_graph.context import upstream_refs_for_item
+from coder_workbench.agent_graph.schema import ExecutionRecord, PlannerOrder, TestRecord
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec, assert_valid_agent_workflow
 from coder_workbench.runtime.state import RunEvent, RunResult, summarize_value
 
 
 class AgentGraphRunner:
-    """Phase 1 AgentWorkflow runtime boundary.
+    """AgentWorkflow runtime boundary.
 
     This runner deliberately does not compile AgentWorkflowSpec into WorkflowSpec.
-    Phase 2 will replace the deterministic mock plan with real PlanGraph/cache
-    execution.
+    The first implementation uses deterministic mock records while preserving
+    the real PlanGraph/cache/task-envelope data flow.
     """
 
     def __init__(
@@ -66,23 +69,87 @@ class AgentGraphRunner:
                 primary_planner_id=self.agent_workflow.primary_planner_id,
             )
 
+            cache = GraphRunCache(round=1)
             planner_order = self._mock_planner_order(request)
-            data["planner_order"] = planner_order
+            planner_order_ref = "memory:planner_order:round-1"
+            data["planner_order"] = planner_order.model_dump(mode="json", exclude_none=True)
             emit(
                 "planner.order.produced",
-                "Planner produced a Phase 1 mock PlanGraph",
+                "Planner produced a PlanGraph",
                 artifact_type="planner_order",
                 round=1,
-                planner_order=planner_order,
+                planner_order=data["planner_order"],
             )
+            plan_cache = cache.cache_planner_order(planner_order, planner_order_ref)
             emit(
                 "planner.plan_cached",
                 "Planner order stored in the graph run cache",
                 round=1,
-                work_items=len(planner_order["plan_graph"]["work_items"]),
+                work_items=len(plan_cache.work_items),
             )
 
-            planner_input_bundle = self._mock_planner_input_bundle(planner_order)
+            for item in planner_order.plan_graph.work_items:
+                upstream_refs = upstream_refs_for_item(cache, item)
+                envelope = cache.create_agent_task(
+                    item,
+                    planner_order_ref=planner_order_ref,
+                    upstream_refs=upstream_refs,
+                )
+                emit(
+                    "agent_task.ready",
+                    f"Task {item.work_item_id} is ready",
+                    round=1,
+                    work_item_id=item.work_item_id,
+                    assigned_agent_id=item.assignee_agent_id,
+                    order_index=item.order_index,
+                )
+                emit(
+                    "agent_task.started",
+                    f"Task {item.work_item_id} started",
+                    round=1,
+                    work_item_id=item.work_item_id,
+                    envelope=envelope.model_dump(mode="json"),
+                )
+                execution_record = cache.record_execution(
+                    ExecutionRecord(
+                        work_item_id=item.work_item_id,
+                        order_index=item.order_index,
+                        agent_id=item.assignee_agent_id,
+                        status="completed",
+                        execution_summary="Phase 2 mock execution completed from an AgentTaskEnvelope.",
+                        execution_result_ref=f"memory:execution_result:{item.work_item_id}",
+                    )
+                )
+                emit(
+                    "agent_task.completed",
+                    f"Task {item.work_item_id} completed",
+                    round=1,
+                    work_item_id=item.work_item_id,
+                    execution_result_ref=execution_record.execution_result_ref,
+                )
+                for tester_agent_id in item.tester_agent_ids:
+                    test_record = cache.record_test(
+                        TestRecord(
+                            work_item_id=item.work_item_id,
+                            order_index=item.order_index,
+                            tester_agent_id=tester_agent_id,
+                            status="pass",
+                            test_summary="Phase 2 mock test evidence recorded.",
+                            test_result_ref=f"memory:test_result:{item.work_item_id}:{tester_agent_id}",
+                        )
+                    )
+                    emit(
+                        "test.local.completed",
+                        f"Local test for {item.work_item_id} completed",
+                        round=1,
+                        work_item_id=item.work_item_id,
+                        tester_agent_id=test_record.tester_agent_id,
+                        test_result_ref=test_record.test_result_ref,
+                    )
+
+            data["graph_run_cache"] = cache.as_runtime_payload()
+
+            planner_input_bundle = self._mock_planner_input_bundle(cache)
             data["planner_input_bundle"] = planner_input_bundle
             emit(
                 "planner.input_bundle.created",
@@ -92,7 +159,7 @@ class AgentGraphRunner:
                 items=len(planner_input_bundle["items"]),
             )
 
-            round_summary = self._mock_round_summary(planner_order)
+            round_summary = self._mock_round_summary(cache)
             data["round_summary"] = round_summary
             emit(
                 "round_summary.created",
@@ -107,7 +174,7 @@ class AgentGraphRunner:
                 "round": 1,
                 "task_done": True,
                 "next_action": "finish",
-                "reason": "Phase 1 AgentGraphRunner mock-mode completed the graph boundary check.",
+                "reason": "Phase 2 AgentGraphRunner mock-mode completed the PlanGraph/cache boundary check.",
             }
             data["planner_decision"] = planner_decision
             emit(
@@ -140,7 +207,7 @@ class AgentGraphRunner:
             status_code=status_code,
         )
 
-    def _mock_planner_order(self, request: str) -> dict[str, Any]:
+    def _mock_planner_order(self, request: str) -> PlannerOrder:
         work_items = []
         testers = [agent for agent in self.agent_workflow.agents if _is_tester(agent)]
         workers = [
@@ -160,52 +227,58 @@ class AgentGraphRunner:
                     "tester_agent_ids": tester_ids,
                 }
             )
-        return {
-            "artifact_type": "planner_order",
-            "round": 1,
-            "round_goal": request,
-            "plan_graph": {
-                "work_items": work_items,
-                "final_tester_agent_id": tester_ids[-1] if len(tester_ids) > 1 else None,
-            },
-        }
+        return PlannerOrder.model_validate(
+            {
+                "artifact_type": "planner_order",
+                "round": 1,
+                "round_goal": request,
+                "plan_graph": {
+                    "work_items": work_items,
+                    "final_tester_agent_id": tester_ids[-1] if len(tester_ids) > 1 else None,
+                },
+            }
+        )
 
-    def _mock_planner_input_bundle(self, planner_order: dict[str, Any]) -> dict[str, Any]:
+    def _mock_planner_input_bundle(self, cache: GraphRunCache) -> dict[str, Any]:
         return {
             "artifact_type": "planner_input_bundle",
-            "round": 1,
-            "planner_order_ref": "memory:planner_order:round-1",
+            "round": cache.round,
+            "planner_order_ref": cache.plan_cache.planner_order_ref if cache.plan_cache else "memory:planner_order:round-1",
             "plan_status": "completed",
             "items": [
                 {
-                    "work_item_id": item["work_item_id"],
-                    "order_index": item["order_index"],
-                    "task_summary": item["task_summary"],
-                    "execution_status": "completed",
-                    "execution_summary": "Phase 1 mock execution completed.",
-                    "test_status": "pass" if item["tester_agent_ids"] else "not_requested",
-                    "test_summary": "Phase 1 mock test evidence recorded." if item["tester_agent_ids"] else "",
-                    "refs": [],
+                    "work_item_id": item.work_item_id,
+                    "order_index": item.order_index,
+                    "task_summary": item.task_summary,
+                    "execution_status": cache.execution_cache[item.work_item_id].status
+                    if item.work_item_id in cache.execution_cache
+                    else "not_started",
+                    "execution_summary": cache.execution_cache[item.work_item_id].execution_summary
+                    if item.work_item_id in cache.execution_cache
+                    else "",
+                    "test_status": _merged_test_status(cache.test_cache.get(item.work_item_id, []), item.tester_agent_ids),
+                    "test_summary": _merged_test_summary(cache.test_cache.get(item.work_item_id, []), item.tester_agent_ids),
+                    "refs": cache.refs_for_work_item(item.work_item_id),
                 }
-                for item in sorted(planner_order["plan_graph"]["work_items"], key=lambda value: value["order_index"])
+                for item in cache.work_items()
             ],
         }
 
-    def _mock_round_summary(self, planner_order: dict[str, Any]) -> dict[str, Any]:
+    def _mock_round_summary(self, cache: GraphRunCache) -> dict[str, Any]:
         ordered_state = [
             {
-                "work_item_id": item["work_item_id"],
-                "order_index": item["order_index"],
+                "work_item_id": item.work_item_id,
+                "order_index": item.order_index,
                 "status": "completed",
-                "summary": "Phase 1 mock item completed.",
-                "refs": [],
+                "summary": "Phase 2 mock item completed through ExecutionCache/TestCache.",
+                "refs": cache.refs_for_work_item(item.work_item_id),
             }
-            for item in sorted(planner_order["plan_graph"]["work_items"], key=lambda value: value["order_index"])
+            for item in cache.work_items()
         ]
         return {
             "artifact_type": "round_summary",
-            "round": 1,
-            "planner_order_ref": "memory:planner_order:round-1",
+            "round": cache.round,
+            "planner_order_ref": cache.plan_cache.planner_order_ref if cache.plan_cache else "memory:planner_order:round-1",
             "plan_status": "completed",
             "completed_count": len(ordered_state),
             "failed_count": 0,
@@ -218,6 +291,24 @@ class AgentGraphRunner:
 
 def _is_tester(agent: AgentWorkflowAgent) -> bool:
     return agent.role in {"tester", "reviewer"} or any("test" in capability for capability in agent.capabilities)
+
+
+def _merged_test_status(records: list[TestRecord], tester_agent_ids: list[str]) -> str:
+    if not tester_agent_ids:
+        return "not_requested"
+    if any(record.status == "fail" for record in records):
+        return "fail"
+    if any(record.status == "blocked" for record in records):
+        return "blocked"
+    return "pass" if records else "not_requested"
+
+
+def _merged_test_summary(records: list[TestRecord], tester_agent_ids: list[str]) -> str:
+    if not tester_agent_ids:
+        return ""
+    if not records:
+        return "Test was requested but no TestRecord was written."
+    return " ".join(record.test_summary for record in records)
 
 
 def _safe_id(value: str) -> str:
