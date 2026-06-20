@@ -32,6 +32,9 @@ from coder_workbench.tools.filesystem import normalize_scope_paths, resolve_exis
 from coder_workbench.tools.patching import rollback_patch
 
 
+LEGACY_RUNTIME_PREVIEW_BOUNDARY = "legacy_runtime_preview"
+
+
 class RunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -162,11 +165,18 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         workflow = compile_agent_workflow(agent_workflow)
         return {
             "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+            "runtime_boundary": LEGACY_RUNTIME_PREVIEW_BOUNDARY,
             "workflow": workflow.model_dump(mode="json", by_alias=True),
         }
 
     @app.post("/api/v2/agent-workflows/compile")
-    def compile_agent_workflow_endpoint(agent_workflow: dict[str, Any]) -> dict[str, Any]:
+    def compile_legacy_runtime_preview_endpoint(agent_workflow: dict[str, Any]) -> dict[str, Any]:
+        """Compile an AgentWorkflowSpec for legacy runtime preview only.
+
+        Product live AgentWorkflow runs use AgentGraphRunManager and do not
+        route through this legacy WorkflowSpec compiler.
+        """
+
         try:
             _raise_agent_workflow_validation(agent_workflow)
             spec = AgentWorkflowSpec.model_validate(agent_workflow)
@@ -177,6 +187,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "agent_workflow": spec.model_dump(mode="json", by_alias=True, exclude_none=True),
+            "runtime_boundary": LEGACY_RUNTIME_PREVIEW_BOUNDARY,
             "workflow": workflow.model_dump(mode="json", by_alias=True),
         }
 

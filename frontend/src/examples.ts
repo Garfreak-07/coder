@@ -58,6 +58,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
   }
 };
 
+// Legacy runtime preview fixture only. Product AgentWorkflow runs use AgentGraphRuntime.
 export function compileAgentWorkflow(spec: AgentWorkflowSpec): WorkflowSpec {
   const planner = requiredAgent(spec, "planner");
   const executor = requiredAgent(spec, "executor");

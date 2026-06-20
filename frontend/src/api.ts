@@ -115,13 +115,15 @@ export function getLiveRun(runId: string): Promise<LiveRunDetail> {
 
 export async function getDefaultAgentWorkflow(): Promise<{
   agent_workflow: AgentWorkflowSpec;
+  runtime_boundary: "legacy_runtime_preview";
   workflow: WorkflowSpec;
 }> {
   return requestJson("/api/v2/agent-workflows/default");
 }
 
-export async function compileAgentWorkflowRemote(agentWorkflow: AgentWorkflowSpec): Promise<{
+export async function compileLegacyRuntimePreview(agentWorkflow: AgentWorkflowSpec): Promise<{
   agent_workflow: AgentWorkflowSpec;
+  runtime_boundary: "legacy_runtime_preview";
   workflow: WorkflowSpec;
 }> {
   return requestJson("/api/v2/agent-workflows/compile", {
@@ -287,12 +289,16 @@ export function subscribeRunEvents(url: string, onEvent: (event: RunEvent) => vo
     "agent_graph.round.started",
     "planner.order.produced",
     "planner.plan_cached",
+    "agent_graph.wave.started",
     "agent_task.ready",
     "agent_task.started",
     "agent_task.completed",
+    "agent_task.failed",
     "agent_task.blocked",
     "join.waiting",
     "join.completed",
+    "resource.deferred",
+    "agent_graph.wave.completed",
     "test.local.completed",
     "test.final.completed",
     "planner.input_bundle.created",

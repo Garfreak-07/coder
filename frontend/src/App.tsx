@@ -15,7 +15,7 @@ import {
 } from "@xyflow/react";
 import {
   approveLiveRun,
-  compileAgentWorkflowRemote,
+  compileLegacyRuntimePreview,
   deleteRun,
   getCapabilities,
   getHealth,
@@ -436,7 +436,7 @@ export function App() {
       setStatus("Cannot compile legacy runtime preview until Agent workflow validation errors are fixed.");
       return null;
     }
-    const payload = await compileAgentWorkflowRemote(parsed);
+    const payload = await compileLegacyRuntimePreview(parsed);
     setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
     setStatus(successStatus);
     return payload;
@@ -504,7 +504,7 @@ export function App() {
     setStatus(`Loading Agent workflow ${workflowId}...`);
     try {
       const agentWorkflow = await getAgentWorkflow(workflowId);
-      const payload = await compileAgentWorkflowRemote(agentWorkflow);
+      const payload = await compileLegacyRuntimePreview(agentWorkflow);
       setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
       setStatus(`Loaded Agent workflow ${workflowId}`);
     } catch (error) {
@@ -549,7 +549,7 @@ export function App() {
         return;
       }
       const saved = await saveAgentWorkflow(parsed);
-      const payload = await compileAgentWorkflowRemote(saved);
+      const payload = await compileLegacyRuntimePreview(saved);
       setCurrentAgentWorkflow(payload.agent_workflow, payload.workflow);
       refreshLibrary();
       setStatus(`Saved Agent workflow ${saved.id}`);
@@ -592,7 +592,7 @@ export function App() {
       setCurrentWorkflow(parsed);
       setStatus("Legacy runtime JSON applied locally.");
     } catch (error) {
-      setStatus(error instanceof Error ? `Invalid runtime JSON: ${error.message}` : "Invalid runtime JSON");
+      setStatus(error instanceof Error ? `Invalid legacy runtime JSON: ${error.message}` : "Invalid legacy runtime JSON");
     }
   }
 
@@ -602,7 +602,7 @@ export function App() {
       const saved = await saveWorkflow(parsed);
       setCurrentWorkflow(saved);
       refreshLibrary();
-      setStatus(`Saved legacy runtime workflow ${saved.id}`);
+      setStatus(`Saved legacy runtime preview workflow ${saved.id}`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     }
@@ -612,9 +612,13 @@ export function App() {
     try {
       const parsed = JSON.parse(runtimeJsonText) as WorkflowSpec;
       downloadJson(`${parsed.id || "runtime-workflow"}.json`, parsed);
-      setStatus(`Exported legacy runtime workflow ${parsed.id || "runtime-workflow"}`);
+      setStatus(`Exported legacy runtime preview ${parsed.id || "runtime-workflow"}`);
     } catch (error) {
-      setStatus(error instanceof Error ? `Cannot export invalid runtime JSON: ${error.message}` : "Cannot export invalid runtime JSON");
+      setStatus(
+        error instanceof Error
+          ? `Cannot export invalid legacy runtime JSON: ${error.message}`
+          : "Cannot export invalid legacy runtime JSON"
+      );
     }
   }
 
@@ -1383,9 +1387,9 @@ export function App() {
             <summary>Legacy Runtime Preview JSON (Advanced)</summary>
             <div className="button-row">
               <button onClick={() => void compileRuntimePreview()}>Compile Legacy Preview</button>
-              <button onClick={applyRuntimeJson}>Apply runtime JSON</button>
-              <button onClick={persistRuntimeWorkflow}>Save runtime JSON</button>
-              <button onClick={exportRuntimeWorkflow}>Export runtime JSON</button>
+              <button onClick={applyRuntimeJson}>Apply Legacy Runtime JSON</button>
+              <button onClick={persistRuntimeWorkflow}>Save Legacy Runtime JSON</button>
+              <button onClick={exportRuntimeWorkflow}>Export Legacy Runtime JSON</button>
             </div>
             <textarea
               className="json-editor"
@@ -1398,7 +1402,7 @@ export function App() {
 
       <aside className="inspector">
         <section className="panel">
-          <div className="panel-title">{showAdvancedRuntime ? "Runtime Inspector" : "Agent Inspector"}</div>
+          <div className="panel-title">{showAdvancedRuntime ? "Legacy Runtime Inspector" : "Agent Inspector"}</div>
           {showAdvancedRuntime ? (
             selectedNode ? (
               <NodeInspector node={selectedNode} workflow={workflow} onChange={updateSelectedNode} />
@@ -1427,7 +1431,7 @@ export function App() {
         <section className="panel">
           {showAdvancedRuntime ? (
             <>
-              <div className="panel-title">Runtime Agents (Advanced Legacy)</div>
+              <div className="panel-title">Legacy Runtime Agents (Advanced)</div>
               <div className="button-row">
                 <button onClick={addAgent}>{t.inspector.addAgent}</button>
                 <button disabled={!selectedAgent} onClick={persistSelectedAgent}>
