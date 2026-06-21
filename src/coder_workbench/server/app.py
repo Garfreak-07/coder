@@ -340,6 +340,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         repo_root = resolve_existing_dir(body.repo)
         initial_data = _initial_data_from_request(body, repo_root)
         initial_data["agent_workflow"] = agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
+        initial_data["skill_index"] = build_skill_index(skill_store.list_installed()).model_dump(mode="json")
         live = agent_manager.start(
             agent_workflow=agent_workflow,
             repo_root=str(repo_root),

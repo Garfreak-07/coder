@@ -27,6 +27,10 @@ class GraphRunCache(BaseModel):
     execution_cache: dict[str, ExecutionRecord] = Field(default_factory=dict)
     test_cache: dict[str, list[TestRecord]] = Field(default_factory=dict)
     final_test_cache: FinalTestRecord | None = None
+    skill_index: dict[str, Any] | None = None
+    skill_routes: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    context_packets_v2: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    token_ledger: list[dict[str, Any]] = Field(default_factory=list)
     hidden_effects: list[dict[str, Any]] = Field(default_factory=list)
     hidden_effect_outputs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     interrupts: list[PlannerInputInterrupt] = Field(default_factory=list)
@@ -50,7 +54,9 @@ class GraphRunCache(BaseModel):
         *,
         planner_order_ref: str,
         upstream_refs: list[str] | None = None,
+        skill_route: dict[str, Any] | None = None,
     ) -> AgentTaskEnvelope:
+        route = skill_route or {}
         envelope = AgentTaskEnvelope(
             round=self.round,
             work_item_id=item.work_item_id,
@@ -63,10 +69,24 @@ class GraphRunCache(BaseModel):
             ],
             upstream_refs=upstream_refs or [],
             planner_order_ref=planner_order_ref,
+            allowed_skill_ids=list(route.get("allowed_skill_ids") or []),
+            loaded_skill_refs=list(route.get("loaded_skill_refs") or []),
+            omitted_skill_ids=list(route.get("omitted_skill_ids") or []),
+            estimated_skill_tokens=int(route.get("estimated_skill_tokens") or 0),
         )
         self.agent_tasks[item.work_item_id] = envelope
+        if skill_route is not None:
+            self.skill_routes[item.work_item_id] = skill_route
         self._set_work_item_status(item.work_item_id, "running")
         return envelope
+
+    def record_context_packet_v2(self, work_item_id: str, packet: dict[str, Any]) -> dict[str, Any]:
+        self.context_packets_v2[work_item_id] = packet
+        return packet
+
+    def record_token_ledger_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
+        self.token_ledger.append(entry)
+        return entry
 
     def record_execution(self, record: ExecutionRecord) -> ExecutionRecord:
         self.execution_cache[record.work_item_id] = record

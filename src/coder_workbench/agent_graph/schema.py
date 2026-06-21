@@ -81,6 +81,10 @@ class AgentTaskEnvelope(MergeIndexedModel):
     constraints: list[str] = Field(default_factory=list)
     upstream_refs: list[str] = Field(default_factory=list)
     planner_order_ref: str
+    allowed_skill_ids: list[str] = Field(default_factory=list)
+    loaded_skill_refs: list[str] = Field(default_factory=list)
+    omitted_skill_ids: list[str] = Field(default_factory=list)
+    estimated_skill_tokens: int = 0
 
 
 class ExecutionRecord(MergeIndexedModel):

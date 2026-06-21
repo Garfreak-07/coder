@@ -26,6 +26,7 @@ from coder_workbench.config import RuntimeConfig, load_runtime_config
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
 from coder_workbench.llm import create_chat_model
+from coder_workbench.skills.index import SkillIndex
 
 
 EmitEvent = Callable[..., None]
@@ -46,6 +47,7 @@ class AgentGraphExecutorProtocol(Protocol):
         previous_bundle: PlannerInputBundle | None = None,
         previous_round_summary: dict[str, Any] | None = None,
         planner_human_response: dict[str, Any] | None = None,
+        skill_index: SkillIndex | None = None,
         round_number: int = 1,
         emit: EmitEvent | None = None,
     ) -> PlannerOrder:
@@ -108,6 +110,7 @@ class AgentGraphExecutor:
         previous_bundle: PlannerInputBundle | None = None,
         previous_round_summary: dict[str, Any] | None = None,
         planner_human_response: dict[str, Any] | None = None,
+        skill_index: SkillIndex | None = None,
         round_number: int = 1,
         emit: EmitEvent | None = None,
     ) -> PlannerOrder:
@@ -120,6 +123,7 @@ class AgentGraphExecutor:
                 previous_bundle=previous_bundle,
                 previous_round_summary=previous_round_summary,
                 planner_human_response=planner_human_response,
+                skill_index=skill_index,
                 round_number=round_number,
             ),
             mock_payload=self._mock_planner_order_payload(request, round_number=round_number),

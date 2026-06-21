@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from inspect import signature
+from pathlib import Path
 from typing import Any
 
 from coder_workbench.agent_graph.artifacts import AgentGraphArtifactRecorder, graph_artifact_id
@@ -34,6 +35,16 @@ from coder_workbench.core import (
     assert_valid_agent_workflow,
 )
 from coder_workbench.runtime.state import RunEvent, RunResult, summarize_value
+from coder_workbench.skills import (
+    ContextPacketV2,
+    InstalledSkillStore,
+    SkillIndex,
+    SkillRouteDecision,
+    SkillRouter,
+    TokenLedgerEntry,
+    build_skill_index,
+    estimate_tokens,
+)
 
 
 @dataclass
@@ -103,6 +114,8 @@ class AgentGraphRunner:
             assert_valid_agent_workflow(self.agent_workflow)
             workflow_payload = self.agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
             data["agent_workflow"] = workflow_payload
+            skill_index = _skill_index_from_data_or_repo(data, repo_root)
+            data["skill_index"] = skill_index.model_dump(mode="json")
 
             emit(
                 "agent_graph.run.started",
@@ -110,6 +123,12 @@ class AgentGraphRunner:
                 workflow_id=self.agent_workflow.id,
                 repo_root=repo_root,
                 request=request,
+            )
+            emit(
+                "skill.index.available",
+                "Installed SkillIndex loaded",
+                skills=len(skill_index.skills),
+                enabled_skills=len(skill_index.enabled()),
             )
             max_rounds = _max_auto_rounds_from_workflow_or_data(self.agent_workflow, data)
             previous_bundle: PlannerInputBundle | None = None
@@ -178,6 +197,7 @@ class AgentGraphRunner:
                     previous_bundle=previous_bundle,
                     previous_round_summary=previous_round_summary,
                     planner_human_response=planner_human_response if round_number == start_round else None,
+                    skill_index=skill_index,
                 )
                 action = outcome.planner_decision["next_action"]
                 if action == "continue":
@@ -255,6 +275,7 @@ class AgentGraphRunner:
         previous_bundle: PlannerInputBundle | None,
         previous_round_summary: dict[str, Any] | None,
         planner_human_response: dict[str, Any] | None,
+        skill_index: SkillIndex,
     ) -> RoundOutcome:
         emit(
             "agent_graph.round.started",
@@ -264,7 +285,7 @@ class AgentGraphRunner:
             primary_planner_id=self.agent_workflow.primary_planner_id,
         )
 
-        cache = GraphRunCache(round=round_number)
+        cache = GraphRunCache(round=round_number, skill_index=skill_index.model_dump(mode="json"))
         planner_order = (
             self._planner_order_from_initial_data(data)
             if round_number == 1 and previous_bundle is None
@@ -274,6 +295,7 @@ class AgentGraphRunner:
             previous_bundle=previous_bundle,
             previous_round_summary=previous_round_summary,
             planner_human_response=planner_human_response,
+            skill_index=skill_index,
             round_number=round_number,
             emit=emit,
         )
@@ -376,7 +398,15 @@ class AgentGraphRunner:
                         work_item_id=item.work_item_id,
                         depends_on=item.depends_on,
                     )
-                envelope = self._start_work_item(cache, item, planner_order_ref, emit)
+                envelope = self._start_work_item(
+                    cache,
+                    item,
+                    planner_order_ref,
+                    emit,
+                    request=request,
+                    skill_index=skill_index,
+                    run_id=str(data.get("run_id") or ""),
+                )
                 task_contexts.append({"item": item, "envelope": envelope})
             outcomes = self._run_wave(wave, task_contexts)
             for outcome in outcomes:
@@ -495,6 +525,7 @@ class AgentGraphRunner:
                 status=final_test.status,
             )
         data["graph_run_cache"] = cache.as_runtime_payload()
+        data.setdefault("token_ledger", []).extend(cache.token_ledger)
 
         planner_input_bundle = build_planner_input_bundle(cache)
         planner_input_bundle_ref = graph_artifact_id("planner_input_bundle", "round", cache.round)
@@ -603,7 +634,7 @@ class AgentGraphRunner:
             summaries={key: summarize_value(value) for key, value in data.items()},
             artifacts=artifacts,
             events=events,
-            estimated_tokens_used=0,
+            estimated_tokens_used=_estimated_tokens_used(data),
             agent_calls=0,
             tool_calls=0,
             blocked_node_id=blocked_node_id,
@@ -648,12 +679,62 @@ class AgentGraphRunner:
         item: Any,
         planner_order_ref: str,
         emit: Any,
+        request: str,
+        skill_index: SkillIndex,
+        run_id: str,
     ) -> Any:
         upstream_refs = upstream_refs_for_item(cache, item)
+        route = SkillRouter(skill_index).select(
+            user_request=request,
+            work_item=item,
+            role=self._agent_role(item.assignee_agent_id),
+        ) if skill_index.skills else SkillRouteDecision(work_item_id=item.work_item_id)
         envelope = cache.create_agent_task(
             item,
             planner_order_ref=planner_order_ref,
             upstream_refs=upstream_refs,
+            skill_route=route.model_dump(mode="json"),
+        )
+        packet = _context_packet_v2(
+            envelope=envelope,
+            route=route,
+            skill_index=skill_index,
+            artifact_type="execution_result",
+        )
+        ledger_entry = _token_ledger_entry(
+            run_id=run_id,
+            round_number=cache.round,
+            envelope=envelope,
+            route=route,
+            skill_index=skill_index,
+            packet=packet,
+        )
+        cache.record_context_packet_v2(item.work_item_id, packet.model_dump(mode="json"))
+        cache.record_token_ledger_entry(ledger_entry.model_dump(mode="json"))
+        emit(
+            "skill.route.selected",
+            "SkillRouter selected skills for work item",
+            round=cache.round,
+            work_item_id=item.work_item_id,
+            assigned_agent_id=item.assignee_agent_id,
+            allowed_skill_ids=route.allowed_skill_ids,
+            omitted_skill_ids=route.omitted_skill_ids,
+            estimated_skill_tokens=route.estimated_skill_tokens,
+            scores=route.scores,
+        )
+        emit(
+            "agent.context_packet_v2",
+            "ContextPacketV2 prepared for work item",
+            round=cache.round,
+            work_item_id=item.work_item_id,
+            packet=packet.model_dump(mode="json"),
+        )
+        emit(
+            "token.ledger.entry",
+            "Token ledger entry recorded",
+            round=cache.round,
+            work_item_id=item.work_item_id,
+            entry=ledger_entry.model_dump(mode="json"),
         )
         emit(
             "agent_task.ready",
@@ -671,6 +752,12 @@ class AgentGraphRunner:
             envelope=envelope.model_dump(mode="json"),
         )
         return envelope
+
+    def _agent_role(self, agent_id: str) -> str:
+        for agent in self.agent_workflow.agents:
+            if agent.id == agent_id:
+                return agent.role
+        return ""
 
     def _run_wave(self, wave: ReadyWave, task_contexts: list[dict[str, Any]]) -> list[WorkItemOutcome]:
         outcomes: list[WorkItemOutcome] = []
@@ -826,20 +913,23 @@ class AgentGraphRunner:
         previous_bundle: PlannerInputBundle | None,
         previous_round_summary: dict[str, Any] | None,
         planner_human_response: dict[str, Any] | None,
+        skill_index: SkillIndex,
         round_number: int,
         emit: Any,
     ) -> PlannerOrder:
         parameters = signature(self.executor.create_planner_order).parameters
         if "previous_bundle" not in parameters:
             return self.executor.create_planner_order(request, emit=emit)
-        return self.executor.create_planner_order(
-            request,
-            previous_bundle=previous_bundle,
-            previous_round_summary=previous_round_summary,
-            planner_human_response=planner_human_response,
-            round_number=round_number,
-            emit=emit,
-        )
+        kwargs = {
+            "previous_bundle": previous_bundle,
+            "previous_round_summary": previous_round_summary,
+            "planner_human_response": planner_human_response,
+            "round_number": round_number,
+            "emit": emit,
+        }
+        if "skill_index" in parameters:
+            kwargs["skill_index"] = skill_index
+        return self.executor.create_planner_order(request, **kwargs)
 
     def _planner_order_from_initial_data(self, data: dict[str, Any]) -> PlannerOrder | None:
         value = data.get("planner_order")
@@ -915,3 +1005,93 @@ def _scopes_from_data(data: dict[str, Any]) -> list[str]:
     if isinstance(scopes, str) and scopes.strip():
         return [scopes.strip()]
     return []
+
+
+def _skill_index_from_data_or_repo(data: dict[str, Any], repo_root: str) -> SkillIndex:
+    value = data.get("skill_index")
+    if isinstance(value, dict):
+        return SkillIndex.model_validate(value)
+    if isinstance(value, list):
+        return SkillIndex.model_validate({"skills": value})
+    try:
+        return build_skill_index(InstalledSkillStore(Path(repo_root) / ".coder").list_installed())
+    except Exception:
+        return SkillIndex()
+
+
+def _context_packet_v2(
+    *,
+    envelope: Any,
+    route: SkillRouteDecision,
+    skill_index: SkillIndex,
+    artifact_type: str,
+) -> ContextPacketV2:
+    omitted_refs = [f"skill:{skill_id}:SKILL.md" for skill_id in route.omitted_skill_ids]
+    estimated_omitted = _skill_tokens_for_ids(skill_index, route.omitted_skill_ids)
+    estimated_input = (
+        estimate_tokens(envelope.task_summary)
+        + estimate_tokens(" ".join(envelope.upstream_refs))
+        + estimate_tokens(envelope.planner_order_ref)
+        + route.estimated_skill_tokens
+    )
+    total_skill_tokens = route.estimated_skill_tokens + estimated_omitted
+    compression_ratio = 0.0 if total_skill_tokens == 0 else round(route.estimated_skill_tokens / total_skill_tokens, 4)
+    return ContextPacketV2(
+        agent_id=envelope.assigned_agent_id,
+        work_item_id=envelope.work_item_id,
+        artifact_type=artifact_type,
+        included_skill_ids=route.allowed_skill_ids,
+        included_refs=[*route.loaded_skill_refs, *envelope.upstream_refs, envelope.planner_order_ref],
+        omitted_skill_ids=route.omitted_skill_ids,
+        omitted_refs=omitted_refs,
+        estimated_input_tokens=estimated_input,
+        estimated_omitted_tokens=estimated_omitted,
+        compression_ratio=compression_ratio,
+    )
+
+
+def _token_ledger_entry(
+    *,
+    run_id: str,
+    round_number: int,
+    envelope: Any,
+    route: SkillRouteDecision,
+    skill_index: SkillIndex,
+    packet: ContextPacketV2,
+) -> TokenLedgerEntry:
+    upstream_tokens = estimate_tokens(" ".join(envelope.upstream_refs))
+    return TokenLedgerEntry(
+        run_id=run_id,
+        round=round_number,
+        agent_id=envelope.assigned_agent_id,
+        work_item_id=envelope.work_item_id,
+        artifact_type="execution_result",
+        estimated_input_tokens=packet.estimated_input_tokens,
+        skill_tokens_available=_skill_tokens_available(skill_index),
+        skill_tokens_loaded=route.estimated_skill_tokens,
+        upstream_tokens_loaded=upstream_tokens,
+        omitted_tokens=packet.estimated_omitted_tokens,
+        compression_ratio=packet.compression_ratio,
+    )
+
+
+def _skill_tokens_available(skill_index: SkillIndex) -> int:
+    return sum(skill.max_skill_tokens for skill in skill_index.enabled())
+
+
+def _skill_tokens_for_ids(skill_index: SkillIndex, skill_ids: list[str]) -> int:
+    selected = set(skill_ids)
+    return sum(skill.max_skill_tokens for skill in skill_index.enabled() if skill.id in selected)
+
+
+def _estimated_tokens_used(data: dict[str, Any]) -> int:
+    entries = data.get("token_ledger")
+    if not isinstance(entries, list):
+        return 0
+    total = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        total += int(entry.get("estimated_input_tokens") or 0)
+        total += int(entry.get("estimated_output_tokens") or 0)
+    return total

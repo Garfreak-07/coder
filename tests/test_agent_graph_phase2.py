@@ -11,6 +11,7 @@ from coder_workbench.agent_graph.runner import AgentGraphRunner
 from coder_workbench.agent_graph.schema import ExecutionRecord, PlannerOrder, TestRecord, WorkItem
 from coder_workbench.core import AgentWorkflowSpec, default_planner_led_agent_workflow
 from coder_workbench.server.storage import RunStore
+from coder_workbench.skills import SkillIndex, SkillIndexEntry
 
 
 class AgentGraphSchemaTests(unittest.TestCase):
@@ -199,6 +200,31 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         self.assertIn("test_result_final_final_tester", result.artifacts)
         self.assertIn("test.final.completed", {event.type for event in result.events})
 
+    def test_runner_routes_installed_skills_into_task_envelope_and_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = AgentGraphRunner(default_planner_led_agent_workflow()).run(
+                "Research GitHub repositories for comparable tools.",
+                tmp,
+                initial_data={"skill_index": _skill_index().model_dump(mode="json")},
+            )
+
+        self.assertEqual(result.status, "completed")
+        cache = result.data["graph_run_cache"]
+        task = cache["agent_tasks"]["executor-work"]
+        self.assertEqual(task["allowed_skill_ids"], ["github-research"])
+        self.assertEqual(task["loaded_skill_refs"], ["skill:github-research:SKILL.md"])
+        self.assertEqual(cache["skill_routes"]["executor-work"]["allowed_skill_ids"], ["github-research"])
+        self.assertEqual(
+            cache["context_packets_v2"]["executor-work"]["included_skill_ids"],
+            ["github-research"],
+        )
+        self.assertEqual(cache["token_ledger"][0]["skill_tokens_loaded"], 1200)
+        self.assertEqual(result.data["token_ledger"][0]["work_item_id"], "executor-work")
+        self.assertGreater(result.estimated_tokens_used, 0)
+        self.assertIn("skill.route.selected", {event.type for event in result.events})
+        self.assertIn("agent.context_packet_v2", {event.type for event in result.events})
+        self.assertIn("token.ledger.entry", {event.type for event in result.events})
+
 def _workflow_with_final_tester() -> AgentWorkflowSpec:
     payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
     payload["agents"].extend(
@@ -230,6 +256,26 @@ def _workflow_with_final_tester() -> AgentWorkflowSpec:
         {"from": "final_tester", "to": "planner", "loop": True},
     ]
     return AgentWorkflowSpec.model_validate(payload)
+
+
+def _skill_index() -> SkillIndex:
+    return SkillIndex(
+        skills=[
+            SkillIndexEntry(
+                id="github-research",
+                name="GitHub Research",
+                description="Search and compare open-source GitHub repositories.",
+                when_to_use=["github", "repository", "research"],
+                category="research",
+                risk_level="low",
+                produces=["source_collection"],
+                requires=["search_query"],
+                connectors=["github_readonly"],
+                trust_level="official",
+                max_skill_tokens=1200,
+            )
+        ]
+    )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from typing import Any
 
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, PlannerInputBundle, WorkItem
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec
+from coder_workbench.skills.index import SkillIndex
 
 
 def build_planner_order_prompt(
@@ -14,6 +15,7 @@ def build_planner_order_prompt(
     previous_bundle: PlannerInputBundle | None = None,
     previous_round_summary: dict[str, Any] | None = None,
     planner_human_response: dict[str, Any] | None = None,
+    skill_index: SkillIndex | None = None,
     round_number: int = 1,
 ) -> str:
     parts = [
@@ -33,6 +35,14 @@ def build_planner_order_prompt(
         "AgentWorkflow JSON:",
         _compact_json(_workflow_summary(agent_workflow)),
     ]
+    if skill_index and skill_index.skills:
+        parts.extend(
+            [
+                "Installed SkillIndex JSON:",
+                _compact_json(skill_index.model_dump(mode="json")),
+                "Use the SkillIndex for capability awareness, but do not paste Skill bodies into PlannerOrder.",
+            ]
+        )
     if previous_bundle:
         parts.extend(["Previous PlannerInputBundle JSON:", _compact_json(previous_bundle.model_dump(mode="json", exclude_none=True))])
     if previous_round_summary:

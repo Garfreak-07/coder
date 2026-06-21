@@ -9,6 +9,7 @@ from coder_workbench.agent_graph.runner import AgentGraphRunner
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, PlannerOrder, WorkItem
 from coder_workbench.core import default_planner_led_agent_workflow
 from coder_workbench.server.settings import ProviderSettings
+from coder_workbench.skills import SkillIndex, SkillIndexEntry
 
 
 class FakeResponse:
@@ -78,6 +79,25 @@ class AgentGraphExecutorTests(unittest.TestCase):
 
         self.assertEqual(order.plan_graph.work_items[0].work_item_id, "executor-work")
         self.assertEqual(order.plan_graph.work_items[0].tester_agent_ids, ["tester"])
+
+    def test_planner_order_prompt_includes_compact_skill_index(self) -> None:
+        model = FakeChatModel(
+            [
+                (
+                    '{"artifact_type":"planner_order","round":1,"round_goal":"Research",'
+                    '"plan_graph":{"work_items":[{"work_item_id":"executor-work","merge_index":1,'
+                    '"assignee_agent_id":"executor","task_summary":"Do it","depends_on":[],'
+                    '"tester_agent_ids":["tester"]}]}}'
+                )
+            ]
+        )
+        executor = _executor(model)
+
+        executor.create_planner_order("Research", skill_index=_skill_index())
+
+        self.assertIn("Installed SkillIndex JSON", model.prompts[0])
+        self.assertIn("github-research", model.prompts[0])
+        self.assertNotIn("# GitHub Research", model.prompts[0])
 
     def test_valid_worker_json_becomes_execution_record(self) -> None:
         model = FakeChatModel(
@@ -257,6 +277,26 @@ def _planner_bundle():
         planner_order_ref="planner_order_round_1",
         plan_status="completed",
         items=[],
+    )
+
+
+def _skill_index() -> SkillIndex:
+    return SkillIndex(
+        skills=[
+            SkillIndexEntry(
+                id="github-research",
+                name="GitHub Research",
+                description="Search and compare open-source GitHub repositories.",
+                when_to_use=["github", "repository", "research"],
+                category="research",
+                risk_level="low",
+                produces=["source_collection"],
+                requires=["search_query"],
+                connectors=["github_readonly"],
+                trust_level="official",
+                max_skill_tokens=1200,
+            )
+        ]
     )
 
 

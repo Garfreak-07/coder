@@ -1,6 +1,7 @@
 from .context import ContextPacketV2, SkillContextRef, build_skill_context_refs
 from .index import SkillIndex, SkillIndexEntry, build_skill_index
 from .installer import SkillInstallResult, SkillInstaller
+from .ledger import TokenLedgerEntry, estimate_tokens
 from .registry_client import RegistryClient, RegistryClientError
 from .router import SkillRouteDecision, SkillRouter, select_skills_for_work_item
 from .schema import (
@@ -33,8 +34,10 @@ __all__ = [
     "SkillRouter",
     "SkillSummary",
     "SkillVerificationError",
+    "TokenLedgerEntry",
     "build_skill_context_refs",
     "build_skill_index",
+    "estimate_tokens",
     "select_skills_for_work_item",
     "sha256_digest",
     "verify_sha256",
