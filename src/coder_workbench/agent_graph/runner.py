@@ -68,6 +68,12 @@ class AgentGraphRuntimeError(ValueError):
         super().__init__(message)
 
 
+class AgentGraphBlocked(ValueError):
+    def __init__(self, message: str, *, status_code: str) -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
 class AgentGraphRunner:
     """AgentWorkflow runtime boundary.
 
@@ -133,6 +139,8 @@ class AgentGraphRunner:
             self.agent_run.action_gateway = self.action_gateway
         if hasattr(self.agent_run, "run_id"):
             self.agent_run.run_id = run_id
+        if hasattr(self.agent_run, "initial_data"):
+            self.agent_run.initial_data = data
 
         def emit(event_type: str, message: str, **payload: Any) -> None:
             span = payload.pop("_span", None) or run_span
@@ -298,6 +306,7 @@ class AgentGraphRunner:
                     skill_store_root=skill_store_root,
                     trace_context=trace,
                     parent_span=run_span,
+                    controller=controller,
                 )
                 estimated_tokens_used = _estimated_tokens_used(data)
                 controller.record_round(
@@ -350,6 +359,12 @@ class AgentGraphRunner:
                 status_code = "max_auto_rounds_reached"
                 blocked_node_id = self.agent_workflow.primary_planner_id
                 result_resume_checkpoint = {"data": data}
+        except AgentGraphBlocked as exc:
+            status = "blocked"
+            status_reason = str(exc)
+            status_code = str(getattr(exc, "status_code", "agent_graph_blocked"))
+            blocked_node_id = self.agent_workflow.primary_planner_id
+            result_resume_checkpoint = {"data": data}
         except Exception as exc:  # pragma: no cover - boundary safety
             status = "failed"
             status_reason = str(exc)
@@ -380,6 +395,7 @@ class AgentGraphRunner:
         skill_store_root: Path,
         trace_context: TraceContext,
         parent_span: TraceSpan,
+        controller: RunController,
     ) -> RoundOutcome:
         round_span = trace_context.start_span(
             name=f"round:{round_number}",
@@ -441,6 +457,42 @@ class AgentGraphRunner:
             round=round_number,
             work_items=len(plan_cache.work_items),
         )
+        preflight_report = self.budget_broker.preflight_round(
+            run_id=str(data.get("run_id") or self.agent_workflow.id),
+            planner_order=planner_order,
+            estimated_model_calls=_round_preflight_model_calls(
+                planner_order,
+                runtime_settings=self.runtime_settings,
+                data=data,
+            ),
+            estimated_tool_calls=_round_preflight_tool_calls(data),
+            estimated_context_tokens_per_call=_round_preflight_context_tokens_per_call(data),
+        )
+        preflight_payload = preflight_report.as_dict()
+        data.setdefault("budget_preflight", []).append(preflight_payload)
+        data["budget_preflight_latest"] = preflight_payload
+        emit(
+            "budget.preflight.checked",
+            "Round budget preflight checked",
+            round=round_number,
+            approved=preflight_report.approved,
+            reason=preflight_report.reason,
+            estimated_contexts=preflight_report.estimated_contexts,
+            estimated_model_calls=preflight_report.estimated_model_calls,
+            estimated_tool_calls=preflight_report.estimated_tool_calls,
+            remaining=preflight_report.remaining,
+        )
+        preflight_decision = controller.evaluate_budget_preflight(preflight_report)
+        if preflight_decision.action == "blocked":
+            status_code = preflight_decision.status_code or "round_budget_preflight_denied"
+            emit(
+                "agent_graph.run.blocked",
+                "Agent graph blocked by budget preflight",
+                code=status_code,
+                round=round_number,
+                budget_preflight=preflight_payload,
+            )
+            raise AgentGraphBlocked(preflight_decision.reason, status_code=status_code)
 
         scheduler = AgentGraphScheduler(
             planner_order.plan_graph.work_items,
@@ -1473,6 +1525,65 @@ def _budget_limit_from_data(data: dict[str, Any]) -> BudgetLimit:
     if isinstance(budget_data, dict):
         return BudgetLimit.model_validate(budget_data)
     return BudgetLimit()
+
+
+def _round_preflight_model_calls(planner_order: PlannerOrder, *, runtime_settings: Any | None, data: dict[str, Any]) -> int:
+    override = data.get("budget_preflight_model_calls")
+    if override is not None:
+        try:
+            return max(0, int(override))
+        except (TypeError, ValueError):
+            return 0
+    if not _live_model_enabled(runtime_settings):
+        return 0
+    work_items = list(planner_order.plan_graph.work_items)
+    calls = len(work_items)
+    calls += sum(len(item.tester_agent_ids) for item in work_items)
+    if planner_order.plan_graph.final_tester_agent_id:
+        calls += 1
+    if not _replay_planner_decision_available(data):
+        calls += 1
+    return calls
+
+
+def _round_preflight_tool_calls(data: dict[str, Any]) -> int:
+    value = data.get("budget_preflight_tool_calls")
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _round_preflight_context_tokens_per_call(data: dict[str, Any]) -> int:
+    value = data.get("budget_preflight_context_tokens_per_call")
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _replay_planner_decision_available(data: dict[str, Any]) -> bool:
+    return str(data.get("planner_mode") or "").strip().lower() == "replay" and isinstance(data.get("planner_decision"), dict)
+
+
+def _live_model_enabled(runtime_settings: Any | None) -> bool:
+    try:
+        if runtime_settings is not None:
+            from coder_workbench.config import RuntimeConfig
+            from coder_workbench.server.settings import resolve_settings_config
+
+            values = resolve_settings_config(runtime_settings, None, None)
+            return RuntimeConfig(
+                provider=str(values["provider"]),
+                model=str(values["model"]),
+                api_key=values["api_key"],
+                base_url=values["base_url"],
+            ).has_llm_credentials
+        from coder_workbench.config import load_runtime_config
+
+        return load_runtime_config().has_llm_credentials
+    except Exception:
+        return False
 
 
 def _scopes_from_data(data: dict[str, Any]) -> list[str]:

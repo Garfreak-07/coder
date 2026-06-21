@@ -96,6 +96,22 @@ class RunController:
             return guard_decision
         return RunControllerDecision(action="continue", reason=reason)
 
+    def evaluate_budget_preflight(self, report: Any) -> RunControllerDecision:
+        approved = bool(getattr(report, "approved", False))
+        if isinstance(report, dict):
+            approved = bool(report.get("approved"))
+            reason = str(report.get("reason") or "")
+        else:
+            reason = str(getattr(report, "reason", "") or "")
+        if approved:
+            return RunControllerDecision(action="continue")
+        status_code = reason or "round_budget_preflight_denied"
+        return RunControllerDecision(
+            action="blocked",
+            reason=f"Round budget preflight denied: {status_code}.",
+            status_code=status_code,
+        )
+
     def _guard_decision(self, *, round_number: int | None, reason: str) -> RunControllerDecision | None:
         active_round = round_number if round_number is not None else (self.rounds[-1].round if self.rounds else 0)
         if active_round >= self.guard.max_rounds:

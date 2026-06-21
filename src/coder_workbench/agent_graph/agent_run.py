@@ -4,6 +4,11 @@ from typing import Any
 
 from coder_workbench.actions import ActionGateway
 from coder_workbench.agent_engine import AgentEngineRegistry, default_agent_engine_registry
+from coder_workbench.agent_graph.planner_strategy import (
+    PlannerStrategyContext,
+    planner_mode_from,
+    planner_strategy_for_mode,
+)
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, WorkItem
 from coder_workbench.agent_model import RuntimeProfileCache, RuntimeProfileCompiler, recipe_from_workflow_agent
 from coder_workbench.budget import BudgetBroker
@@ -30,6 +35,7 @@ class AgentRun:
         budget_broker: BudgetBroker | None = None,
         action_gateway: ActionGateway | None = None,
         run_id: str | None = None,
+        initial_data: dict[str, Any] | None = None,
     ) -> None:
         self.agent_workflow = agent_workflow
         self.engine_registry = engine_registry or default_agent_engine_registry()
@@ -40,6 +46,7 @@ class AgentRun:
         self.budget_broker = budget_broker
         self.action_gateway = action_gateway
         self.run_id = run_id
+        self.initial_data = initial_data or {}
 
     def run_planner_order(
         self,
@@ -53,6 +60,24 @@ class AgentRun:
         round_number: int = 1,
         emit: Any | None = None,
     ) -> Any:
+        mode = self._planner_mode()
+        strategy = planner_strategy_for_mode(mode)
+        order = strategy.create_order(
+            PlannerStrategyContext(
+                agent_workflow=self.agent_workflow,
+                request=request,
+                round_number=round_number,
+                previous_bundle=previous_bundle,
+                previous_round_summary=previous_round_summary,
+                planner_human_response=planner_human_response,
+                skill_index=skill_index,
+                repo_intelligence=repo_intelligence,
+                initial_data=self.initial_data,
+            )
+        )
+        if order is not None:
+            self._emit_strategy_used(emit, mode, "planner_order", round_number)
+            return order
         return self.engine_registry.planner().run_planner_order(
             request,
             agent_workflow=self.agent_workflow,
@@ -152,6 +177,20 @@ class AgentRun:
         planner_human_response: dict[str, Any] | None = None,
         emit: Any | None = None,
     ) -> dict[str, Any]:
+        mode = self._planner_mode()
+        strategy = planner_strategy_for_mode(mode)
+        decision = strategy.create_decision(
+            PlannerStrategyContext(
+                agent_workflow=self.agent_workflow,
+                round_number=getattr(bundle, "round", 1),
+                planner_human_response=planner_human_response,
+                initial_data=self.initial_data,
+                bundle=bundle,
+            )
+        )
+        if decision is not None:
+            self._emit_strategy_used(emit, mode, "planner_decision", int(getattr(bundle, "round", 1) or 1))
+            return decision
         return self.engine_registry.planner().run_planner_decision(
             agent_workflow=self.agent_workflow,
             bundle=bundle,
@@ -188,3 +227,17 @@ class AgentRun:
                 base_url=values["base_url"],
             )
         return load_runtime_config()
+
+    def _planner_mode(self) -> str:
+        return planner_mode_from(self.initial_data, self.runtime_settings)
+
+    def _emit_strategy_used(self, emit: Any | None, mode: str, artifact_type: str, round_number: int) -> None:
+        if emit is None:
+            return
+        emit(
+            "planner.strategy.used",
+            "PlannerStrategy produced local artifact",
+            planner_mode=mode,
+            artifact_type=artifact_type,
+            round=round_number,
+        )

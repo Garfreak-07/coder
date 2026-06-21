@@ -235,6 +235,53 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, "model_call_budget_exceeded")
         self.assertFalse(model.invoked)
 
+    def test_round_budget_preflight_blocks_before_worker_wave(self) -> None:
+        model = CountingChatModel(
+            [
+                (
+                    '{"artifact_type":"planner_order","round":1,"round_goal":"Stay inside budget.",'
+                    '"plan_graph":{"work_items":[{"work_item_id":"budget-work","merge_index":1,'
+                    '"assignee_agent_id":"executor","task_summary":"Implement within budget.",'
+                    '"depends_on":[],"tester_agent_ids":["tester"]}]}}'
+                )
+            ]
+        )
+        settings = ProviderSettings(
+            default_provider="openai",
+            default_model="fake-model",
+            api_keys={"openai": "test-key"},
+            mock_mode=False,
+        )
+        workflow = default_planner_led_agent_workflow()
+        agent_run = AgentRun(
+            workflow,
+            runtime_settings=settings,
+            model_factory=lambda config: model,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = AgentGraphRunner(
+                workflow,
+                runtime_settings=settings,
+                agent_run=agent_run,
+            ).run(
+                "Stay inside budget.",
+                tmp,
+                initial_data={"budget_limit": {"max_model_calls": 1}},
+            )
+
+        event_types = {event.type for event in result.events}
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.status_code, "round_model_call_budget_exceeded")
+        self.assertEqual(model.invocation_count, 1)
+        self.assertIn("planner.order.produced", event_types)
+        self.assertNotIn("agent_graph.wave.started", event_types)
+        self.assertNotIn("action.started", event_types)
+        self.assertIn("budget_preflight", result.data)
+        self.assertFalse(result.data["budget_preflight"][0]["approved"])
+        self.assertEqual(result.data["budget_preflight"][0]["reason"], "round_model_call_budget_exceeded")
+
     def test_model_artifact_validation_and_repair_route_through_action_gateway(self) -> None:
         class InvalidModel:
             def invoke(self, prompt: str):
@@ -293,6 +340,64 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("Apply Legacy Runtime JSON", app_source)
         self.assertNotIn("View legacy runtime preview", app_source)
         self.assertNotIn("onChange={(event) => toggleCapability", agent_inspector_source)
+
+        frontend_root = Path(__file__).parents[1] / "frontend" / "src"
+        frontend_source = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in frontend_root.rglob("*")
+            if path.suffix in {".ts", ".tsx"}
+        )
+        self.assertNotIn("planner_mode", frontend_source)
+        self.assertNotIn("PlannerStrategy", frontend_source)
+        self.assertNotIn("planner strategy", frontend_source)
+        self.assertNotIn("single_worker", frontend_source)
+
+    def test_single_worker_planner_strategy_preserves_control_plane_path(self) -> None:
+        execution_calls: list[str] = []
+        action_types: list[str] = []
+        original_execution = AgentRun.run_execution
+        original_gateway_run = ActionGateway.run
+
+        def tracking_execution(self: AgentRun, *args: Any, **kwargs: Any):
+            item = kwargs["item"]
+            execution_calls.append(item.work_item_id)
+            return original_execution(self, *args, **kwargs)
+
+        def tracking_gateway(self: ActionGateway, spec, *, run_context):
+            action_types.append(spec.action_type)
+            return original_gateway_run(self, spec, run_context=run_context)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(AgentRun, "run_execution", tracking_execution),
+                patch.object(ActionGateway, "run", tracking_gateway),
+            ):
+                result = AgentGraphRunner(default_planner_led_agent_workflow()).run(
+                    "Run a single worker local plan.",
+                    tmp,
+                    initial_data={"planner_mode": "single_worker"},
+                )
+
+        event_types = {event.type for event in result.events}
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(execution_calls, ["executor-work"])
+        self.assertIn("build_context", action_types)
+        self.assertNotIn("propose_patch", action_types)
+        self.assertNotIn("run_command_sandbox", action_types)
+        self.assertIn("planner_order", result.data)
+        self.assertIn("planner_input_bundle", result.data)
+        self.assertIn("planner_decision", result.data)
+        self.assertEqual(result.data["planner_order"]["plan_graph"]["work_items"][0]["assignee_agent_id"], "executor")
+        self.assertEqual(result.data["planner_decision"]["next_action"], "finish")
+        self.assertIn("planner.strategy.used", event_types)
+
+    def test_planner_strategy_module_does_not_call_low_level_effects(self) -> None:
+        source = inspect.getsource(__import__("coder_workbench.agent_graph.planner_strategy", fromlist=["_"]))
+
+        self.assertNotIn("ActionGateway", source)
+        self.assertNotIn("propose_patch", source)
+        self.assertNotIn("run_command_sandbox", source)
 
     def test_legacy_live_runs_endpoint_is_marked_deprecated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -446,6 +551,27 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CountingResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class CountingChatModel:
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.prompts: list[str] = []
+
+    @property
+    def invocation_count(self) -> int:
+        return len(self.prompts)
+
+    def invoke(self, prompt: str) -> CountingResponse:
+        self.prompts.append(prompt)
+        if not self.responses:
+            raise AssertionError("model should not be invoked again")
+        return CountingResponse(self.responses.pop(0))
 
 
 def _workflow_with_final_tester() -> AgentWorkflowSpec:

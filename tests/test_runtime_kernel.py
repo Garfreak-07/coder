@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from coder_workbench.agent_graph.schema import PlannerOrder
 from coder_workbench.runtime_kernel import RunController, RunGuard, fingerprint_planner_order
@@ -91,6 +92,18 @@ class RunControllerTests(unittest.TestCase):
         self.assertEqual(diagnostics["estimated_tokens"], 30)
         self.assertEqual(diagnostics["rounds"][0]["round"], 1)
         self.assertTrue(diagnostics["rounds"][0]["plan_fingerprint"])
+
+    def test_budget_preflight_decision_maps_denial_to_blocked(self) -> None:
+        controller = RunController()
+
+        allowed = controller.evaluate_budget_preflight(SimpleNamespace(approved=True, reason=""))
+        denied = controller.evaluate_budget_preflight(
+            SimpleNamespace(approved=False, reason="round_model_call_budget_exceeded")
+        )
+
+        self.assertEqual(allowed.action, "continue")
+        self.assertEqual(denied.action, "blocked")
+        self.assertEqual(denied.status_code, "round_model_call_budget_exceeded")
 
 
 if __name__ == "__main__":

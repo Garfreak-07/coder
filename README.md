@@ -6,7 +6,7 @@ Coder is built around an AgentGraph runtime where Planner owns global decisions,
 Code Worker performs bounded implementation work, Tester returns evidence, and
 the runtime passes compact structured artifacts instead of transcripts.
 
-The current architecture target is v0.9.3 control-plane hardening:
+The current architecture target is v0.9.4 local planning and budget preflight:
 
 ```text
 Ordinary Agent workflow UI
@@ -15,9 +15,10 @@ Ordinary Agent workflow UI
 -> RunController / RunGuard
 -> AgentGraphRunner / AgentGraphScheduler
 -> ActionGateway
--> BudgetBroker
+-> BudgetBroker round preflight + reservations
 -> ContextService
 -> AgentRun
+-> PlannerStrategy
 -> AgentEngineRegistry
 -> PlannerEngine / CodeWorkerEngine / TesterEngine / FinalReviewEngine / SynthesizerEngine
 -> patch_preview / sandbox_apply / check_result / DebugFinding refs
@@ -62,6 +63,7 @@ Product Agent workflow runs use:
 AgentWorkflowSpec
 -> PlannerOrder.plan_graph
 -> RunController / RunGuard
+-> BudgetBroker round preflight
 -> GraphRunCache
 -> ActionGateway
 -> AgentTaskEnvelope
@@ -111,9 +113,11 @@ retained only for old `WorkflowSpec` flows.
 - `ContextService` builds `ContextPacketV2`, selects skill context, prepares
   coding context packets, and writes token ledger entries.
 - `RunController` owns PlannerDecision loop control, max rounds, and repeated
-  plan fingerprint guards, and writes run diagnostics.
-- `BudgetBroker` reserves model, tool, and context budgets before execution.
-  Reservation diagnostics are written to run results.
+  plan fingerprint guards. It also maps round budget preflight denials into
+  blocked run decisions and writes run diagnostics.
+- `BudgetBroker` can dry-run an upcoming round budget before scheduling worker
+  waves, then reserves model, tool, and context budgets before execution.
+  Preflight, reservation, and usage diagnostics are written to run results.
 - `ActionGateway` is the runtime entry point for context construction, patch
   preview, sandbox patch apply, sandbox command checks, and artifact
   repair/validation.
@@ -123,6 +127,9 @@ retained only for old `WorkflowSpec` flows.
   combinations.
 - `AgentRun` dispatches PlannerOrder, Worker, Tester, FinalReview, Synthesizer,
   and PlannerDecision work through `AgentEngineRegistry`.
+- `PlannerStrategy` provides backend-only local planning modes: `full` uses
+  `PlannerEngine`, `simple` and `single_worker` synthesize valid local
+  Planner artifacts, and `replay` consumes supplied Planner artifacts.
 - `AgentGraphExecutor` is a legacy compatibility adapter and is not constructed
   by the product `AgentGraphRunner`.
 - `PatchService` owns proposed change validation, risk path blocking, patch
@@ -253,7 +260,11 @@ Focused architecture boundary tests:
 - New context, patch, command, repair, and validation behavior should enter
   through `ActionGateway`; services such as `ContextService`, `PatchService`,
   and `CommandService` stay behind that boundary.
-- Budget-affecting work should reserve through `BudgetBroker` before execution.
+- Budget-affecting work should run `BudgetBroker` round preflight before
+  scheduler creation, then reserve through `BudgetBroker` before execution.
+- Local planner modes must still produce `planner_order`, `planner_input_bundle`,
+  and `planner_decision` artifacts through the normal AgentGraph control plane;
+  ordinary UI must not expose planner strategy knobs.
 - New model-output validation and repair behavior should go through
   `ActionGateway` `validate_artifact` and `repair_artifact` actions.
 - New Planner, Tester, FinalReview, Synthesizer, Worker, and PlannerDecision

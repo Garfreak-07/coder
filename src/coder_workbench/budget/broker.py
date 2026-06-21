@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import asdict
 from dataclasses import dataclass
+from typing import Any
 from uuid import uuid4
 
 from coder_workbench.budget.reservation import BudgetLimit, BudgetReservation
@@ -15,6 +16,32 @@ class BudgetUsage:
     model_calls_reserved: int = 0
     tool_calls_reserved: int = 0
     tool_calls_committed: int = 0
+
+
+@dataclass
+class BudgetRemaining:
+    estimated_tokens: int
+    model_calls: int
+    tool_calls: int
+    context_tokens_per_call: int
+
+
+@dataclass
+class BudgetPreflightReport:
+    run_id: str
+    approved: bool
+    reason: str
+    estimated_contexts: int
+    estimated_context_tokens: int
+    estimated_context_tokens_per_call: int
+    estimated_model_calls: int
+    estimated_tool_calls: int
+    remaining: dict[str, int]
+    limit: dict[str, int]
+    work_item_ids: list[str]
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 class BudgetBroker:
@@ -182,6 +209,66 @@ class BudgetBroker:
             model_calls_reserved=current.model_calls_reserved,
             tool_calls_reserved=current.tool_calls_reserved,
             tool_calls_committed=current.tool_calls_committed,
+        )
+
+    def remaining(self, run_id: str) -> BudgetRemaining:
+        usage = self.usage(run_id)
+        return BudgetRemaining(
+            estimated_tokens=max(0, self.limit.max_estimated_tokens - usage.estimated_tokens_reserved),
+            model_calls=max(0, self.limit.max_model_calls - usage.model_calls_reserved),
+            tool_calls=max(0, self.limit.max_tool_calls - usage.tool_calls_reserved),
+            context_tokens_per_call=self.limit.max_context_tokens_per_call,
+        )
+
+    def preflight_round(
+        self,
+        *,
+        run_id: str,
+        planner_order: Any,
+        estimated_model_calls: int = 0,
+        estimated_tool_calls: int = 0,
+        estimated_context_tokens_per_call: int = 0,
+    ) -> BudgetPreflightReport:
+        work_items = list(getattr(getattr(planner_order, "plan_graph", None), "work_items", []) or [])
+        estimated_contexts = len(work_items)
+        context_tokens_per_call = max(0, int(estimated_context_tokens_per_call or 0))
+        estimated_context_tokens = estimated_contexts * context_tokens_per_call
+        model_calls = max(0, int(estimated_model_calls or 0))
+        tool_calls = max(0, int(estimated_tool_calls or 0))
+        remaining = self.remaining(run_id)
+        reason = ""
+        approved = True
+
+        if context_tokens_per_call > self.limit.max_context_tokens_per_call:
+            approved = False
+            reason = "round_context_budget_exceeded"
+        elif estimated_context_tokens > remaining.estimated_tokens:
+            approved = False
+            reason = "round_context_budget_exceeded"
+        elif model_calls > remaining.model_calls:
+            approved = False
+            reason = "round_model_call_budget_exceeded"
+        elif tool_calls > remaining.tool_calls:
+            approved = False
+            reason = "round_tool_call_budget_exceeded"
+
+        return BudgetPreflightReport(
+            run_id=run_id,
+            approved=approved,
+            reason=reason,
+            estimated_contexts=estimated_contexts,
+            estimated_context_tokens=estimated_context_tokens,
+            estimated_context_tokens_per_call=context_tokens_per_call,
+            estimated_model_calls=model_calls,
+            estimated_tool_calls=tool_calls,
+            remaining=asdict(remaining),
+            limit={
+                "max_estimated_tokens": self.limit.max_estimated_tokens,
+                "max_model_calls": self.limit.max_model_calls,
+                "max_tool_calls": self.limit.max_tool_calls,
+                "max_context_tokens_per_call": self.limit.max_context_tokens_per_call,
+            },
+            work_item_ids=[str(getattr(item, "work_item_id", "")) for item in work_items],
         )
 
     def reservations(self, run_id: str | None = None) -> list[dict[str, object]]:
