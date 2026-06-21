@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from coder_workbench.core import WorkflowSpec
+from coder_workbench.core.artifacts import artifact_summary, validate_artifact
 from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.runtime import RunEvent, RunResult
 from coder_workbench.runtime.runner import WorkflowRunner
@@ -122,6 +123,59 @@ class ArtifactRuntimeTests(unittest.TestCase):
             assert run.result is not None
             self.assertEqual(run.result.status, "completed")
             self.assertIn("agent_result", run.result.data)
+
+
+class PlannerArtifactSchemaTests(unittest.TestCase):
+    def test_synthesis_artifact_validates_and_summarizes(self) -> None:
+        artifact = validate_artifact(
+            {
+                "artifact_type": "synthesis_artifact",
+                "round": 1,
+                "work_item_id": "organize-work",
+                "merge_index": 1,
+                "agent_id": "organizer",
+                "status": "completed",
+                "summary": "Organized source material.",
+                "sources": [
+                    {
+                        "source_id": "task",
+                        "ref": "planner_order_round_1",
+                        "source_type": "task",
+                        "title": "Task",
+                        "summary": "Organize the facts.",
+                    }
+                ],
+                "deduplicated_source_ids": ["task"],
+                "clusters": [
+                    {
+                        "cluster_id": "cluster-1",
+                        "title": "Facts",
+                        "summary": "Organize the facts.",
+                        "source_ids": ["task"],
+                        "rank_score": 1.0,
+                    }
+                ],
+                "ranked_items": [
+                    {
+                        "item_id": "ranked-1",
+                        "rank": 1,
+                        "title": "Facts",
+                        "summary": "Organize the facts.",
+                        "source_ids": ["task"],
+                        "score": 1.0,
+                    }
+                ],
+                "compressed_summary": "Facts: Organize the facts.",
+                "index": {"facts": ["task"]},
+            }
+        )
+
+        summary = artifact_summary(artifact)
+
+        self.assertEqual(artifact["artifact_type"], "synthesis_artifact")
+        self.assertEqual(summary["sources"], 1)
+        self.assertEqual(summary["clusters"], 1)
+        self.assertEqual(summary["ranked_items"], 1)
 
 
 class ArtifactStorageTests(unittest.TestCase):

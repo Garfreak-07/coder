@@ -64,7 +64,7 @@ ROLE_CARDS = [
         label="Organize information",
         archetype="synthesizer",
         role="summarizer",
-        default_capabilities=["follow_planner_order", "generate_text", "return_execution_result"],
+        default_capabilities=["follow_planner_order", "synthesize_information", "return_synthesis_artifact"],
         description="Collect, normalize, deduplicate, and summarize information.",
     ),
     RoleCardSpec(
@@ -168,6 +168,8 @@ def _context_policy(archetype: str) -> dict[str, object]:
         return {"skill_load_mode": "index_only", "memory": "workflow_summary", "max_skill_tokens": 0}
     if archetype == "tester":
         return {"skill_load_mode": "selected_summary", "memory": "none", "max_skill_tokens": 800}
+    if archetype == "synthesizer":
+        return {"skill_load_mode": "on_demand", "memory": "direct_refs_only", "max_skill_tokens": 2000}
     return {"skill_load_mode": "on_demand", "memory": "direct_refs_only", "max_skill_tokens": 1600}
 
 
@@ -193,7 +195,7 @@ def _token_budget(archetype: str) -> dict[str, object]:
 def _internal_loops(authority: str) -> dict[str, object]:
     return {
         "schema_repair_attempts": 1,
-        "self_check": authority in {"worker", "tester", "final_tester"},
+        "self_check": authority in {"worker", "tester", "final_tester", "synthesizer"},
         "planner_repair": authority == "planner",
     }
 
@@ -213,4 +215,6 @@ def _evaluation_profile(archetype: str) -> dict[str, object]:
         return {"artifact_type": "test_result", "metrics": ["evidence_ref_rate", "confidence_calibration"]}
     if archetype == "planner":
         return {"artifact_type": "planner_order", "metrics": ["plan_valid_rate", "wrong_skill_selection_rate"]}
+    if archetype == "synthesizer":
+        return {"artifact_type": "synthesis_artifact", "metrics": ["deduplication_rate", "compression_ratio"]}
     return {"artifact_type": "execution_result", "metrics": ["schema_valid_rate", "blocked_rate"]}

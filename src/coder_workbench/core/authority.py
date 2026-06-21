@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from coder_workbench.core.agent_workflow import AgentWorkflowAgent
 
 
-Authority = Literal["planner", "worker", "tester", "final_tester"]
+Authority = Literal["planner", "worker", "tester", "final_tester", "synthesizer"]
 
 
 class AgentAuthorityProfile(BaseModel):
@@ -39,6 +39,12 @@ WORKER_PROFILE = AgentAuthorityProfile(
     allowed_artifact_types=["execution_result"],
 )
 
+SYNTHESIZER_PROFILE = AgentAuthorityProfile(
+    authority="synthesizer",
+    can_trigger_interrupt=True,
+    allowed_artifact_types=["synthesis_artifact", "execution_result"],
+)
+
 TESTER_PROFILE = AgentAuthorityProfile(
     authority="tester",
     can_run_commands=True,
@@ -53,6 +59,7 @@ FINAL_TESTER_PROFILE = AgentAuthorityProfile(
 AUTHORITY_PROFILES = {
     "planner": PLANNER_PROFILE,
     "worker": WORKER_PROFILE,
+    "synthesizer": SYNTHESIZER_PROFILE,
     "tester": TESTER_PROFILE,
     "final_tester": FINAL_TESTER_PROFILE,
 }
@@ -63,6 +70,12 @@ def authority_profile_for_agent(agent: "AgentWorkflowAgent", *, primary_planner_
         return PLANNER_PROFILE
     if "aggregate_tests" in agent.capabilities:
         return FINAL_TESTER_PROFILE
+    if (
+        agent.role_card == "organize_information"
+        or agent.role == "summarizer"
+        or any(capability in agent.capabilities for capability in {"synthesize_information", "return_synthesis_artifact"})
+    ):
+        return SYNTHESIZER_PROFILE
     if agent.role in {"tester", "reviewer"} or any(
         capability in agent.capabilities
         for capability in {"model_review", "optional_check_command", "return_test_result"}

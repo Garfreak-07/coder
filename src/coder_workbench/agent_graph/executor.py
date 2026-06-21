@@ -9,6 +9,7 @@ from coder_workbench.agent_graph.prompts import (
     build_planner_order_prompt,
     build_final_tester_prompt,
     build_tester_prompt,
+    build_synthesis_prompt,
     build_worker_execution_prompt,
     schema_notes_for_artifact,
 )
@@ -22,9 +23,11 @@ from coder_workbench.agent_graph.schema import (
     TestRecord,
     WorkItem,
 )
+from coder_workbench.agent_graph.synthesis import build_synthesis_artifact
 from coder_workbench.config import RuntimeConfig, load_runtime_config
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
+from coder_workbench.core.authority import authority_profile_for_agent
 from coder_workbench.llm import create_chat_model
 from coder_workbench.skills.index import SkillIndex
 
@@ -146,6 +149,8 @@ class AgentGraphExecutor:
         emit: EmitEvent | None = None,
     ) -> ExecutionRecord:
         agent = self._agent(item.assignee_agent_id)
+        if _work_artifact_type(agent, self.agent_workflow.primary_planner_id) == "synthesis_artifact":
+            return self._create_synthesis_result(item=item, envelope=envelope, agent=agent, emit=emit)
         payload = self._invoke_or_mock(
             artifact_type="execution_result",
             agent_id=agent.id,
@@ -190,12 +195,61 @@ class AgentGraphExecutor:
             merge_index=item.merge_index,
         )
         return ExecutionRecord(
+            artifact_type="execution_result",
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
             agent_id=item.assignee_agent_id,
             status=artifact["status"],
             execution_summary=artifact["summary"],
             execution_result_ref=_artifact_ref("execution_result", item.work_item_id),
+            artifact_payload=artifact,
+        )
+
+    def _create_synthesis_result(
+        self,
+        *,
+        item: WorkItem,
+        envelope: AgentTaskEnvelope,
+        agent: AgentWorkflowAgent,
+        emit: EmitEvent | None,
+    ) -> ExecutionRecord:
+        payload = self._invoke_or_mock(
+            artifact_type="synthesis_artifact",
+            agent_id=agent.id,
+            prompt=build_synthesis_prompt(agent=agent, item=item, envelope=envelope),
+            mock_payload=build_synthesis_artifact(item=item, envelope=envelope, agent_id=agent.id),
+            emit=emit,
+            fallback_payload=self._blocked_synthesis_payload(item, envelope.round),
+            work_item_id=item.work_item_id,
+            merge_index=item.merge_index,
+        )
+        payload = _with_forced_fields(
+            payload,
+            {
+                "artifact_type": "synthesis_artifact",
+                "round": envelope.round,
+                "work_item_id": item.work_item_id,
+                "merge_index": item.merge_index,
+                "agent_id": item.assignee_agent_id,
+            },
+        )
+        artifact = self._validate_payload(
+            payload,
+            artifact_type="synthesis_artifact",
+            agent_id=agent.id,
+            emit=emit,
+            fallback_payload=self._blocked_synthesis_payload(item, envelope.round),
+            work_item_id=item.work_item_id,
+            merge_index=item.merge_index,
+        )
+        return ExecutionRecord(
+            artifact_type="synthesis_artifact",
+            work_item_id=item.work_item_id,
+            merge_index=item.merge_index,
+            agent_id=item.assignee_agent_id,
+            status=artifact["status"],
+            execution_summary=artifact["summary"],
+            execution_result_ref=_artifact_ref("synthesis_artifact", item.work_item_id),
             artifact_payload=artifact,
         )
 
@@ -642,6 +696,29 @@ class AgentGraphExecutor:
             "continue_without_human_possible": False,
         }
 
+    def _blocked_synthesis_payload(self, item: WorkItem, round_number: int) -> dict[str, Any]:
+        return {
+            "artifact_type": "synthesis_artifact",
+            "round": round_number,
+            "work_item_id": item.work_item_id,
+            "merge_index": item.merge_index,
+            "agent_id": item.assignee_agent_id,
+            "status": "blocked",
+            "summary": "Synthesizer output did not match synthesis_artifact schema after one repair.",
+            "sources": [],
+            "deduplicated_source_ids": [],
+            "clusters": [],
+            "ranked_items": [],
+            "compressed_summary": "",
+            "index": {},
+            "unexpected_issues": ["schema_validation_failed"],
+            "needs_planner_decision": True,
+            "blocker_type": "schema_validation_failed",
+            "planner_question": "Synthesizer output failed schema validation. Should Planner retry, reassign, or ask the user?",
+            "candidate_options": [],
+            "continue_without_human_possible": False,
+        }
+
     def _blocked_test_payload(self, item: WorkItem, tester_agent_id: str, round_number: int) -> dict[str, Any]:
         return {
             "artifact_type": "test_result",
@@ -711,6 +788,13 @@ def _artifact_ref(artifact_type: str, *parts: Any) -> str:
 
 def _is_tester(agent: AgentWorkflowAgent) -> bool:
     return agent.role in {"tester", "reviewer"} or any("test" in capability for capability in agent.capabilities)
+
+
+def _work_artifact_type(agent: AgentWorkflowAgent, primary_planner_id: str) -> str:
+    profile = authority_profile_for_agent(agent, primary_planner_id=primary_planner_id)
+    if profile.authority == "synthesizer":
+        return "synthesis_artifact"
+    return "execution_result"
 
 
 def _aggregate_test_status(bundle: PlannerInputBundle) -> str:

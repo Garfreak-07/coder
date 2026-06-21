@@ -25,6 +25,7 @@ PlannerArtifactType = Literal[
     "run_contract",
     "planner_order",
     "execution_result",
+    "synthesis_artifact",
     "test_result",
     "planner_decision",
     "round_summary",
@@ -172,6 +173,60 @@ class ExecutionResultArtifact(PlannerArtifactBase, OptionalMergeIndexedArtifact)
     tester_notes: list[str] = Field(default_factory=list)
 
 
+class SynthesisSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    ref: str | None = None
+    source_type: str = "other"
+    title: str = ""
+    summary: str
+
+
+class SynthesisCluster(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cluster_id: str
+    title: str
+    summary: str
+    source_ids: list[str] = Field(default_factory=list)
+    rank_score: float = Field(default=0.0, ge=0.0)
+
+
+class SynthesisRankedItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    rank: int = Field(ge=1)
+    title: str
+    summary: str
+    source_ids: list[str] = Field(default_factory=list)
+    score: float = Field(default=0.0, ge=0.0)
+
+
+class SynthesisArtifact(PlannerArtifactBase, OptionalMergeIndexedArtifact):
+    artifact_type: Literal["synthesis_artifact"] = "synthesis_artifact"
+    round: int = Field(default=1, ge=1)
+    work_item_id: str | None = None
+    agent_id: str | None = None
+    status: ExecutionStatus
+    summary: str
+    sources: list[SynthesisSource] = Field(default_factory=list)
+    deduplicated_source_ids: list[str] = Field(default_factory=list)
+    clusters: list[SynthesisCluster] = Field(default_factory=list)
+    ranked_items: list[SynthesisRankedItem] = Field(default_factory=list)
+    compressed_summary: str = ""
+    index: dict[str, list[str]] = Field(default_factory=dict)
+    outputs: list[str] = Field(default_factory=list)
+    unexpected_issues: list[str] = Field(default_factory=list)
+    out_of_contract: bool = False
+    needs_planner_decision: bool = False
+    blocker_type: BlockerType | None = None
+    planner_question: str | None = None
+    candidate_options: list[PlannerOption] = Field(default_factory=list)
+    continue_without_human_possible: bool | None = None
+
+
 class TestIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -237,6 +292,7 @@ PLANNER_ARTIFACT_MODELS: dict[str, type[PlannerArtifactBase]] = {
     "run_contract": RunContractArtifact,
     "planner_order": PlannerOrderArtifact,
     "execution_result": ExecutionResultArtifact,
+    "synthesis_artifact": SynthesisArtifact,
     "test_result": TestResultArtifact,
     "planner_decision": PlannerDecisionArtifact,
     "round_summary": RoundSummaryArtifact,
@@ -282,6 +338,21 @@ def planner_artifact_summary(artifact: dict) -> dict:
             "needs_planner_decision": artifact.get("needs_planner_decision"),
             "continue_without_human_possible": artifact.get("continue_without_human_possible"),
             "candidate_options": len(artifact.get("candidate_options", [])),
+        }
+    if artifact_type == "synthesis_artifact":
+        return {
+            "round": artifact.get("round"),
+            "work_item_id": artifact.get("work_item_id"),
+            "merge_index": artifact.get("merge_index"),
+            "agent_id": artifact.get("agent_id"),
+            "status": artifact.get("status"),
+            "summary": artifact.get("summary"),
+            "sources": len(artifact.get("sources", [])),
+            "deduplicated_sources": len(artifact.get("deduplicated_source_ids", [])),
+            "clusters": len(artifact.get("clusters", [])),
+            "ranked_items": len(artifact.get("ranked_items", [])),
+            "blocker_type": artifact.get("blocker_type"),
+            "needs_planner_decision": artifact.get("needs_planner_decision"),
         }
     if artifact_type == "test_result":
         return {

@@ -38,6 +38,7 @@ from coder_workbench.core import (
     AgentWorkflowValidationError,
     assert_valid_agent_workflow,
 )
+from coder_workbench.core.authority import authority_profile_for_agent
 from coder_workbench.runtime.state import RunEvent, RunResult, summarize_value
 from coder_workbench.skills import (
     ContextPacketV2,
@@ -756,7 +757,7 @@ class AgentGraphRunner:
             envelope=envelope,
             route=route,
             skill_index=skill_index,
-            artifact_type="execution_result",
+            artifact_type=self._work_artifact_type(item.assignee_agent_id),
         )
         ledger_entry = _token_ledger_entry(
             run_id=run_id,
@@ -765,6 +766,7 @@ class AgentGraphRunner:
             route=route,
             skill_index=skill_index,
             packet=packet,
+            artifact_type=packet.artifact_type,
         )
         cache.record_context_packet_v2(item.work_item_id, packet.model_dump(mode="json"))
         cache.record_token_ledger_entry(ledger_entry.model_dump(mode="json"))
@@ -816,6 +818,13 @@ class AgentGraphRunner:
                 return agent.role
         return ""
 
+    def _work_artifact_type(self, agent_id: str) -> str:
+        for agent in self.agent_workflow.agents:
+            if agent.id == agent_id:
+                profile = authority_profile_for_agent(agent, primary_planner_id=self.agent_workflow.primary_planner_id)
+                return "synthesis_artifact" if profile.authority == "synthesizer" else "execution_result"
+        return "execution_result"
+
     def _run_wave(self, wave: ReadyWave, task_contexts: list[dict[str, Any]]) -> list[WorkItemOutcome]:
         outcomes: list[WorkItemOutcome] = []
         if not wave.items:
@@ -850,16 +859,19 @@ class AgentGraphRunner:
         execution = self.executor.create_execution_result(item=item, envelope=envelope)
         tests = []
         if execution.status == "completed":
-            execution_artifact = {
-                "artifact_type": "execution_result",
-                "artifact_id": execution.execution_result_ref,
-                "round": envelope.round,
-                "work_item_id": execution.work_item_id,
-                "merge_index": execution.merge_index,
-                "agent_id": execution.agent_id,
-                "status": execution.status,
-                "summary": execution.execution_summary,
-            }
+            execution_artifact = dict(
+                execution.artifact_payload
+                or {
+                    "artifact_type": execution.artifact_type,
+                    "round": envelope.round,
+                    "work_item_id": execution.work_item_id,
+                    "merge_index": execution.merge_index,
+                    "agent_id": execution.agent_id,
+                    "status": execution.status,
+                    "summary": execution.execution_summary,
+                }
+            )
+            execution_artifact.setdefault("artifact_id", execution.execution_result_ref)
             tests = [
                 self.executor.create_test_result(
                     item=item,
@@ -881,8 +893,9 @@ class AgentGraphRunner:
         round_number: int,
         execution: ExecutionRecord,
     ) -> dict[str, Any]:
+        artifact_type = execution.artifact_type
         payload = execution.artifact_payload or {
-            "artifact_type": "execution_result",
+            "artifact_type": artifact_type,
             "round": round_number,
             "work_item_id": execution.work_item_id,
             "merge_index": execution.merge_index,
@@ -890,10 +903,11 @@ class AgentGraphRunner:
             "status": execution.status,
             "summary": execution.execution_summary,
         }
+        artifact_type = str(payload.get("artifact_type") or artifact_type)
         return recorder.record(
             execution.execution_result_ref,
             payload,
-            expected_type="execution_result",
+            expected_type=artifact_type,
         )
 
     def _record_test_artifact(
@@ -1122,6 +1136,7 @@ def _token_ledger_entry(
     route: SkillRouteDecision,
     skill_index: SkillIndex,
     packet: ContextPacketV2,
+    artifact_type: str,
 ) -> TokenLedgerEntry:
     upstream_tokens = estimate_tokens(" ".join(envelope.upstream_refs))
     return TokenLedgerEntry(
@@ -1129,7 +1144,7 @@ def _token_ledger_entry(
         round=round_number,
         agent_id=envelope.assigned_agent_id,
         work_item_id=envelope.work_item_id,
-        artifact_type="execution_result",
+        artifact_type=artifact_type,
         estimated_input_tokens=packet.estimated_input_tokens,
         skill_tokens_available=_skill_tokens_available(skill_index),
         skill_tokens_loaded=route.estimated_skill_tokens,

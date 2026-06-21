@@ -55,6 +55,32 @@ class AgentArchetypeTests(unittest.TestCase):
         self.assertTrue(worker.token_budget["managed_by_runtime"])
         self.assertEqual(worker.internal_loops["schema_repair_attempts"], 1)
 
+    def test_organize_information_role_card_compiles_synthesizer_profile(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["agents"][1] = {
+            "id": "executor",
+            "name": "Organizer",
+            "role_card": "organize_information",
+            "model_tier": "standard",
+            "can_talk_to_human": False,
+        }
+
+        workflow = AgentWorkflowSpec.model_validate(payload)
+        validation = validate_agent_workflow_payload(payload)
+        profiles = compile_runtime_profiles(workflow)
+        organizer = next(profile for profile in profiles if profile.agent_id == "executor")
+
+        self.assertEqual(validation.status, "pass")
+        self.assertEqual(workflow.agents[1].role, "summarizer")
+        self.assertEqual(
+            workflow.agents[1].capabilities,
+            ["follow_planner_order", "synthesize_information", "return_synthesis_artifact"],
+        )
+        self.assertEqual(organizer.agent_archetype, "synthesizer")
+        self.assertEqual(organizer.authority.authority, "synthesizer")
+        self.assertIn("synthesis_artifact", organizer.allowed_artifacts)
+        self.assertEqual(organizer.evaluation_profile["artifact_type"], "synthesis_artifact")
+
 
 class AgentArchetypeApiTests(unittest.TestCase):
     def test_role_cards_and_runtime_profiles_api(self) -> None:

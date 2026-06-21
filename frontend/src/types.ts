@@ -15,6 +15,7 @@ export type HandoffType =
   | "run_contract"
   | "planner_order"
   | "execution_result"
+  | "synthesis_artifact"
   | "test_result"
   | "planner_decision"
   | "round_summary";
@@ -118,6 +119,7 @@ export interface AgentSpec {
     | "run_contract"
     | "planner_order"
     | "execution_result"
+    | "synthesis_artifact"
     | "test_result"
     | "planner_decision"
     | "round_summary"

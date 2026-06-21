@@ -20,6 +20,7 @@ ArtifactType = Literal[
     "run_contract",
     "planner_order",
     "execution_result",
+    "synthesis_artifact",
     "test_result",
     "planner_decision",
     "round_summary",

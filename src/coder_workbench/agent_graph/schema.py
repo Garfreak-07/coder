@@ -89,6 +89,7 @@ class AgentTaskEnvelope(MergeIndexedModel):
 
 
 class ExecutionRecord(MergeIndexedModel):
+    artifact_type: Literal["execution_result", "synthesis_artifact"] = "execution_result"
     work_item_id: str
     agent_id: str
     status: ExecutionStatus

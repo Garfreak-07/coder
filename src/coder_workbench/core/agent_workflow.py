@@ -11,7 +11,15 @@ from coder_workbench.core.schema import AgentSpec, ContextPolicy, EdgeSpec, Node
 
 
 AgentModelTier = Literal["best", "standard", "economy"]
-HandoffType = Literal["run_contract", "planner_order", "execution_result", "test_result", "planner_decision", "round_summary"]
+HandoffType = Literal[
+    "run_contract",
+    "planner_order",
+    "execution_result",
+    "synthesis_artifact",
+    "test_result",
+    "planner_decision",
+    "round_summary",
+]
 ValidationLevel = Literal["error", "warning"]
 
 VALID_AGENT_ROLES = {
@@ -28,6 +36,7 @@ VALID_AGENT_ROLES = {
 VALID_MODEL_TIERS = {"best", "standard", "economy"}
 ARTIFACT_PRIORITY = [
     "planner_order",
+    "synthesis_artifact",
     "execution_result",
     "test_result",
     "run_contract",
@@ -983,7 +992,15 @@ def _ordered_runtime_agents(spec: AgentWorkflowSpec) -> list[AgentWorkflowAgent]
 
 def _runtime_artifact_type(agent: AgentWorkflowAgent) -> str | None:
     produces = _agent_produces(agent)
-    for artifact in ("test_result", "execution_result", "planner_order", "round_summary", "planner_decision", "run_contract"):
+    for artifact in (
+        "test_result",
+        "synthesis_artifact",
+        "execution_result",
+        "planner_order",
+        "round_summary",
+        "planner_decision",
+        "run_contract",
+    ):
         if artifact in produces:
             return artifact
     return None
@@ -992,6 +1009,8 @@ def _runtime_artifact_type(agent: AgentWorkflowAgent) -> str | None:
 def _runtime_goal(agent: AgentWorkflowAgent, artifact_type: str | None) -> str:
     if artifact_type == "execution_result":
         return "Follow the PlannerOrder and return only execution facts."
+    if artifact_type == "synthesis_artifact":
+        return "Collect, normalize, deduplicate, rank, and compress information into a SynthesisArtifact."
     if artifact_type == "test_result":
         return "Review execution evidence and return only a TestResult."
     return f"Follow the PlannerOrder and return structured facts for the {agent.role} role."
@@ -1003,6 +1022,8 @@ def _runtime_input_keys(agent: AgentWorkflowAgent) -> list[str]:
         return sorted(required)
     if _runtime_artifact_type(agent) == "test_result":
         return ["execution_result", "planner_order"]
+    if _runtime_artifact_type(agent) == "synthesis_artifact":
+        return ["planner_order"]
     return ["planner_order"]
 
 
@@ -1134,6 +1155,21 @@ _CAPABILITIES = [
         allowed_roles=["executor", "worker", "writer", "researcher", "summarizer", "custom"],
         requires=["planner_order"],
         produces=["execution_result"],
+    ),
+    CapabilitySpec(
+        id="synthesize_information",
+        label="Synthesize information",
+        description="Collect, normalize, deduplicate, cluster, rank, and compress source material.",
+        allowed_roles=["summarizer", "researcher", "writer", "custom"],
+        requires=["planner_order"],
+        produces=["synthesis_artifact"],
+    ),
+    CapabilitySpec(
+        id="return_synthesis_artifact",
+        label="Return synthesis artifact",
+        description="Agent reports organized information as SynthesisArtifact. It also satisfies legacy execution-result handoffs.",
+        allowed_roles=["summarizer", "researcher", "writer", "custom"],
+        produces=["synthesis_artifact", "execution_result"],
     ),
     CapabilitySpec(
         id="return_execution_result",

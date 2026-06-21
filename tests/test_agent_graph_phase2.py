@@ -238,6 +238,31 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         self.assertIn("agent.context_packet_v2", {event.type for event in result.events})
         self.assertIn("token.ledger.entry", {event.type for event in result.events})
 
+    def test_organizer_role_card_records_synthesis_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = AgentGraphRunner(_workflow_with_organizer()).run(
+                "Organize the available project facts.",
+                tmp,
+            )
+
+        self.assertEqual(result.status, "completed")
+        cache = result.data["graph_run_cache"]
+        execution = cache["execution_cache"]["executor-work"]
+        self.assertEqual(execution["artifact_type"], "synthesis_artifact")
+        self.assertEqual(execution["execution_result_ref"], "synthesis_artifact_executor-work")
+        self.assertEqual(cache["context_packets_v2"]["executor-work"]["artifact_type"], "synthesis_artifact")
+        self.assertEqual(cache["token_ledger"][0]["artifact_type"], "synthesis_artifact")
+        self.assertIn("synthesis_artifact_executor-work", result.artifacts)
+        artifact = result.artifacts["synthesis_artifact_executor-work"]
+        self.assertEqual(artifact["artifact_type"], "synthesis_artifact")
+        self.assertEqual(artifact["status"], "completed")
+        self.assertGreaterEqual(len(artifact["sources"]), 1)
+        self.assertGreaterEqual(len(artifact["ranked_items"]), 1)
+        self.assertIn("synthesis_artifact_executor-work", result.data["planner_input_bundle"]["items"][0]["refs"])
+        executor_report = next(report for report in result.data["agent_evaluation_reports"] if report["agent_id"] == "executor")
+        self.assertEqual(executor_report["agent_archetype"], "synthesizer")
+
+
 def _workflow_with_final_tester() -> AgentWorkflowSpec:
     payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
     payload["agents"].extend(
@@ -268,6 +293,18 @@ def _workflow_with_final_tester() -> AgentWorkflowSpec:
         {"from": "tester2", "to": "final_tester"},
         {"from": "final_tester", "to": "planner", "loop": True},
     ]
+    return AgentWorkflowSpec.model_validate(payload)
+
+
+def _workflow_with_organizer() -> AgentWorkflowSpec:
+    payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+    payload["agents"][1] = {
+        "id": "executor",
+        "name": "Organizer",
+        "role_card": "organize_information",
+        "model_tier": "standard",
+        "can_talk_to_human": False,
+    }
     return AgentWorkflowSpec.model_validate(payload)
 
 
