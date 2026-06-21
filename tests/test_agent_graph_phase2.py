@@ -126,6 +126,9 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         self.assertEqual(cache["execution_cache"]["executor-work"]["status"], "completed")
         self.assertEqual(cache["test_cache"]["executor-work"][0]["tester_agent_id"], "tester")
         self.assertIn("agent_evaluation_reports", result.data)
+        runtime_profiles = result.data["runtime_profiles"]
+        executor_profile = next(profile for profile in runtime_profiles if profile["agent_id"] == "executor")
+        self.assertEqual(executor_profile["authority"]["authority"], "worker")
         executor_report = next(report for report in result.data["agent_evaluation_reports"] if report["agent_id"] == "executor")
         self.assertEqual(executor_report["calls"], 1)
         self.assertEqual(executor_report["schema_valid_rate"], 1.0)

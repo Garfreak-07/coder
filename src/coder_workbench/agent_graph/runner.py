@@ -36,6 +36,7 @@ from coder_workbench.agent_graph.validation import assert_valid_planner_order
 from coder_workbench.core import (
     AgentWorkflowSpec,
     AgentWorkflowValidationError,
+    compile_runtime_profiles,
     assert_valid_agent_workflow,
 )
 from coder_workbench.core.authority import authority_profile_for_agent
@@ -120,6 +121,10 @@ class AgentGraphRunner:
             assert_valid_agent_workflow(self.agent_workflow)
             workflow_payload = self.agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
             data["agent_workflow"] = workflow_payload
+            data["runtime_profiles"] = [
+                profile.model_dump(mode="json")
+                for profile in compile_runtime_profiles(self.agent_workflow)
+            ]
             skill_index = _skill_index_from_data_or_repo(data, repo_root)
             data["skill_index"] = skill_index.model_dump(mode="json")
             skill_store_root = _skill_store_root_from_data_or_repo(data, repo_root)

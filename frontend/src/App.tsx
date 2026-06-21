@@ -2208,10 +2208,12 @@ function RunDiagnostics({ data }: { data: Record<string, unknown> }) {
   const skillRoutes = objectValue(graphCache?.skill_routes);
   const contextPackets = objectValue(graphCache?.context_packets_v2);
   const tokenLedger = objectList(data.token_ledger);
+  const runtimeProfiles = objectList(data.runtime_profiles);
   const agentReports = objectList(data.agent_evaluation_reports);
   const skillReports = objectList(data.skill_evaluation_reports);
   const hasDiagnostics =
     tokenLedger.length > 0 ||
+    runtimeProfiles.length > 0 ||
     agentReports.length > 0 ||
     skillReports.length > 0 ||
     Boolean(skillRoutes && Object.keys(skillRoutes).length > 0) ||
@@ -2224,6 +2226,7 @@ function RunDiagnostics({ data }: { data: Record<string, unknown> }) {
       <summary>Advanced Run Diagnostics</summary>
       <div className="summary-grid">
         <span>{tokenLedger.length} token entries</span>
+        <span>{runtimeProfiles.length} runtime profiles</span>
         <span>{contextPackets ? Object.keys(contextPackets).length : 0} context packets</span>
         <span>{skillRoutes ? Object.keys(skillRoutes).length : 0} skill routes</span>
         <span>{agentReports.length} agent reports</span>
@@ -2233,6 +2236,7 @@ function RunDiagnostics({ data }: { data: Record<string, unknown> }) {
         {JSON.stringify(
           {
             token_ledger: tokenLedger,
+            runtime_profiles: runtimeProfiles,
             context_packets_v2: contextPackets ?? {},
             skill_routes: skillRoutes ?? {},
             agent_evaluation_reports: agentReports,
