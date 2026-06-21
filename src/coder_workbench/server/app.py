@@ -34,9 +34,13 @@ from coder_workbench.skills import (
     InstalledSkillStore,
     RegistryClient,
     RegistryClientError,
+    SkillAutoUpdateResult,
     SkillInstaller,
     SkillVerificationError,
+    SkillUpdatePolicy,
+    SkillTrustLevel,
     build_skill_index,
+    is_auto_update_allowed,
 )
 from coder_workbench.tools import default_tool_registry
 from coder_workbench.tools.filesystem import normalize_scope_paths, resolve_existing_dir
@@ -104,6 +108,41 @@ class SkillInstallRequest(BaseModel):
     allow_untrusted: bool = False
 
 
+class SkillUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    registry_url: str | None = None
+    allow_untrusted: bool = False
+    force: bool = False
+
+
+class SkillDeveloperImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    trust_level: SkillTrustLevel = "local"
+    enabled: bool = True
+    allow_untrusted: bool = False
+
+
+class SkillPinRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str | None = None
+
+
+class SkillRollbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str | None = None
+
+
+class SkillUpdatePolicyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    update_policy: SkillUpdatePolicy
+
+
 def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | None = None) -> FastAPI:
     app = FastAPI(title="Coder Runtime API", version="0.1.0")
     store = RunStore(store_root)
@@ -163,6 +202,60 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return result.model_dump(mode="json")
 
+    @app.post("/api/v2/skills/developer-import")
+    def developer_import_skill(body: SkillDeveloperImportRequest) -> dict[str, Any]:
+        try:
+            result = SkillInstaller(
+                client=RegistryClient("unused-local-import-registry.json"),
+                store=skill_store,
+            ).import_local(
+                body.path,
+                trust_level=body.trust_level,
+                enabled=body.enabled,
+                allow_untrusted=body.allow_untrusted,
+            )
+        except (SkillVerificationError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result.model_dump(mode="json")
+
+    @app.get("/api/v2/skills/updates")
+    def get_skill_updates(registry_url: str | None = None) -> dict[str, Any]:
+        try:
+            url = _resolve_skill_registry_url(registry_url)
+            index = RegistryClient(url).fetch_index()
+        except (RegistryClientError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"updates": _skill_update_report(skill_store, index.skills)}
+
+    @app.post("/api/v2/skills/auto-update")
+    def auto_update_skills(body: SkillUpdateRequest) -> dict[str, Any]:
+        try:
+            url = _resolve_skill_registry_url(body.registry_url)
+            result: SkillAutoUpdateResult = SkillInstaller(
+                client=RegistryClient(url),
+                store=skill_store,
+            ).auto_update(allow_untrusted=body.allow_untrusted)
+        except (RegistryClientError, SkillVerificationError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result.model_dump(mode="json")
+
+    @app.post("/api/v2/skills/{skill_id}/update")
+    def update_skill(skill_id: str, body: SkillUpdateRequest) -> dict[str, Any]:
+        try:
+            url = _resolve_skill_registry_url(body.registry_url)
+            result = SkillInstaller(
+                client=RegistryClient(url),
+                store=skill_store,
+            ).install(skill_id, allow_untrusted=body.allow_untrusted, force=body.force)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+        except SkillVerificationError as exc:
+            status_code = 409 if "pinned" in str(exc) else 400
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        except (RegistryClientError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result.model_dump(mode="json")
+
     @app.post("/api/v2/skills/{skill_id}/enable")
     def enable_skill(skill_id: str) -> dict[str, Any]:
         try:
@@ -178,6 +271,57 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="skill not found") from exc
         return {"skill": record.summary().model_dump(mode="json")}
+
+    @app.get("/api/v2/skills/{skill_id}/versions")
+    def get_skill_versions(skill_id: str) -> dict[str, Any]:
+        try:
+            return {"versions": skill_store.list_versions(skill_id)}
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+
+    @app.post("/api/v2/skills/{skill_id}/pin")
+    def pin_skill(skill_id: str, body: SkillPinRequest) -> dict[str, Any]:
+        try:
+            record = skill_store.pin(skill_id, version=body.version)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"skill": record.model_dump(mode="json")}
+
+    @app.post("/api/v2/skills/{skill_id}/unpin")
+    def unpin_skill(skill_id: str) -> dict[str, Any]:
+        try:
+            record = skill_store.unpin(skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+        return {"skill": record.model_dump(mode="json")}
+
+    @app.post("/api/v2/skills/{skill_id}/update-policy")
+    def set_skill_update_policy(skill_id: str, body: SkillUpdatePolicyRequest) -> dict[str, Any]:
+        try:
+            record = skill_store.set_update_policy(skill_id, body.update_policy)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"skill": record.model_dump(mode="json")}
+
+    @app.post("/api/v2/skills/{skill_id}/rollback")
+    def rollback_skill(skill_id: str, body: SkillRollbackRequest) -> dict[str, Any]:
+        try:
+            record = skill_store.rollback(skill_id, version=body.version)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill version not found") from exc
+        return {"skill": record.model_dump(mode="json")}
+
+    @app.delete("/api/v2/skills/{skill_id}")
+    def remove_skill(skill_id: str) -> dict[str, Any]:
+        try:
+            skill_store.remove(skill_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="skill not found") from exc
+        return {"removed": True, "skill_id": skill_id}
 
     @app.get("/api/v2/providers/settings")
     def get_provider_settings() -> dict[str, Any]:
@@ -659,6 +803,43 @@ def _resolve_skill_registry_url(registry_url: str | None) -> str:
     if not url:
         raise ValueError("registry_url is required when CODER_SKILL_REGISTRY_URL is not configured")
     return url
+
+
+def _skill_update_report(skill_store: InstalledSkillStore, entries: list[Any]) -> list[dict[str, Any]]:
+    by_id = {entry.id: entry for entry in entries}
+    updates: list[dict[str, Any]] = []
+    for record in skill_store.list_installed():
+        entry = by_id.get(record.id)
+        if entry is None:
+            updates.append(
+                {
+                    "skill_id": record.id,
+                    "installed_version": record.manifest.version,
+                    "available_version": None,
+                    "update_available": False,
+                    "auto_update_eligible": False,
+                    "pinned_version": record.pinned_version,
+                    "update_policy": record.update_policy,
+                    "reason": "not in registry",
+                }
+            )
+            continue
+        update_available = entry.version != record.manifest.version or entry.sha256 != record.package_sha256
+        updates.append(
+            {
+                "skill_id": record.id,
+                "installed_version": record.manifest.version,
+                "available_version": entry.version,
+                "update_available": update_available,
+                "auto_update_eligible": is_auto_update_allowed(record, entry),
+                "pinned_version": record.pinned_version,
+                "update_policy": record.update_policy,
+                "risk_level": entry.risk_level,
+                "trust_level": entry.trust_level,
+                "external_effect": entry.external_effect,
+            }
+        )
+    return updates
 
 
 def _initial_data_from_request(body: RunRequest, repo_root: Path) -> dict[str, Any]:

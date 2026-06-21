@@ -11,6 +11,7 @@ SkillType = Literal["knowledge", "procedure", "connector", "artifact", "evaluati
 SkillRiskLevel = Literal["low", "medium", "high"]
 SkillTrustLevel = Literal["official", "verified", "community", "local", "untrusted"]
 SkillAuthority = Literal["planner", "worker", "tester", "synthesizer"]
+SkillUpdatePolicy = Literal["manual", "auto_official_low_risk"]
 
 _SKILL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 
@@ -202,6 +203,7 @@ class InstalledSkillRecord(BaseModel):
     trust_level: SkillTrustLevel
     enabled: bool = True
     pinned_version: str | None = None
+    update_policy: SkillUpdatePolicy = "manual"
 
     @property
     def id(self) -> str:

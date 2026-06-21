@@ -127,6 +127,100 @@ class SkillApiTests(unittest.TestCase):
             self.assertEqual(disabled.status_code, 200)
             self.assertFalse(disabled.json()["skill"]["enabled"])
 
+    def test_skill_api_manages_developer_import_updates_pin_rollback_and_remove(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package_v1, digest_v1 = _write_skill_package(root, package_name="github-research-0.1.0.zip")
+            registry_v1 = _write_registry(root, package_v1, digest_v1)
+            client = TestClient(create_app(store_root=root / ".coder", frontend_dist=root))
+
+            install = client.post(
+                "/api/v2/skills/install",
+                json={"skill_id": "github-research", "registry_url": str(registry_v1)},
+            )
+            self.assertEqual(install.status_code, 200)
+
+            local_root = root / "local-skill"
+            local_root.mkdir()
+            (local_root / "skill.json").write_text(
+                json.dumps(
+                    _manifest(
+                        id="local-research",
+                        name="Local Research",
+                        publisher="local-dev",
+                        connectors=[],
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            (local_root / "SKILL.md").write_text("# Local Research\n\nLocal developer fallback.\n", encoding="utf-8")
+            imported = client.post(
+                "/api/v2/skills/developer-import",
+                json={"path": str(local_root)},
+            )
+            self.assertEqual(imported.status_code, 200)
+            self.assertEqual(imported.json()["record"]["source"], "local")
+            self.assertEqual(imported.json()["record"]["trust_level"], "local")
+
+            pinned = client.post("/api/v2/skills/github-research/pin", json={})
+            self.assertEqual(pinned.status_code, 200)
+            self.assertEqual(pinned.json()["skill"]["pinned_version"], "0.1.0")
+
+            package_v2, digest_v2 = _write_skill_package(
+                root,
+                manifest=_manifest(version="0.2.0"),
+                package_name="github-research-0.2.0.zip",
+            )
+            registry_v2 = _write_registry(root, package_v2, digest_v2, version="0.2.0")
+            blocked_update = client.post(
+                "/api/v2/skills/github-research/update",
+                json={"registry_url": str(registry_v2)},
+            )
+            self.assertEqual(blocked_update.status_code, 409)
+
+            unpinned = client.post("/api/v2/skills/github-research/unpin")
+            self.assertEqual(unpinned.status_code, 200)
+            self.assertIsNone(unpinned.json()["skill"]["pinned_version"])
+
+            updated = client.post(
+                "/api/v2/skills/github-research/update",
+                json={"registry_url": str(registry_v2)},
+            )
+            self.assertEqual(updated.status_code, 200)
+            self.assertEqual(updated.json()["record"]["manifest"]["version"], "0.2.0")
+
+            versions = client.get("/api/v2/skills/github-research/versions")
+            self.assertEqual(versions.status_code, 200)
+            self.assertIn("0.1.0", {item["version"] for item in versions.json()["versions"]})
+
+            rolled_back = client.post("/api/v2/skills/github-research/rollback", json={"version": "0.1.0"})
+            self.assertEqual(rolled_back.status_code, 200)
+            self.assertEqual(rolled_back.json()["skill"]["manifest"]["version"], "0.1.0")
+
+            policy = client.post(
+                "/api/v2/skills/github-research/update-policy",
+                json={"update_policy": "auto_official_low_risk"},
+            )
+            self.assertEqual(policy.status_code, 200)
+
+            updates = client.get("/api/v2/skills/updates", params={"registry_url": str(registry_v2)})
+            self.assertEqual(updates.status_code, 200)
+            self.assertTrue(updates.json()["updates"][0]["update_available"])
+            self.assertTrue(updates.json()["updates"][0]["auto_update_eligible"])
+
+            auto_updated = client.post(
+                "/api/v2/skills/auto-update",
+                json={"registry_url": str(registry_v2)},
+            )
+            self.assertEqual(auto_updated.status_code, 200)
+            self.assertEqual(auto_updated.json()["updated"][0]["record"]["manifest"]["version"], "0.2.0")
+
+            removed = client.delete("/api/v2/skills/local-research")
+            self.assertEqual(removed.status_code, 200)
+            self.assertTrue(removed.json()["removed"])
+
 
 def _manifest(**overrides: object) -> dict[str, object]:
     manifest: dict[str, object] = {
@@ -159,8 +253,13 @@ def _manifest(**overrides: object) -> dict[str, object]:
     return manifest
 
 
-def _write_skill_package(root: Path, *, manifest: dict[str, object] | None = None) -> tuple[Path, str]:
-    package_path = root / "github-research.zip"
+def _write_skill_package(
+    root: Path,
+    *,
+    manifest: dict[str, object] | None = None,
+    package_name: str = "github-research.zip",
+) -> tuple[Path, str]:
+    package_path = root / package_name
     with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("skill.json", json.dumps(manifest or _manifest(), ensure_ascii=False, indent=2))
         archive.writestr("SKILL.md", "# GitHub Research\n\nUse for GitHub source research.\n")
@@ -168,7 +267,7 @@ def _write_skill_package(root: Path, *, manifest: dict[str, object] | None = Non
     return package_path, sha256_digest(data)
 
 
-def _write_registry(root: Path, package_path: Path, digest: str) -> Path:
+def _write_registry(root: Path, package_path: Path, digest: str, *, version: str = "0.1.0") -> Path:
     registry_path = root / "registry.json"
     registry = {
         "registry_version": "0.1",
@@ -177,7 +276,7 @@ def _write_registry(root: Path, package_path: Path, digest: str) -> Path:
             {
                 "id": "github-research",
                 "name": "GitHub Research",
-                "version": "0.1.0",
+                "version": version,
                 "description": "Search and compare open-source GitHub repositories.",
                 "category": "research",
                 "publisher": "coder-official",

@@ -29,6 +29,20 @@ def sha256_digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def sha256_directory(root: str | Path) -> str:
+    base = Path(root)
+    hasher = hashlib.sha256()
+    for path in sorted(item for item in base.rglob("*") if item.is_file()):
+        relative = path.relative_to(base).as_posix()
+        if relative == "installed.json":
+            continue
+        hasher.update(relative.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
+
+
 def verify_sha256(data: bytes, expected: str) -> str:
     expected_digest = _normalize_sha256(expected)
     actual = sha256_digest(data)
@@ -81,6 +95,7 @@ def verify_package_layout(skill_root: str | Path) -> list[str]:
         warnings.append("scripts directory is present but runtime script execution is disabled")
     if (root / "hooks").exists():
         warnings.append("hooks directory is present but hook execution is disabled")
+    warnings.extend(_scan_unsafe_files(root))
     return warnings
 
 
@@ -122,3 +137,23 @@ def _validate_zip_member(name: str, dest_resolved: Path) -> None:
     if not target.is_relative_to(dest_resolved):
         raise SkillVerificationError(f"unsafe package path: {name}")
 
+
+def _scan_unsafe_files(root: Path) -> list[str]:
+    warnings: list[str] = []
+    unsafe_suffixes = {
+        ".bat",
+        ".cmd",
+        ".com",
+        ".dll",
+        ".exe",
+        ".msi",
+        ".ps1",
+        ".scr",
+        ".sh",
+        ".so",
+    }
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix()
+        if path.suffix.lower() in unsafe_suffixes:
+            warnings.append(f"unsafe executable-like file is present but disabled: {relative}")
+    return warnings
