@@ -1088,19 +1088,6 @@ export function App() {
               ))
             )}
           </div>
-          {library.workflows.length > 0 && (
-            <details className="advanced-node-tools">
-              <summary>Advanced legacy runtime workflows</summary>
-              <div className="list compact-list">
-                {library.workflows.map((item) => (
-                  <button className="list-item" key={item.id} onClick={() => loadWorkflow(item.id)}>
-                    <span>{item.name ?? item.id}</span>
-                    <small>{t.library.nodeEdgeCount(item.nodes, item.edges)}</small>
-                  </button>
-                ))}
-              </div>
-            </details>
-          )}
         </section>
 
         <section className="panel">
@@ -1196,32 +1183,10 @@ export function App() {
         <section className="canvas-panel">
           <div className="toolbar">
             <div>
-              <strong>{showAdvancedRuntime ? workflow.name : agentWorkflow.name}</strong>
-              <span>
-                {showAdvancedRuntime ? `${workflow.id} · legacy runtime preview` : `${agentWorkflow.id} · AgentWorkflowSpec`}
-              </span>
+              <strong>{agentWorkflow.name}</strong>
+              <span>{agentWorkflow.id}</span>
             </div>
             <div className="node-add-controls">
-              <label className="checkbox-row advanced-toggle">
-                <input
-                  type="checkbox"
-                  checked={showAdvancedRuntime}
-                  onChange={(event) => void setAdvancedRuntimeMode(event.target.checked)}
-                />
-                View legacy runtime preview
-              </label>
-              {showAdvancedRuntime && (
-                <details className="advanced-node-tools">
-                  <summary>Advanced legacy runtime nodes</summary>
-                  <div className="button-row">
-                    {[...primaryNodeTypes, ...advancedNodeTypes].map((type) => (
-                      <button key={type} onClick={() => addWorkflowNode(type)}>
-                        {t.canvas.addNode(type)}
-                      </button>
-                    ))}
-                  </div>
-                </details>
-              )}
             </div>
           </div>
           <ReactFlow
@@ -1327,7 +1292,7 @@ export function App() {
             <span>Only Planner can ask the user</span>
             <span>Workers follow PlannerOrder</span>
             <span>Reviewers return evidence</span>
-            <span>{runtimePreviewDirty ? "Legacy runtime preview needs compile" : `${workflow.nodes.length} legacy runtime nodes`}</span>
+            <span>Runtime profiles are compiled internally</span>
           </div>
           <AgentWorkflowValidationPanel result={agentWorkflowValidation} />
           <details className="json-details">
@@ -1357,20 +1322,6 @@ export function App() {
               </label>
             </div>
             <textarea className="json-editor" value={jsonText} onChange={(event) => setJsonText(event.target.value)} />
-          </details>
-          <details className="json-details" open={showAdvancedRuntime}>
-            <summary>Legacy Runtime Preview JSON (Advanced)</summary>
-            <div className="button-row">
-              <button onClick={() => void compileRuntimePreview()}>Compile Legacy Preview</button>
-              <button onClick={applyRuntimeJson}>Apply Legacy Runtime JSON</button>
-              <button onClick={persistRuntimeWorkflow}>Save Legacy Runtime JSON</button>
-              <button onClick={exportRuntimeWorkflow}>Export Legacy Runtime JSON</button>
-            </div>
-            <textarea
-              className="json-editor"
-              value={runtimeJsonText}
-              onChange={(event) => setRuntimeJsonText(event.target.value)}
-            />
           </details>
         </section>
       </main>
@@ -1665,7 +1616,7 @@ export function App() {
 
 function sectionLabel(section: AppSection): string {
   if (section === "workflows") return "Workflows";
-  if (section === "skills") return "Skills";
+  if (section === "skills") return "Extensions";
   if (section === "runs") return "Runs";
   return "Settings";
 }

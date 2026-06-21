@@ -11,11 +11,12 @@ Agents exchange compact structured artifacts instead of full transcripts.
 The active direction is:
 
 ```text
-v0.8 Coding Harness Core
+v0.9 Ordinary-First Unified Agent Architecture
 + Planner-led coding loop
-+ Repository intelligence kernel
-+ AgentHarness sub-agent boundary
-+ Patch preview, sandbox check, debug evidence, and coding evaluation
++ AgentRecipe role cards compiled into RuntimeProfiles
++ AgentRun / AgentEngine execution for coding work
++ Extension System with Plugins and Skills
++ ContextService, TokenLedger, PatchService, CommandService, and ArtifactRepairService
 ```
 
 The default user-facing template is:
@@ -56,7 +57,7 @@ The default workflow uses six validated planning artifacts:
 - `planner_decision`
 - `round_summary`
 
-The v0.8 coding kernel also produces internal coding artifacts:
+The v0.9 coding kernel also produces internal coding artifacts:
 
 - `repo_index`
 - `command_discovery`
@@ -105,6 +106,14 @@ runner.
 ## Current Capabilities
 
 - `AgentWorkflowSpec` for the user-visible Planner / Executor / Tester layer.
+- Ordinary Agent creation can use role cards and omit manual capability
+  selection; runtime derives compatible capabilities and profiles.
+- `AgentRecipe` and `RuntimeProfileCompiler` compile ordinary Agent choices into
+  internal engine, context, token, artifact, plugin, skill, memory, repair, and
+  tool policies.
+- `AgentRun` dispatches code work through `AgentEngineRegistry` and
+  `CodeWorkerEngine`.
+- Extensions page separates Plugins, Skills, Installed, and Updates.
 - `AgentHarness` base loop with Planner, Code Worker, Tester, and Final Review
   policies.
 - Repository intelligence for Python packages, Vite/React frontends, risk
@@ -126,7 +135,8 @@ runner.
 - Provider settings for OpenAI-compatible model providers.
 - Local run history, stored run replay, and artifact/blob loading.
 - Scoped path guards, patch preview/apply/rollback primitives, command
-  approvals, and preflight checks retained as internal safety capabilities.
+  approvals, and preflight checks retained behind `PatchService` and
+  `CommandService`.
 - DebugFinding artifacts and `coding_eval` diagnostics for Planner replan and
   benchmark reporting.
 

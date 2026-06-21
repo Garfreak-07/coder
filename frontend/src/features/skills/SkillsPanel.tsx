@@ -5,10 +5,10 @@ import {
   autoUpdateSkills,
   disableSkill,
   discoverSkills,
+  getExtensionPlugins,
   enableSkill,
   getInstalledSkills,
   getSkillUpdates,
-  importDeveloperSkill,
   installSkill,
   pinSkill,
   removeSkill,
@@ -17,16 +17,15 @@ import {
   unpinSkill,
   updateSkill
 } from "../../api";
-import type { DiscoverSkillsPayload, InstalledSkillsPayload, SkillSummary, SkillUpdateInfo } from "../../types";
+import type { DiscoverSkillsPayload, InstalledSkillsPayload, PluginManifest, SkillSummary, SkillUpdateInfo } from "../../types";
 
-type SkillTab = "discover" | "installed" | "updates" | "trusted" | "developer";
+type SkillTab = "plugins" | "skills" | "installed" | "updates";
 
 const skillTabs: Array<{ id: SkillTab; label: string }> = [
-  { id: "discover", label: "Discover" },
+  { id: "plugins", label: "Plugins" },
+  { id: "skills", label: "Skills" },
   { id: "installed", label: "Installed" },
-  { id: "updates", label: "Updates" },
-  { id: "trusted", label: "Trusted Sources" },
-  { id: "developer", label: "Developer Import" }
+  { id: "updates", label: "Updates" }
 ];
 
 interface SkillsPanelProps {
@@ -34,9 +33,9 @@ interface SkillsPanelProps {
 }
 
 export function SkillsPanel({ onStatus }: SkillsPanelProps) {
-  const [tab, setTab] = useState<SkillTab>("discover");
+  const [tab, setTab] = useState<SkillTab>("plugins");
   const [registryUrl, setRegistryUrl] = useState("");
-  const [developerPath, setDeveloperPath] = useState("");
+  const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const [installed, setInstalled] = useState<InstalledSkillsPayload | null>(null);
   const [discover, setDiscover] = useState<DiscoverSkillsPayload | null>(null);
   const [updates, setUpdates] = useState<SkillUpdateInfo[]>([]);
@@ -49,7 +48,16 @@ export function SkillsPanel({ onStatus }: SkillsPanelProps) {
 
   useEffect(() => {
     void refreshInstalled();
+    void refreshPlugins();
   }, []);
+
+  async function refreshPlugins() {
+    try {
+      setPlugins(await getExtensionPlugins());
+    } catch (error) {
+      onStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   async function refreshInstalled() {
     try {
@@ -113,7 +121,7 @@ export function SkillsPanel({ onStatus }: SkillsPanelProps) {
 
   return (
     <section className="panel skills-panel">
-      <div className="panel-title">Skills</div>
+      <div className="panel-title">Extensions</div>
       <div className="skill-tabs">
         {skillTabs.map((item) => (
           <button className={item.id === tab ? "selected" : ""} key={item.id} onClick={() => setTab(item.id)}>
@@ -130,7 +138,30 @@ export function SkillsPanel({ onStatus }: SkillsPanelProps) {
         <button disabled={loading} onClick={refreshUpdates}>Check Updates</button>
       </div>
 
-      {tab === "discover" && (
+      {tab === "plugins" && (
+        <div className="skill-grid">
+          {plugins.map((plugin) => (
+            <article className="skill-card" key={plugin.id}>
+              <div className="skill-card-heading">
+                <strong>{plugin.name}</strong>
+                <span className="status-pill good">{plugin.extension_type}</span>
+              </div>
+              <p>{plugin.description}</p>
+              <div className="summary-grid">
+                <span>{plugin.version}</span>
+                <span>{plugin.trust_level}</span>
+                <span>{plugin.risk_level}</span>
+                <span>{plugin.enabled ? "enabled" : "disabled"}</span>
+                {"operations" in plugin && <span>{plugin.operations.length} operation(s)</span>}
+                {"requires_preview" in plugin && <span>{plugin.requires_preview ? "preview required" : "no preview"}</span>}
+              </div>
+            </article>
+          ))}
+          {plugins.length === 0 && <div className="muted">No plugins available.</div>}
+        </div>
+      )}
+
+      {tab === "skills" && (
         <div className="skill-grid">
           {(discover?.skills ?? []).map((skill) => (
             <SkillCard
@@ -225,34 +256,6 @@ export function SkillsPanel({ onStatus }: SkillsPanelProps) {
         </div>
       )}
 
-      {tab === "trusted" && (
-        <div className="skill-grid">
-          <article className="skill-card">
-            <div className="skill-card-heading">
-              <strong>{registryUrl.trim() || "Registry"}</strong>
-              <span className="status-pill">configured</span>
-            </div>
-            <div className="summary-grid">
-              <span>{discover?.registry.registry_version ?? "unknown version"}</span>
-              <span>{discover?.registry.generated_at ?? "not loaded"}</span>
-              <span>{(discover?.skills ?? []).filter((skill) => skill.trust_level === "official").length} official</span>
-              <span>{(discover?.skills ?? []).filter((skill) => skill.trust_level === "verified").length} verified</span>
-            </div>
-          </article>
-        </div>
-      )}
-
-      {tab === "developer" && (
-        <div className="developer-import">
-          <label>
-            Local Skill Path
-            <input value={developerPath} onChange={(event) => setDeveloperPath(event.target.value)} />
-          </label>
-          <button disabled={loading || !developerPath.trim()} onClick={() => runSkillAction(`Imported ${developerPath}.`, () => importDeveloperSkill(developerPath.trim()))}>
-            Import
-          </button>
-        </div>
-      )}
     </section>
   );
 }

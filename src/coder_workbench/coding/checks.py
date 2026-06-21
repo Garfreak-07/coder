@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from .artifacts import CheckCommand, CheckResultArtifact, CommandDiscoveryArtifact
+from .command_service import CommandService
 
 
 def run_check_command(
@@ -32,32 +32,29 @@ def run_check_command(
             status="blocked",
             summary="Check cwd does not exist.",
         )
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=workdir,
-            shell=True,
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        output = (exc.stdout or "") + (exc.stderr or "")
+    result = CommandService(root).run_check(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        require_approval=False,
+    )
+    if result.get("status") == "blocked":
         return CheckResultArtifact(
             command=command,
             cwd=cwd,
             status="blocked",
-            output=output[-8000:],
-            summary=f"Check timed out after {timeout_seconds} seconds.",
+            output=str(result.get("output") or "")[-8000:],
+            summary=str(result.get("message") or result.get("output") or "Check blocked."),
         )
-    output = (completed.stdout + completed.stderr)[-8000:]
+    output = str(result.get("output") or "")[-8000:]
+    returncode = result.get("returncode")
     return CheckResultArtifact(
         command=command,
         cwd=cwd,
-        status="pass" if completed.returncode == 0 else "fail",
-        returncode=completed.returncode,
+        status="pass" if result.get("passed") else "fail",
+        returncode=int(returncode) if returncode is not None else None,
         output=output,
-        summary=_summarize_output(output, completed.returncode),
+        summary=_summarize_output(output, int(returncode or 1)),
     )
 
 

@@ -23,6 +23,7 @@ from coder_workbench.core import (
     validate_agent_workflow_payload,
 )
 from coder_workbench.core.preflight import validate_workflow_preflight
+from coder_workbench.extensions import builtin_plugin_manifests, extension_search
 from coder_workbench.runtime import run_workflow
 from coder_workbench.runtime.runner import WorkflowRunner
 from coder_workbench.server.agent_manager import AgentGraphRunManager
@@ -109,6 +110,15 @@ class SkillInstallRequest(BaseModel):
     allow_untrusted: bool = False
 
 
+class ExtensionInstallRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    extension_id: str
+    extension_type: str = "skill"
+    registry_url: str | None = None
+    allow_untrusted: bool = False
+
+
 class SkillUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -167,6 +177,45 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     @app.get("/api/v2/agent-role-cards")
     def get_agent_role_cards() -> dict[str, Any]:
         return {"role_cards": role_card_catalog()}
+
+    @app.get("/api/v2/extensions/plugins")
+    def get_extension_plugins() -> dict[str, Any]:
+        return {"plugins": [plugin.model_dump(mode="json") for plugin in builtin_plugin_manifests()]}
+
+    @app.get("/api/v2/extensions/skills")
+    def get_extension_skills() -> dict[str, Any]:
+        records = skill_store.list_installed()
+        return {
+            "skills": [extension.model_dump(mode="json") for extension in extension_search(query="", skills=records) if extension.extension_type == "skill"],
+            "index": build_skill_index(records).model_dump(mode="json"),
+        }
+
+    @app.get("/api/v2/extensions/installed")
+    def get_installed_extensions() -> dict[str, Any]:
+        records = skill_store.list_installed()
+        extensions = extension_search(query="", skills=records)
+        return {"extensions": [extension.model_dump(mode="json") for extension in extensions]}
+
+    @app.get("/api/v2/extensions/search")
+    def search_extensions(q: str = "") -> dict[str, Any]:
+        extensions = extension_search(query=q, skills=skill_store.list_installed())
+        return {"extensions": [extension.model_dump(mode="json") for extension in extensions]}
+
+    @app.post("/api/v2/extensions/install")
+    def install_extension(body: ExtensionInstallRequest) -> dict[str, Any]:
+        if body.extension_type not in {"skill", "skills"}:
+            raise HTTPException(status_code=400, detail="Only skill extension installs are supported by this local registry.")
+        try:
+            url = _resolve_skill_registry_url(body.registry_url)
+            result = SkillInstaller(
+                client=RegistryClient(url),
+                store=skill_store,
+            ).install(body.extension_id, allow_untrusted=body.allow_untrusted)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="extension not found") from exc
+        except (RegistryClientError, SkillVerificationError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result.model_dump(mode="json")
 
     @app.get("/api/v2/skills/installed")
     def get_installed_skills() -> dict[str, Any]:

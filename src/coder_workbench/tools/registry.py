@@ -1,8 +1,6 @@
 ﻿from __future__ import annotations
 
-import hashlib
 import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -10,7 +8,7 @@ from typing import Any, Callable, Literal
 from coder_workbench.project_index import annotate_recommendations, build_project_modules, recommend_modules
 from coder_workbench.tools.mcp import call_mcp_tool
 from coder_workbench.tools.patching import apply_patch, propose_patch, rollback_patch
-from coder_workbench.tools.filesystem import resolve_scoped_path, summarize_project
+from coder_workbench.tools.filesystem import summarize_project
 
 
 ToolFn = Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
@@ -195,44 +193,23 @@ def _dry_run_patch(args: dict[str, Any], runtime_context: dict[str, Any]) -> dic
 
 
 def _run_check(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
+    from coder_workbench.coding.command_service import CommandService
+
     command = str(args.get("command") or "").strip()
     if not command:
         return {"passed": True, "output": "No check command configured.", "skipped": True}
     repo_root = Path(runtime_context["repo_root"]).resolve()
     scopes = _list_value(runtime_context.get("scopes"))
     default_cwd = scopes[0] if scopes else "."
-    cwd = resolve_scoped_path(repo_root, str(args.get("cwd") or default_cwd), scopes)
-    cwd_relative = cwd.relative_to(repo_root).as_posix() if cwd != repo_root else "."
-    approval_key = _command_approval_key(command, cwd_relative)
-    if not _command_is_approved(approval_key, runtime_context):
-        return {
-            "passed": False,
-            "status": "blocked",
-            "output": f"Check command requires explicit approval: {command}",
-            "blocked": True,
-            "requires_approval": True,
-            "approval_type": "command",
-            "approval_key": approval_key,
-            "command": command,
-            "cwd": cwd_relative,
-            "message": f"Approve command before running: {command}",
-        }
-    completed = subprocess.run(
+    return CommandService(
+        repo_root,
+        scopes=scopes,
+        data=runtime_context.get("data") if isinstance(runtime_context.get("data"), dict) else {},
+    ).run_check(
         command,
-        cwd=cwd,
-        shell=True,
-        text=True,
-        capture_output=True,
-        timeout=int(args.get("timeout_seconds", 120)),
+        cwd=str(args.get("cwd") or default_cwd),
+        timeout_seconds=int(args.get("timeout_seconds", 120)),
     )
-    return {
-        "passed": completed.returncode == 0,
-        "returncode": completed.returncode,
-        "cwd": cwd_relative,
-        "command": command,
-        "approval_key": approval_key,
-        "output": (completed.stdout + completed.stderr)[-8000:],
-    }
 
 
 def _list_value(value: Any) -> list[str]:
@@ -243,20 +220,6 @@ def _list_value(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item).strip()]
     return [str(value)]
-
-
-def _command_approval_key(command: str, cwd: str) -> str:
-    digest = hashlib.sha256(f"{cwd}\0{command}".encode("utf-8")).hexdigest()
-    return f"cmd:{digest}"
-
-
-def _command_is_approved(approval_key: str, runtime_context: dict[str, Any]) -> bool:
-    data = runtime_context.get("data", {})
-    approvals = data.get("command_approvals", {})
-    return bool(
-        data.get("preapprove_all")
-        or (isinstance(approvals, dict) and approvals.get(approval_key) is True)
-    )
 
 
 def _project_summary(repo_root: Path, files: list[dict[str, Any]], scopes: list[str]) -> dict[str, Any]:

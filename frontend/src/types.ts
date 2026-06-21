@@ -53,6 +53,7 @@ export interface AgentWorkflowAgent {
   name: string;
   role: AgentWorkflowRole;
   role_card?: string | null;
+  purpose?: string;
   model_tier: AgentModelTier;
   can_talk_to_human: boolean;
   capabilities: AgentCapability[];
@@ -460,4 +461,23 @@ export interface SkillUpdateInfo {
   risk_level?: string;
   trust_level?: string;
   external_effect?: boolean;
+}
+
+export interface ExtensionManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  extension_type: "plugin" | "skill" | "agent_engine" | string;
+  installed: boolean;
+  enabled: boolean;
+  risk_level: string;
+  trust_level: string;
+  tags: string[];
+}
+
+export interface PluginManifest extends ExtensionManifest {
+  operations: string[];
+  external_effect: boolean;
+  requires_preview: boolean;
 }

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import ValidationError
-
 from coder_workbench.agent_graph.artifacts import graph_artifact_id
-from coder_workbench.agent_graph.repair import build_repair_prompt, parse_json_object
+from coder_workbench.agent_graph.repair import parse_json_object
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, WorkItem
+from coder_workbench.agent_harness.repair import ArtifactRepairService
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
 
 from .base import AgentHarness
@@ -24,8 +23,16 @@ class CodeWorkerHarness(AgentHarness):
         item: WorkItem,
         envelope: AgentTaskEnvelope,
         coding_context_packet: dict[str, Any] | None = None,
+        emit: Any | None = None,
+        prompt: str | None = None,
     ) -> ExecutionRecord:
-        payload = self._payload_from_model_or_mock(item=item, envelope=envelope, coding_context_packet=coding_context_packet)
+        payload = self._payload_from_model_or_mock(
+            item=item,
+            envelope=envelope,
+            coding_context_packet=coding_context_packet,
+            emit=emit,
+            prompt=prompt,
+        )
         payload = _with_forced_fields(
             payload,
             {
@@ -56,6 +63,8 @@ class CodeWorkerHarness(AgentHarness):
         item: WorkItem,
         envelope: AgentTaskEnvelope,
         coding_context_packet: dict[str, Any] | None,
+        emit: Any | None,
+        prompt: str | None,
     ) -> dict[str, Any]:
         if not self.model:
             if coding_context_packet is not None and not coding_context_packet.get("included_files") and item.task_summary:
@@ -76,38 +85,66 @@ class CodeWorkerHarness(AgentHarness):
                 "needs_planner_decision": False,
                 "tester_notes": ["No real file mutation was performed in mock mode."],
             }
-        response = self.model.invoke(_worker_prompt(item, envelope, coding_context_packet))
+        _emit(
+            emit,
+            "agent_graph.agent_call.started",
+            "AgentGraph model call started",
+            agent_id=item.assignee_agent_id,
+            artifact_type="execution_result",
+            work_item_id=item.work_item_id,
+            merge_index=item.merge_index,
+        )
+        response = self.model.invoke(prompt or _worker_prompt(item, envelope, coding_context_packet))
         content = str(getattr(response, "content", response))
         payload = parse_json_object(content)
         if payload is not None:
             try:
-                validate_artifact(payload, expected_type="execution_result")
-                return payload
-            except ArtifactValidationError:
-                pass
-        repaired = self._repair_once(content)
-        if repaired is not None:
-            return repaired
-        return _blocked_payload(item, envelope.round, "Worker output failed schema validation after one repair.")
-
-    def _repair_once(self, invalid_output: str) -> dict[str, Any] | None:
-        if not self.model:
-            return None
-        prompt = build_repair_prompt(
+                artifact = validate_artifact(payload, expected_type="execution_result")
+                _emit(
+                    emit,
+                    "agent_graph.agent_call.completed",
+                    "AgentGraph model call completed",
+                    agent_id=item.assignee_agent_id,
+                    artifact_type="execution_result",
+                    work_item_id=item.work_item_id,
+                    merge_index=item.merge_index,
+                )
+                return artifact
+            except ArtifactValidationError as exc:
+                _emit_schema_failed(emit, item, exc.errors)
+        else:
+            _emit_schema_failed(emit, item, [{"loc": ["response"], "msg": "model output was not a JSON object"}])
+        repaired = ArtifactRepairService().repair_once(
+            self.model,
             expected_type="execution_result",
-            invalid_output=invalid_output,
-            errors=[{"loc": ["response"], "msg": "schema validation failed"}],
+            invalid_output=content,
+            agent_id=item.assignee_agent_id,
+            emit=emit,
+            work_item_id=item.work_item_id,
+            merge_index=item.merge_index,
             schema_notes="Return a valid execution_result JSON object.",
         )
-        response = self.model.invoke(prompt)
-        payload = parse_json_object(str(getattr(response, "content", response)))
-        if payload is None:
-            return None
-        try:
-            validate_artifact(payload, expected_type="execution_result")
-        except (ArtifactValidationError, ValidationError):
-            return None
-        return payload
+        if repaired is not None:
+            return repaired
+        return _blocked_payload(item, envelope.round, "Worker output did not match execution_result schema after one repair.")
+
+
+def _emit_schema_failed(emit: Any | None, item: WorkItem, errors: list[dict[str, Any]]) -> None:
+    _emit(
+        emit,
+        "agent_graph.agent_call.schema_failed",
+        "AgentGraph artifact schema validation failed",
+        agent_id=item.assignee_agent_id,
+        artifact_type="execution_result",
+        work_item_id=item.work_item_id,
+        merge_index=item.merge_index,
+        schema_errors=errors[:8],
+    )
+
+
+def _emit(emit: Any | None, event_type: str, message: str, **payload: Any) -> None:
+    if emit is not None:
+        emit(event_type, message, **{key: value for key, value in payload.items() if value is not None})
 
 
 def _worker_prompt(item: WorkItem, envelope: AgentTaskEnvelope, coding_context_packet: dict[str, Any] | None) -> str:
@@ -123,6 +160,7 @@ def _worker_prompt(item: WorkItem, envelope: AgentTaskEnvelope, coding_context_p
 
 
 def _blocked_payload(item: WorkItem, round_number: int, summary: str) -> dict[str, Any]:
+    schema_blocker = "schema" in summary.lower()
     return {
         "artifact_type": "execution_result",
         "round": round_number,
@@ -133,10 +171,14 @@ def _blocked_payload(item: WorkItem, round_number: int, summary: str) -> dict[st
         "summary": summary,
         "unexpected_issues": ["context_or_schema_blocker"],
         "needs_planner_decision": True,
-        "blocker_type": "context_missing" if "context" in summary.lower() else "schema_validation_failed",
-        "planner_question": "Should Planner provide more context, retry, or replan this work item?",
+        "blocker_type": "schema_validation_failed" if schema_blocker else "context_missing",
+        "planner_question": (
+            "Worker output failed schema validation. Should Planner retry, reassign, or ask the user?"
+            if schema_blocker
+            else "Should Planner provide more context, retry, or replan this work item?"
+        ),
         "candidate_options": [],
-        "continue_without_human_possible": True,
+        "continue_without_human_possible": not schema_blocker,
     }
 
 

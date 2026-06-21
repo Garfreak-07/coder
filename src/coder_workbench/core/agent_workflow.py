@@ -100,6 +100,7 @@ class AgentWorkflowAgent(BaseModel):
     name: str
     role: str = ""
     role_card: str | None = None
+    purpose: str = ""
     model_tier: str = "standard"
     can_talk_to_human: bool = False
     capabilities: list[str] = Field(default_factory=list)
@@ -335,15 +336,6 @@ def validate_agent_workflow(spec: AgentWorkflowSpec) -> AgentWorkflowValidationR
                 _issue(
                     "invalid_model_tier",
                     f'Agent "{agent.name or agent.id}" must use model_tier best, standard, or economy.',
-                    "agent",
-                    agent.id or None,
-                )
-            )
-        if not agent.capabilities:
-            issues.append(
-                _issue(
-                    "missing_agent_capability",
-                    f'Agent "{agent.name or agent.id}" must have at least one capability.',
                     "agent",
                     agent.id or None,
                 )

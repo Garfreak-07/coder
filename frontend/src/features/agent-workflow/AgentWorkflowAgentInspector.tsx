@@ -40,13 +40,6 @@ export function AgentWorkflowAgentInspector({
   );
   const selectedRoleCard = roleCards.find((card) => card.id === agent.role_card) ?? null;
 
-  function toggleCapability(capabilityId: string, checked: boolean) {
-    const nextCapabilities = checked
-      ? Array.from(new Set([...agent.capabilities, capabilityId]))
-      : agent.capabilities.filter((candidate) => candidate !== capabilityId);
-    onChange({ capabilities: nextCapabilities });
-  }
-
   function applyRoleCard(roleCardId: string) {
     const roleCard = roleCards.find((card) => card.id === roleCardId);
     if (!roleCard) {
@@ -71,6 +64,14 @@ export function AgentWorkflowAgentInspector({
       <label>
         Name
         <input value={agent.name} onChange={(event) => onChange({ name: event.target.value })} />
+      </label>
+      <label>
+        Purpose
+        <textarea
+          value={agent.purpose ?? ""}
+          onChange={(event) => onChange({ purpose: event.target.value })}
+          rows={3}
+        />
       </label>
       {isPrimaryPlanner ? (
         <div className="agent-policy-summary">
@@ -124,9 +125,9 @@ export function AgentWorkflowAgentInspector({
             />
             Allow asking the user (Planner only)
           </label>
-          <div className="panel-subtitle">Capabilities</div>
+          <div className="panel-subtitle">Resolved Extensions & Policies</div>
           {capabilities.length === 0 ? (
-            <div className="muted">Capability catalog is unavailable.</div>
+            <div className="muted">Extension diagnostics are unavailable.</div>
           ) : (
             <div className="capability-list">
               {visibleCapabilities.map((capability) => {
@@ -137,8 +138,8 @@ export function AgentWorkflowAgentInspector({
                     <input
                       type="checkbox"
                       checked={selected}
-                      disabled={!roleAllowed && !selected}
-                      onChange={(event) => toggleCapability(capability.id, event.target.checked)}
+                      disabled
+                      readOnly
                     />
                     <span>
                       <strong>{capability.label}</strong>

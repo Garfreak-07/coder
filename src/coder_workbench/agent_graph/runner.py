@@ -40,23 +40,17 @@ from coder_workbench.core import (
     assert_valid_agent_workflow,
 )
 from coder_workbench.core.authority import authority_profile_for_agent
+from coder_workbench.context import ContextService
 from coder_workbench.coding import (
-    build_coding_context_packet,
     build_debug_finding,
     build_repo_intelligence,
     build_run_coding_eval,
 )
 from coder_workbench.runtime.state import RunEvent, RunResult, summarize_value
 from coder_workbench.skills import (
-    ContextPacketV2,
     InstalledSkillStore,
     SkillIndex,
-    SkillRouteDecision,
-    SkillRouter,
-    TokenLedgerEntry,
     build_skill_index,
-    estimate_tokens,
-    load_selected_skill_contexts,
 )
 
 
@@ -756,69 +750,28 @@ class AgentGraphRunner:
         repo_intelligence: dict[str, Any],
     ) -> Any:
         upstream_refs = upstream_refs_for_item(cache, item)
-        route = SkillRouter(skill_index).select(
-            user_request=request,
-            work_item=item,
-            role=self._agent_role(item.assignee_agent_id),
-        ) if skill_index.skills else SkillRouteDecision(work_item_id=item.work_item_id)
-        selected_context = load_selected_skill_contexts(
-            skill_store_root=skill_store_root,
-            decision=route,
-            skill_index=skill_index.skills,
-            task_summary=item.task_summary,
-        )
-        actual_skill_tokens = sum(context.estimated_tokens for context in selected_context)
-        route = route.model_copy(
-            update={
-                "estimated_skill_tokens": actual_skill_tokens,
-                "loaded_skill_refs": [context.ref for context in selected_context],
-            }
-        )
-        route_payload = route.model_dump(mode="json")
-        route_payload["selected_skill_context"] = [
-            context.model_dump(mode="json")
-            for context in selected_context
-        ]
-        envelope = cache.create_agent_task(
-            item,
+        context = ContextService().build_for_work_item(
+            cache=cache,
+            item=item,
             planner_order_ref=planner_order_ref,
             upstream_refs=upstream_refs,
-            skill_route=route_payload,
-        )
-        coding_packet = build_coding_context_packet(
-            repo_root,
-            envelope=envelope,
-            repo_index=repo_intelligence.get("repo_index"),
-            symbol_index=repo_intelligence.get("symbol_index"),
-            command_discovery=repo_intelligence.get("command_discovery"),
-            risk_map=repo_intelligence.get("risk_map"),
-            upstream_refs=upstream_refs,
-            selected_skills=route_payload["selected_skill_context"],
-        )
-        envelope = envelope.model_copy(
-            update={"coding_context_packet": coding_packet.model_dump(mode="json")}
-        )
-        cache.agent_tasks[item.work_item_id] = envelope
-        packet = _context_packet_v2(
-            envelope=envelope,
-            route=route,
+            user_request=request,
+            role=self._agent_role(item.assignee_agent_id),
             skill_index=skill_index,
+            skill_store_root=skill_store_root,
+            run_id=run_id,
+            repo_root=repo_root,
+            repo_intelligence=repo_intelligence,
             artifact_type=self._work_artifact_type(item.assignee_agent_id),
         )
-        ledger_entry = _token_ledger_entry(
-            run_id=run_id,
-            round_number=cache.round,
-            envelope=envelope,
-            route=route,
-            skill_index=skill_index,
-            packet=packet,
-            artifact_type=packet.artifact_type,
-        )
-        cache.record_context_packet_v2(item.work_item_id, packet.model_dump(mode="json"))
-        cache.record_token_ledger_entry(ledger_entry.model_dump(mode="json"))
+        envelope = context.envelope
+        route = context.skill_route
+        packet = context.context_packet
+        ledger_entry = context.token_ledger_entry
+        coding_packet = context.coding_context_packet
         emit(
             "skill.route.selected",
-            "SkillRouter selected skills for work item",
+            "ExtensionRouter selected skills for work item",
             round=cache.round,
             work_item_id=item.work_item_id,
             assigned_agent_id=item.assignee_agent_id,
@@ -1280,72 +1233,6 @@ def _repo_intelligence_from_data_or_repo(data: dict[str, Any], repo_root: str) -
             },
             "error": str(exc),
         }
-
-
-def _context_packet_v2(
-    *,
-    envelope: Any,
-    route: SkillRouteDecision,
-    skill_index: SkillIndex,
-    artifact_type: str,
-) -> ContextPacketV2:
-    omitted_refs = [f"skill:{skill_id}:SKILL.md" for skill_id in route.omitted_skill_ids]
-    estimated_omitted = _skill_tokens_for_ids(skill_index, route.omitted_skill_ids)
-    estimated_input = (
-        estimate_tokens(envelope.task_summary)
-        + estimate_tokens(" ".join(envelope.upstream_refs))
-        + estimate_tokens(envelope.planner_order_ref)
-        + route.estimated_skill_tokens
-    )
-    total_skill_tokens = route.estimated_skill_tokens + estimated_omitted
-    compression_ratio = 0.0 if total_skill_tokens == 0 else round(route.estimated_skill_tokens / total_skill_tokens, 4)
-    return ContextPacketV2(
-        agent_id=envelope.assigned_agent_id,
-        work_item_id=envelope.work_item_id,
-        artifact_type=artifact_type,
-        included_skill_ids=route.allowed_skill_ids,
-        included_refs=[*route.loaded_skill_refs, *envelope.upstream_refs, envelope.planner_order_ref],
-        omitted_skill_ids=route.omitted_skill_ids,
-        omitted_refs=omitted_refs,
-        estimated_input_tokens=estimated_input,
-        estimated_omitted_tokens=estimated_omitted,
-        compression_ratio=compression_ratio,
-    )
-
-
-def _token_ledger_entry(
-    *,
-    run_id: str,
-    round_number: int,
-    envelope: Any,
-    route: SkillRouteDecision,
-    skill_index: SkillIndex,
-    packet: ContextPacketV2,
-    artifact_type: str,
-) -> TokenLedgerEntry:
-    upstream_tokens = estimate_tokens(" ".join(envelope.upstream_refs))
-    return TokenLedgerEntry(
-        run_id=run_id,
-        round=round_number,
-        agent_id=envelope.assigned_agent_id,
-        work_item_id=envelope.work_item_id,
-        artifact_type=artifact_type,
-        estimated_input_tokens=packet.estimated_input_tokens,
-        skill_tokens_available=_skill_tokens_available(skill_index),
-        skill_tokens_loaded=route.estimated_skill_tokens,
-        upstream_tokens_loaded=upstream_tokens,
-        omitted_tokens=packet.estimated_omitted_tokens,
-        compression_ratio=packet.compression_ratio,
-    )
-
-
-def _skill_tokens_available(skill_index: SkillIndex) -> int:
-    return sum(skill.max_skill_tokens for skill in skill_index.enabled())
-
-
-def _skill_tokens_for_ids(skill_index: SkillIndex, skill_ids: list[str]) -> int:
-    selected = set(skill_ids)
-    return sum(skill.max_skill_tokens for skill in skill_index.enabled() if skill.id in selected)
 
 
 def _estimated_tokens_used(data: dict[str, Any]) -> int:

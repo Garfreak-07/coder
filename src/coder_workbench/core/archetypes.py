@@ -102,17 +102,39 @@ def role_card_for_id(role_card_id: str) -> RoleCardSpec:
 
 
 def agent_payload_from_role_card(data: dict[str, object]) -> dict[str, object]:
-    role_card = data.get("role_card")
-    if not isinstance(role_card, str) or not role_card.strip():
-        return data
-    card = role_card_for_id(role_card.strip())
     migrated = dict(data)
-    if not str(migrated.get("role") or "").strip():
+    role_card = data.get("role_card")
+    card = role_card_for_id(role_card.strip()) if isinstance(role_card, str) and role_card.strip() else None
+    if card is not None and not str(migrated.get("role") or "").strip():
         migrated["role"] = card.role
     capabilities = migrated.get("capabilities")
     if not isinstance(capabilities, list) or not capabilities:
-        migrated["capabilities"] = list(card.default_capabilities)
+        migrated["capabilities"] = list(card.default_capabilities if card is not None else default_capabilities_for_role(str(migrated.get("role") or "")))
     return migrated
+
+
+def default_capabilities_for_role(role: str) -> list[str]:
+    role = role.strip()
+    if role == "planner":
+        return [
+            "negotiate_contract",
+            "make_plan",
+            "judge_completion",
+            "judge_risk",
+            "make_next_decision",
+            "round_summarize",
+        ]
+    if role in {"tester", "reviewer"}:
+        return ["model_review", "return_test_result"]
+    if role == "summarizer":
+        return ["follow_planner_order", "synthesize_information", "return_synthesis_artifact"]
+    if role == "researcher":
+        return ["follow_planner_order", "generate_text", "return_execution_result"]
+    if role == "writer":
+        return ["follow_planner_order", "generate_text", "return_execution_result"]
+    if role in {"executor", "worker", "custom"}:
+        return ["follow_planner_order", "modify_files", "return_execution_result"]
+    return []
 
 
 def compile_agent_runtime_profile(

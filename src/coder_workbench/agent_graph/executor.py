@@ -10,10 +10,10 @@ from coder_workbench.agent_graph.prompts import (
     build_final_tester_prompt,
     build_tester_prompt,
     build_synthesis_prompt,
-    build_worker_execution_prompt,
     schema_notes_for_artifact,
 )
-from coder_workbench.agent_graph.repair import build_repair_prompt, parse_json_object
+from coder_workbench.agent_graph.agent_run import AgentRun
+from coder_workbench.agent_graph.repair import parse_json_object
 from coder_workbench.agent_graph.schema import (
     AgentTaskEnvelope,
     ExecutionRecord,
@@ -25,11 +25,11 @@ from coder_workbench.agent_graph.schema import (
 )
 from coder_workbench.agent_graph.synthesis import build_synthesis_artifact
 from coder_workbench.agent_harness import (
-    CodeWorkerHarness,
     FinalReviewHarness,
     PlannerHarness,
     TestHarness,
 )
+from coder_workbench.agent_harness.repair import ArtifactRepairService
 from coder_workbench.config import RuntimeConfig, load_runtime_config
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
@@ -113,9 +113,9 @@ class AgentGraphExecutor:
         self.runtime_settings = runtime_settings
         self.model_factory = model_factory
         self.planner_harness = PlannerHarness()
-        self.code_worker_harness = CodeWorkerHarness()
         self.test_harness = TestHarness()
         self.final_review_harness = FinalReviewHarness()
+        self.agent_run = AgentRun(agent_workflow)
 
     def create_planner_order(
         self,
@@ -168,58 +168,11 @@ class AgentGraphExecutor:
         agent = self._agent(item.assignee_agent_id)
         if _work_artifact_type(agent, self.agent_workflow.primary_planner_id) == "synthesis_artifact":
             return self._create_synthesis_result(item=item, envelope=envelope, agent=agent, emit=emit)
-        payload = self._invoke_or_mock(
-            artifact_type="execution_result",
-            agent_id=agent.id,
-            prompt=build_worker_execution_prompt(agent=agent, item=item, envelope=envelope),
-            mock_payload={
-                "artifact_type": "execution_result",
-                "round": envelope.round,
-                "status": "completed",
-                "summary": "Mock AgentGraph worker completed a dry-run execution.",
-                "changed_files": [],
-                "created_files": [],
-                "deleted_files": [],
-                "patch_refs": [],
-                "outputs": envelope.upstream_refs,
-                "unexpected_issues": [],
-                "out_of_contract": False,
-                "needs_planner_decision": False,
-                "tester_notes": ["No real file mutation was performed in mock mode."],
-            },
+        return self.agent_run.run_execution(
+            item=item,
+            envelope=envelope,
+            model=self._chat_model(),
             emit=emit,
-            fallback_payload=self._blocked_execution_payload(item, envelope.round),
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-        )
-        payload = _with_forced_fields(
-            payload,
-            {
-                "artifact_type": "execution_result",
-                "round": envelope.round,
-                "work_item_id": item.work_item_id,
-                "merge_index": item.merge_index,
-                "agent_id": item.assignee_agent_id,
-            },
-        )
-        artifact = self._validate_payload(
-            payload,
-            artifact_type="execution_result",
-            agent_id=agent.id,
-            emit=emit,
-            fallback_payload=self._blocked_execution_payload(item, envelope.round),
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-        )
-        return ExecutionRecord(
-            artifact_type="execution_result",
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-            agent_id=item.assignee_agent_id,
-            status=artifact["status"],
-            execution_summary=artifact["summary"],
-            execution_result_ref=_artifact_ref("execution_result", item.work_item_id),
-            artifact_payload=artifact,
         )
 
     def _create_synthesis_result(
@@ -524,14 +477,15 @@ class AgentGraphExecutor:
             )
             return artifact
 
-        repaired = self._repair_once(
+        repaired = ArtifactRepairService().repair_once(
             model,
-            artifact_type=artifact_type,
+            expected_type=artifact_type,
             agent_id=agent_id,
             invalid_output=str(content),
             emit=emit,
             work_item_id=work_item_id,
             merge_index=merge_index,
+            schema_notes=schema_notes_for_artifact(artifact_type),
         )
         if repaired is not None:
             return repaired
@@ -593,75 +547,6 @@ class AgentGraphExecutor:
                     status_code=failure_status_code,
                 ) from exc
             return None
-
-    def _repair_once(
-        self,
-        model: Any,
-        *,
-        artifact_type: str,
-        agent_id: str,
-        invalid_output: str,
-        emit: EmitEvent | None,
-        work_item_id: str | None,
-        merge_index: int | None,
-    ) -> dict[str, Any] | None:
-        self._emit(
-            emit,
-            "agent_graph.agent_call.repair_started",
-            "AgentGraph artifact repair started",
-            agent_id=agent_id,
-            artifact_type=artifact_type,
-            work_item_id=work_item_id,
-            merge_index=merge_index,
-        )
-        prompt = build_repair_prompt(
-            expected_type=artifact_type,
-            invalid_output=invalid_output,
-            errors=[{"loc": ["response"], "msg": "schema validation failed"}],
-            schema_notes=schema_notes_for_artifact(artifact_type),
-        )
-        response = model.invoke(prompt)
-        payload = parse_json_object(str(getattr(response, "content", response)))
-        if payload is None:
-            self._emit(
-                emit,
-                "agent_graph.agent_call.repair_failed",
-                "AgentGraph artifact repair failed",
-                agent_id=agent_id,
-                artifact_type=artifact_type,
-                work_item_id=work_item_id,
-                merge_index=merge_index,
-            )
-            return None
-        repaired = self._validate_payload(
-            payload,
-            artifact_type=artifact_type,
-            agent_id=agent_id,
-            emit=emit,
-            work_item_id=work_item_id,
-            merge_index=merge_index,
-        )
-        if repaired is None:
-            self._emit(
-                emit,
-                "agent_graph.agent_call.repair_failed",
-                "AgentGraph artifact repair failed",
-                agent_id=agent_id,
-                artifact_type=artifact_type,
-                work_item_id=work_item_id,
-                merge_index=merge_index,
-            )
-            return None
-        self._emit(
-            emit,
-            "agent_graph.agent_call.repair_completed",
-            "AgentGraph artifact repair completed",
-            agent_id=agent_id,
-            artifact_type=artifact_type,
-            work_item_id=work_item_id,
-            merge_index=merge_index,
-        )
-        return repaired
 
     def _chat_model(self) -> Any | None:
         config = self._runtime_config()

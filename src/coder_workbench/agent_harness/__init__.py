@@ -12,11 +12,13 @@ from .policies import (
     planner_policy,
     tester_policy,
 )
+from .repair import ArtifactRepairService
 from .scratchpad import Scratchpad, ScratchpadEntry
 from .tester import TestHarness
 
 __all__ = [
     "AgentHarness",
+    "ArtifactRepairService",
     "CodeWorkerHarness",
     "FinalReviewHarness",
     "HarnessAction",

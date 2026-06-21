@@ -4,10 +4,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from coder_workbench.tools.patching import propose_patch
-
 from .artifacts import PatchPreviewArtifact
-from .risk_map import build_risk_map, is_risk_path
+from .patch_service import PatchService
 
 
 def build_patch_preview(
@@ -17,24 +15,15 @@ def build_patch_preview(
     scopes: list[str] | None = None,
     risk_map: dict[str, Any] | None = None,
 ) -> PatchPreviewArtifact:
-    active_risk_map = risk_map or build_risk_map(repo_root).model_dump(mode="json")
-    rejected = [
-        {"path": str(change.get("path") or change.get("file") or ""), "code": "risk_path", "message": "Change targets a risk path."}
-        for change in proposed_changes
-        if is_risk_path(str(change.get("path") or change.get("file") or ""), active_risk_map)
-    ]
-    if rejected:
+    preview = PatchService(repo_root, scopes=scopes).preview(proposed_changes, risk_map=risk_map)
+    if preview.get("status") == "blocked":
         return PatchPreviewArtifact(
             status="blocked",
             patch_ref=f"patch_preview_{uuid4()}",
             change_count=len(proposed_changes),
-            errors=rejected,
+            errors=list(preview.get("risk_errors") or []),
         )
 
-    preview = propose_patch(
-        {"changes": proposed_changes},
-        {"repo_root": str(Path(repo_root).resolve()), "scopes": scopes or [], "data": {}},
-    )
     status = "patch_preview_created" if preview.get("status") == "proposed" else "rejected"
     return PatchPreviewArtifact(
         status=status,

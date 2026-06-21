@@ -8,12 +8,14 @@ import type {
   ContextPacketDetail,
   HealthStatus,
   DiscoverSkillsPayload,
+  ExtensionManifest,
   InstalledSkillsPayload,
   LibraryIndex,
   LiveRunDetail,
   PreflightResult,
   ProviderSettings,
   ProviderStatus,
+  PluginManifest,
   RoleCardSpec,
   RunEvent,
   RunEventsPage,
@@ -57,6 +59,16 @@ export async function getAgentRoleCards(): Promise<RoleCardSpec[]> {
 
 export function getInstalledSkills(): Promise<InstalledSkillsPayload> {
   return requestJson<InstalledSkillsPayload>("/api/v2/skills/installed");
+}
+
+export async function getExtensionPlugins(): Promise<PluginManifest[]> {
+  const payload = await requestJson<{ plugins: PluginManifest[] }>("/api/v2/extensions/plugins");
+  return payload.plugins;
+}
+
+export async function searchExtensions(query: string): Promise<ExtensionManifest[]> {
+  const payload = await requestJson<{ extensions: ExtensionManifest[] }>(`/api/v2/extensions/search?q=${encodeURIComponent(query)}`);
+  return payload.extensions;
 }
 
 export function discoverSkills(registryUrl: string): Promise<DiscoverSkillsPayload> {

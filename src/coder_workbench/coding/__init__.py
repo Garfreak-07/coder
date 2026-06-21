@@ -10,9 +10,11 @@ from .artifacts import (
     SymbolIndexArtifact,
 )
 from .command_discovery import discover_commands
+from .command_service import CommandService, command_approval_key
 from .context_builder import CodingContextBuilder, build_coding_context_packet
 from .debug import build_debug_finding
 from .eval import build_run_coding_eval, evaluate_fake_coding_task, load_coding_task
+from .patch_service import PatchService
 from .repo_index import build_repo_index, build_repo_intelligence
 from .risk_map import build_risk_map, is_risk_path
 from .symbol_index import build_symbol_index
@@ -20,11 +22,13 @@ from .symbol_index import build_symbol_index
 __all__ = [
     "CheckCommand",
     "CheckResultArtifact",
+    "CommandService",
     "CodingContextBuilder",
     "CodingContextPacketArtifact",
     "CodingEvaluationReportArtifact",
     "CommandDiscoveryArtifact",
     "DebugFindingArtifact",
+    "PatchService",
     "RepoIndexArtifact",
     "RiskMapArtifact",
     "SymbolIndexArtifact",
@@ -35,6 +39,7 @@ __all__ = [
     "build_risk_map",
     "build_run_coding_eval",
     "build_symbol_index",
+    "command_approval_key",
     "discover_commands",
     "evaluate_fake_coding_task",
     "is_risk_path",

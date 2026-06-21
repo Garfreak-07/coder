@@ -5,9 +5,8 @@ from typing import Any
 from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.core import AgentWorkflowSpec
-from coder_workbench.coding.risk_map import build_risk_map, is_risk_path
-from coder_workbench.tools import default_tool_registry
-from coder_workbench.tools.patching import propose_patch
+from coder_workbench.coding.command_service import CommandService
+from coder_workbench.coding.patch_service import PatchService
 
 
 def apply_hidden_effects(
@@ -37,18 +36,13 @@ def _handle_optional_check_commands(
     if not commands:
         return []
 
-    registry = default_tool_registry()
     records: list[dict[str, Any]] = []
-    runtime_context = {"repo_root": repo_root, "scopes": scopes, "data": data}
+    command_service = CommandService(repo_root, scopes=scopes, data=data)
     for index, command_request in enumerate(commands, start=1):
-        result = registry.run(
-            "run_check",
-            {
-                "command": command_request["command"],
-                "cwd": command_request.get("cwd") or ".",
-                "timeout_seconds": command_request.get("timeout_seconds", 120),
-            },
-            runtime_context,
+        result = command_service.run_check(
+            str(command_request["command"]),
+            cwd=str(command_request.get("cwd") or "."),
+            timeout_seconds=int(command_request.get("timeout_seconds") or 120),
         )
         if result.get("blocked"):
             record = {
@@ -91,28 +85,17 @@ def _handle_patch_previews(
     if not changes:
         return []
 
-    risk_map = build_risk_map(repo_root).model_dump(mode="json")
-    risky_changes = [
-        change
-        for change in changes
-        if is_risk_path(str(change.get("path") or change.get("file") or ""), risk_map)
-    ]
-    if risky_changes:
-        work_item_id = str(risky_changes[0].get("work_item_id") or "")
+    preview = PatchService(repo_root, scopes=scopes, data=data).preview(changes)
+    if preview.get("status") == "blocked":
+        risky_changes = list(preview.get("risky_changes") or [])
+        work_item_id = str(risky_changes[0].get("work_item_id") or "") if risky_changes else ""
         execution = cache.execution_cache.get(work_item_id) if work_item_id else None
         record = {
             "effect_type": "modify_files",
             "status": "patch_preview_blocked",
             "work_item_id": work_item_id or None,
-            "reason": "Proposed change targets a risk path.",
-            "errors": [
-                {
-                    "path": str(change.get("path") or change.get("file") or ""),
-                    "code": "risk_path",
-                    "message": "Risk paths require Planner intervention before preview or apply.",
-                }
-                for change in risky_changes
-            ],
+            "reason": str(preview.get("message") or "Proposed change targets a risk path."),
+            "errors": list(preview.get("risk_errors") or []),
         }
         cache.record_hidden_effect(record)
         cache.record_interrupt(
@@ -131,7 +114,6 @@ def _handle_patch_previews(
         )
         return [record]
 
-    preview = propose_patch({"changes": changes}, {"repo_root": repo_root, "scopes": scopes, "data": data})
     patch_ref = graph_artifact_id("patch_preview", preview["patch_id"])
     record = {
         "effect_type": "modify_files",
