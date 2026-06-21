@@ -573,8 +573,8 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         return {
             "run_id": live.id,
             "status": live.status,
-            "events_url": f"/api/v2/live-runs/{live.id}/events",
-            "result_url": f"/api/v2/live-runs/{live.id}",
+            "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
+            "result_url": f"/api/v2/live-agent-runs/{live.id}",
         }
 
     @app.post("/api/v2/live-runs/{run_id}/approve")

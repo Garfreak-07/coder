@@ -15,7 +15,7 @@ removed only after product references are gone and tests protect the boundary.
 7. Move or delete legacy modules once no product tests or endpoints depend on
    them.
 
-## Current v0.9.2 Boundary
+## Current v0.9.3 Boundary
 
 `compile_agent_workflow_legacy_preview()` is the explicit compiler for advanced
 preview and migration/debug only. `compile_agent_workflow()` remains a
@@ -27,12 +27,14 @@ Product live Agent runs use:
 AgentWorkflowSpec
 -> RunController
 -> AgentGraphRunner
+-> AgentRun
 -> AgentEngineRegistry
 -> ActionGateway
 -> PlannerDecision
 ```
 
-They must not compile into `WorkflowSpec` or run through `WorkflowRunner`.
+They must not compile into `WorkflowSpec`, run through `WorkflowRunner`, or
+construct `AgentGraphExecutor` from the product runner path.
 
 Legacy preview responses include:
 
@@ -43,7 +45,8 @@ deprecated=true
 ```
 
 `/api/v2/live-runs` remains as a compatibility endpoint and is marked
-`deprecated=true`. Product AgentGraph runs should use `/api/v2/live-agent-runs`.
+`deprecated=true`. Product AgentGraph runs use `/api/v2/live-agent-runs`, and
+creation responses return `live-agent-runs` event/result URLs.
 
 ## Legacy Artifacts
 
@@ -62,16 +65,19 @@ The next deletion pass should migrate tests that still intentionally exercise
 legacy artifacts, then remove legacy artifact production from non-preview
 paths.
 
-## v0.9.2 Boundary Rules
+## v0.9.3 Boundary Rules
 
 - Ordinary user workflows remain AgentGraph-first.
 - `RunController` replaces inline PlannerDecision loop handling.
 - `BudgetBroker` replaces ad hoc pre-execution resource checks.
 - `ActionGateway` replaces direct product calls to context, patch, command,
-  sandbox, and repair services.
-- `AgentEngineRegistry` owns agent execution; `AgentGraphExecutor` is an
-  adapter only.
-- Partitioned stores are the explicit write path for events, artifacts, blobs,
-  ledgers, and cache data.
+  sandbox, artifact validation, and repair services.
+- `AgentRun` and `AgentEngineRegistry` own product Agent execution;
+  `AgentGraphExecutor` is a compatibility adapter only.
+- Coding auto-loop effects keep patch preview, sandbox apply, check result, and
+  DebugFinding artifact refs in `PlannerInputBundle.effects`.
+- Partitioned stores are the explicit write path for metadata, results, events,
+  artifacts, blobs, ledgers, contexts, tool results, live runs, extensions, and
+  cache data.
 - Legacy preview is explicit; new product behavior must not depend on
   `WorkflowRunner`.

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from inspect import signature
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +14,6 @@ from coder_workbench.agent_graph.effects import apply_hidden_effects
 from coder_workbench.agent_graph.evaluation import (
     build_agent_evaluation_reports,
     build_skill_evaluation_reports,
-)
-from coder_workbench.agent_graph.executor import (
-    AgentGraphExecutor,
-    AgentGraphExecutorError,
-    AgentGraphExecutorProtocol,
 )
 from coder_workbench.agent_graph.interruption import build_graph_interrupt, should_interrupt_execution
 from coder_workbench.agent_graph.memory import PlannerMemoryStore
@@ -68,6 +62,12 @@ class RoundOutcome:
     interrupted: bool = False
 
 
+class AgentGraphRuntimeError(ValueError):
+    def __init__(self, message: str, *, status_code: str) -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
 class AgentGraphRunner:
     """AgentWorkflow runtime boundary.
 
@@ -82,17 +82,18 @@ class AgentGraphRunner:
         *,
         event_sink: Any | None = None,
         runtime_settings: Any | None = None,
-        executor: AgentGraphExecutorProtocol | None = None,
+        executor: Any | None = None,
+        agent_run: Any | None = None,
     ) -> None:
         self.agent_workflow = agent_workflow
         self.event_sink = event_sink
         self.runtime_settings = runtime_settings
-        self.agent_run = AgentRun(agent_workflow)
-        self.executor = executor or AgentGraphExecutor(
+        if executor is not None and agent_run is not None:
+            raise ValueError("Pass either executor or agent_run, not both")
+        self.agent_run = agent_run or (_LegacyAgentRunAdapter(executor) if executor is not None else AgentRun(
             agent_workflow,
             runtime_settings=runtime_settings,
-            agent_run=self.agent_run,
-        )
+        ))
         self.budget_broker = BudgetBroker()
         self.action_gateway = ActionGateway(budget_broker=self.budget_broker)
 
@@ -126,10 +127,12 @@ class AgentGraphRunner:
         controller: RunController | None = None
         self.budget_broker = BudgetBroker(_budget_limit_from_data(data))
         self.action_gateway = ActionGateway(budget_broker=self.budget_broker)
-        if hasattr(self.executor, "budget_broker"):
-            self.executor.budget_broker = self.budget_broker
-        if hasattr(self.executor, "run_id"):
-            self.executor.run_id = run_id
+        if hasattr(self.agent_run, "budget_broker"):
+            self.agent_run.budget_broker = self.budget_broker
+        if hasattr(self.agent_run, "action_gateway"):
+            self.agent_run.action_gateway = self.action_gateway
+        if hasattr(self.agent_run, "run_id"):
+            self.agent_run.run_id = run_id
 
         def emit(event_type: str, message: str, **payload: Any) -> None:
             span = payload.pop("_span", None) or run_span
@@ -221,7 +224,7 @@ class AgentGraphRunner:
                 if previous_bundle is None:
                     raise ValueError("resume_mode=planner_response requires planner_input_bundle")
                 previous_round_summary = self._round_summary_from_data(data.get("round_summary"))
-                resume_decision = self.executor.create_planner_decision(
+                resume_decision = self.agent_run.run_planner_decision(
                     bundle=previous_bundle,
                     planner_human_response=planner_human_response,
                     emit=emit,
@@ -350,7 +353,7 @@ class AgentGraphRunner:
         except Exception as exc:  # pragma: no cover - boundary safety
             status = "failed"
             status_reason = str(exc)
-            status_code = exc.status_code if isinstance(exc, AgentGraphExecutorError) else "agent_graph_runtime_exception"
+            status_code = str(getattr(exc, "status_code", "agent_graph_runtime_exception"))
             emit("agent_graph.run.failed", f"Agent graph failed: {exc}", error=str(exc))
 
         return finalize_result(
@@ -412,7 +415,7 @@ class AgentGraphRunner:
         try:
             assert_valid_planner_order(self.agent_workflow, planner_order)
         except AgentWorkflowValidationError as exc:
-            raise AgentGraphExecutorError(
+            raise AgentGraphRuntimeError(
                 f"PlannerOrder graph validation failed: {exc}",
                 status_code="planner_order_validation_failed",
             ) from exc
@@ -628,6 +631,7 @@ class AgentGraphRunner:
         )
         if hidden_effects:
             self._emit_hidden_effect_outputs(cache, hidden_effects, emit)
+            self._record_hidden_effect_artifacts(cache, recorder, hidden_effects)
         debug_findings = self._record_debug_findings(cache, recorder, repo_root, emit)
         if debug_findings:
             data["debug_findings"] = debug_findings
@@ -638,7 +642,7 @@ class AgentGraphRunner:
         if final_tester_agent_id and not cache.interrupts:
             pre_final_bundle = build_planner_input_bundle(cache)
             final_test = cache.record_final_test(
-                self.executor.create_final_test_result(
+                self.agent_run.run_final_test(
                     bundle=pre_final_bundle,
                     final_tester_agent_id=final_tester_agent_id,
                     emit=emit,
@@ -692,7 +696,7 @@ class AgentGraphRunner:
             self._planner_decision_from_initial_data(data)
             if round_number == 1 and previous_bundle is None
             else None
-        ) or self.executor.create_planner_decision(
+        ) or self.agent_run.run_planner_decision(
             bundle=planner_input_bundle,
             planner_human_response=planner_human_response,
             emit=emit,
@@ -930,7 +934,7 @@ class AgentGraphRunner:
                 error_code=action_result.error_code,
                 _span=action_span,
             )
-            raise AgentGraphExecutorError(
+            raise AgentGraphRuntimeError(
                 action_result.summary or "build_context action failed",
                 status_code=action_result.error_code or "build_context_failed",
             )
@@ -1050,7 +1054,7 @@ class AgentGraphRunner:
     def _build_work_item_outcome(self, context: dict[str, Any]) -> WorkItemOutcome:
         item = context["item"]
         envelope = context["envelope"]
-        execution = self.executor.create_execution_result(item=item, envelope=envelope)
+        execution = self.agent_run.run_execution(item=item, envelope=envelope)
         tests = []
         if execution.status == "completed":
             execution_artifact = dict(
@@ -1067,7 +1071,7 @@ class AgentGraphRunner:
             )
             execution_artifact.setdefault("artifact_id", execution.execution_result_ref)
             tests = [
-                self.executor.create_test_result(
+                self.agent_run.run_test(
                     item=item,
                     execution_artifact=execution_artifact,
                     tester_agent_id=tester_agent_id,
@@ -1231,6 +1235,20 @@ class AgentGraphRunner:
         )
         return artifact
 
+    def _record_hidden_effect_artifacts(
+        self,
+        cache: GraphRunCache,
+        recorder: AgentGraphArtifactRecorder,
+        effects: list[dict[str, Any]],
+    ) -> None:
+        for effect in effects:
+            artifact_ref = str(effect.get("artifact_ref") or "")
+            if not artifact_ref:
+                continue
+            output_ref = str(effect.get("output_ref") or effect.get("patch_ref") or "")
+            output = cache.hidden_effect_outputs.get(output_ref, {}) if output_ref else {}
+            recorder.record(artifact_ref, _hidden_effect_artifact_payload(effect, output))
+
     def _emit_hidden_effect_outputs(
         self,
         cache: GraphRunCache,
@@ -1269,21 +1287,16 @@ class AgentGraphRunner:
         round_number: int,
         emit: Any,
     ) -> PlannerOrder:
-        parameters = signature(self.executor.create_planner_order).parameters
-        if "previous_bundle" not in parameters:
-            return self.executor.create_planner_order(request, emit=emit)
-        kwargs = {
-            "previous_bundle": previous_bundle,
-            "previous_round_summary": previous_round_summary,
-            "planner_human_response": planner_human_response,
-            "round_number": round_number,
-            "emit": emit,
-        }
-        if "skill_index" in parameters:
-            kwargs["skill_index"] = skill_index
-        if "repo_intelligence" in parameters:
-            kwargs["repo_intelligence"] = repo_intelligence
-        return self.executor.create_planner_order(request, **kwargs)
+        return self.agent_run.run_planner_order(
+            request,
+            previous_bundle=previous_bundle,
+            previous_round_summary=previous_round_summary,
+            planner_human_response=planner_human_response,
+            skill_index=skill_index,
+            repo_intelligence=repo_intelligence,
+            round_number=round_number,
+            emit=emit,
+        )
 
     def _planner_order_from_initial_data(self, data: dict[str, Any]) -> PlannerOrder | None:
         value = data.get("planner_order")
@@ -1332,6 +1345,102 @@ class AgentGraphRunner:
         if value.get("human_message") is not None:
             payload["human_message"] = str(value["human_message"])
         return payload
+
+
+def _hidden_effect_artifact_payload(effect: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
+    action_type = str(effect.get("action_type") or "")
+    if action_type == "propose_patch":
+        return {
+            "artifact_type": "patch_preview",
+            "effect": effect,
+            "status": output.get("status") or effect.get("status"),
+            "summary": output.get("message") or effect.get("reason") or "",
+            "preview": output,
+        }
+    if action_type == "apply_patch_sandbox":
+        return {
+            "artifact_type": "sandbox_apply",
+            "effect": effect,
+            "status": output.get("status") or effect.get("status"),
+            "summary": output.get("message") or effect.get("reason") or "",
+            "result": output,
+        }
+    if action_type == "run_command_sandbox":
+        passed = bool(effect.get("passed"))
+        status = "blocked" if effect.get("status") == "check_requires_planner_confirmation" else "pass" if passed else "fail"
+        return {
+            "artifact_type": "check_result",
+            "effect": effect,
+            "command": effect.get("command"),
+            "status": status,
+            "summary": effect.get("reason") or output.get("message") or output.get("output") or "",
+            "output": output.get("output") or "",
+            "output_ref": effect.get("output_ref"),
+            "returncode": effect.get("returncode"),
+        }
+    return {
+        "artifact_type": "hidden_effect",
+        "effect": effect,
+        "output": output,
+    }
+
+
+class _LegacyAgentRunAdapter:
+    def __init__(self, legacy_runner: Any) -> None:
+        self.legacy_runner = legacy_runner
+
+    def run_planner_order(self, request: str, **kwargs: Any) -> PlannerOrder:
+        core_kwargs = {
+            "previous_bundle": kwargs.get("previous_bundle"),
+            "previous_round_summary": kwargs.get("previous_round_summary"),
+            "planner_human_response": kwargs.get("planner_human_response"),
+            "round_number": kwargs.get("round_number", 1),
+            "emit": kwargs.get("emit"),
+        }
+        try:
+            return self.legacy_runner.create_planner_order(request, **kwargs)
+        except TypeError:
+            try:
+                return self.legacy_runner.create_planner_order(request, **core_kwargs)
+            except TypeError:
+                return self.legacy_runner.create_planner_order(request, emit=kwargs.get("emit"))
+
+    def run_execution(self, **kwargs: Any) -> ExecutionRecord:
+        payload = {
+            "item": kwargs["item"],
+            "envelope": kwargs["envelope"],
+        }
+        if kwargs.get("emit") is not None:
+            payload["emit"] = kwargs["emit"]
+        return self.legacy_runner.create_execution_result(**payload)
+
+    def run_test(self, **kwargs: Any) -> TestRecord:
+        payload = {
+            "item": kwargs["item"],
+            "execution_artifact": kwargs["execution_artifact"],
+            "tester_agent_id": kwargs["tester_agent_id"],
+        }
+        if kwargs.get("emit") is not None:
+            payload["emit"] = kwargs["emit"]
+        return self.legacy_runner.create_test_result(**payload)
+
+    def run_final_test(self, **kwargs: Any) -> FinalTestRecord:
+        payload = {
+            "bundle": kwargs["bundle"],
+            "final_tester_agent_id": kwargs["final_tester_agent_id"],
+        }
+        if kwargs.get("emit") is not None:
+            payload["emit"] = kwargs["emit"]
+        return self.legacy_runner.create_final_test_result(**payload)
+
+    def run_planner_decision(self, **kwargs: Any) -> dict[str, Any]:
+        payload = {
+            "bundle": kwargs["bundle"],
+            "planner_human_response": kwargs.get("planner_human_response"),
+        }
+        if kwargs.get("emit") is not None:
+            payload["emit"] = kwargs["emit"]
+        return self.legacy_runner.create_planner_decision(**payload)
 
 
 def _max_concurrency_from_data(data: dict[str, Any]) -> int:

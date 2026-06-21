@@ -47,7 +47,7 @@ New product endpoints:
 Existing `/api/v2/skills/*` endpoints remain temporary compatibility aliases.
 Legacy `WorkflowSpec` paths must not become new extension integration points.
 
-## v0.9.2 Boundary
+## v0.9.3 Boundary
 
 - Ordinary users still manage Agents, workflows, plugins, and skills.
 - `RunController` owns Planner loop continuation; extensions do not decide
@@ -55,7 +55,8 @@ Legacy `WorkflowSpec` paths must not become new extension integration points.
 - `BudgetBroker` reserves extension, context, tool, and model-call budgets
   before execution.
 - `ActionGateway` is the entry point for extension-backed runtime actions.
-- `AgentEngineRegistry` is the execution entry point for AgentEngine packages.
+- `AgentRun` and `AgentEngineRegistry` are the execution entry point for
+  AgentEngine packages.
 - Extension metadata and cache files live behind partitioned extension/cache
   stores.
 - Legacy `WorkflowSpec` endpoints remain compatibility aliases, not new

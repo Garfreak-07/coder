@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from pydantic import ValidationError
 
+from coder_workbench.actions import ActionGateway, ActionSpec, RunContext
 from coder_workbench.budget import BudgetBroker
 from coder_workbench.config import RuntimeConfig, load_runtime_config
 from coder_workbench.core import AgentWorkflowAgent
@@ -31,7 +32,7 @@ EmitEvent = Callable[..., None]
 ModelFactory = Callable[[RuntimeConfig], Any]
 
 
-class AgentGraphExecutorError(ValueError):
+class AgentEngineRuntimeError(ValueError):
     def __init__(self, message: str, *, status_code: str) -> None:
         self.status_code = status_code
         super().__init__(message)
@@ -65,6 +66,7 @@ class ModelBackedEngine:
         runtime_settings: Any | None,
         model_factory: ModelFactory,
         budget_broker: BudgetBroker | None,
+        action_gateway: ActionGateway | None,
         run_id: str | None,
         model: Any | None = None,
         fallback_payload: dict[str, Any] | None = None,
@@ -113,7 +115,7 @@ class ModelBackedEngine:
                     merge_index=merge_index,
                     error_code=reservation.reason,
                 )
-                raise AgentGraphExecutorError(
+                raise AgentEngineRuntimeError(
                     "BudgetBroker denied AgentGraph model call",
                     status_code=reservation.reason,
                 )
@@ -123,7 +125,6 @@ class ModelBackedEngine:
 
         from coder_workbench.agent_graph.prompts import schema_notes_for_artifact
         from coder_workbench.agent_graph.repair import parse_json_object
-        from coder_workbench.agent_harness.repair import ArtifactRepairService
 
         content = getattr(response, "content", str(response))
         payload = parse_json_object(str(content))
@@ -133,16 +134,18 @@ class ModelBackedEngine:
         else:
             errors = []
 
-        artifact = self._validate_payload(
+        artifact = self._validate_model_payload(
             payload,
             artifact_type=artifact_type,
             agent_id=agent_id,
             emit=emit,
-            fallback_payload=None,
-            failure_status_code=None,
             work_item_id=work_item_id,
             merge_index=merge_index,
             initial_errors=errors,
+            action_gateway=action_gateway,
+            agent_workflow=agent_workflow,
+            active_model=active_model,
+            run_id=run_id,
         )
         if artifact is not None:
             self._emit(
@@ -156,17 +159,29 @@ class ModelBackedEngine:
             )
             return artifact
 
-        repaired = ArtifactRepairService().repair_once(
-            active_model,
-            expected_type=artifact_type,
-            agent_id=agent_id,
-            invalid_output=str(content),
-            emit=emit,
-            work_item_id=work_item_id,
-            merge_index=merge_index,
-            schema_notes=schema_notes_for_artifact(artifact_type),
+        gateway = action_gateway or ActionGateway(budget_broker=budget_broker)
+        repair = gateway.run(
+            ActionSpec(
+                action_id=f"repair_artifact:{artifact_type}:{agent_id}",
+                action_type="repair_artifact",
+                input={
+                    "expected_type": artifact_type,
+                    "agent_id": agent_id,
+                    "invalid_output": str(content),
+                    "work_item_id": work_item_id,
+                    "merge_index": merge_index,
+                    "schema_notes": schema_notes_for_artifact(artifact_type),
+                },
+            ),
+            run_context=RunContext(
+                run_id=run_id or agent_workflow.id,
+                repo_root=".",
+                model=active_model,
+                emit=emit,
+            ),
         )
-        if repaired is not None:
+        repaired = repair.payload.get("artifact") if repair.status == "ok" else None
+        if isinstance(repaired, dict):
             return repaired
 
         if fallback_payload is not None:
@@ -179,10 +194,63 @@ class ModelBackedEngine:
                 work_item_id=work_item_id,
                 merge_index=merge_index,
             )
-        raise AgentGraphExecutorError(
+        raise AgentEngineRuntimeError(
             f"{artifact_type} schema validation failed after one repair",
             status_code=failure_status_code or f"{artifact_type}_schema_failed",
         )
+
+    def _validate_model_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        artifact_type: str,
+        agent_id: str,
+        emit: EmitEvent | None,
+        work_item_id: str | None,
+        merge_index: int | None,
+        initial_errors: list[dict[str, Any]] | None,
+        action_gateway: ActionGateway | None,
+        agent_workflow: "AgentWorkflowSpec",
+        active_model: Any,
+        run_id: str | None,
+    ) -> dict[str, Any] | None:
+        if initial_errors:
+            self._emit_schema_failed(
+                emit,
+                agent_id=agent_id,
+                artifact_type=artifact_type,
+                errors=initial_errors,
+                work_item_id=work_item_id,
+                merge_index=merge_index,
+            )
+        gateway = action_gateway or ActionGateway()
+        result = gateway.run(
+            ActionSpec(
+                action_id=f"validate_artifact:{artifact_type}:{agent_id}",
+                action_type="validate_artifact",
+                input={
+                    "expected_type": artifact_type,
+                    "artifact": payload,
+                },
+            ),
+            run_context=RunContext(
+                run_id=run_id or agent_workflow.id,
+                repo_root=".",
+                model=active_model,
+                emit=emit,
+            ),
+        )
+        if result.status == "ok" and isinstance(result.payload.get("artifact"), dict):
+            return result.payload["artifact"]
+        self._emit_schema_failed(
+            emit,
+            agent_id=agent_id,
+            artifact_type=artifact_type,
+            errors=[{"loc": ["artifact"], "msg": result.summary or "artifact validation failed"}],
+            work_item_id=work_item_id,
+            merge_index=merge_index,
+        )
+        return None
 
     def _validate_payload(
         self,
@@ -221,7 +289,7 @@ class ModelBackedEngine:
             if fallback_payload is not None:
                 return validate_artifact(fallback_payload, expected_type=artifact_type)
             if failure_status_code:
-                raise AgentGraphExecutorError(
+                raise AgentEngineRuntimeError(
                     f"{artifact_type} failed schema validation",
                     status_code=failure_status_code,
                 ) from exc
@@ -285,6 +353,7 @@ class PlannerEngine(ModelBackedEngine):
         runtime_settings: Any | None = None,
         model_factory: ModelFactory = create_chat_model,
         budget_broker: BudgetBroker | None = None,
+        action_gateway: ActionGateway | None = None,
         run_id: str | None = None,
         previous_bundle: "PlannerInputBundle | None" = None,
         previous_round_summary: dict[str, Any] | None = None,
@@ -321,13 +390,14 @@ class PlannerEngine(ModelBackedEngine):
             runtime_settings=runtime_settings,
             model_factory=model_factory,
             budget_broker=budget_broker,
+            action_gateway=action_gateway,
             run_id=run_id,
             failure_status_code="planner_order_schema_failed",
         )
         try:
             return PlannerOrder.model_validate(_planner_order_payload(payload))
         except ValidationError as exc:
-            raise AgentGraphExecutorError(
+            raise AgentEngineRuntimeError(
                 f"planner_order failed AgentGraph schema validation: {exc}",
                 status_code="planner_order_schema_failed",
             ) from exc
@@ -341,6 +411,7 @@ class PlannerEngine(ModelBackedEngine):
         runtime_settings: Any | None = None,
         model_factory: ModelFactory = create_chat_model,
         budget_broker: BudgetBroker | None = None,
+        action_gateway: ActionGateway | None = None,
         run_id: str | None = None,
         emit: EmitEvent | None = None,
     ) -> dict[str, Any]:
@@ -404,6 +475,7 @@ class PlannerEngine(ModelBackedEngine):
             runtime_settings=runtime_settings,
             model_factory=model_factory,
             budget_broker=budget_broker,
+            action_gateway=action_gateway,
             run_id=run_id,
             failure_status_code="planner_decision_schema_failed",
         )
@@ -422,6 +494,7 @@ class TesterEngine(ModelBackedEngine):
         runtime_settings: Any | None = None,
         model_factory: ModelFactory = create_chat_model,
         budget_broker: BudgetBroker | None = None,
+        action_gateway: ActionGateway | None = None,
         run_id: str | None = None,
         emit: EmitEvent | None = None,
     ) -> "TestRecord":
@@ -450,6 +523,7 @@ class TesterEngine(ModelBackedEngine):
             runtime_settings=runtime_settings,
             model_factory=model_factory,
             budget_broker=budget_broker,
+            action_gateway=action_gateway,
             run_id=run_id,
             fallback_payload=_blocked_test_payload(item, tester_agent_id, int(execution_artifact.get("round") or 1)),
             work_item_id=item.work_item_id,
@@ -498,6 +572,7 @@ class FinalReviewEngine(ModelBackedEngine):
         runtime_settings: Any | None = None,
         model_factory: ModelFactory = create_chat_model,
         budget_broker: BudgetBroker | None = None,
+        action_gateway: ActionGateway | None = None,
         run_id: str | None = None,
         emit: EmitEvent | None = None,
     ) -> "FinalTestRecord":
@@ -536,6 +611,7 @@ class FinalReviewEngine(ModelBackedEngine):
             runtime_settings=runtime_settings,
             model_factory=model_factory,
             budget_broker=budget_broker,
+            action_gateway=action_gateway,
             run_id=run_id,
             fallback_payload=fallback,
         )
@@ -597,6 +673,7 @@ class SynthesizerEngine(ModelBackedEngine):
         runtime_settings: Any | None = None,
         model_factory: ModelFactory = create_chat_model,
         budget_broker: BudgetBroker | None = None,
+        action_gateway: ActionGateway | None = None,
         run_id: str | None = None,
         emit: EmitEvent | None = None,
     ) -> "ExecutionRecord":
@@ -615,6 +692,7 @@ class SynthesizerEngine(ModelBackedEngine):
             runtime_settings=runtime_settings,
             model_factory=model_factory,
             budget_broker=budget_broker,
+            action_gateway=action_gateway,
             run_id=run_id,
             model=model,
             fallback_payload=fallback,

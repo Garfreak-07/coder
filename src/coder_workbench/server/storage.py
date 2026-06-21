@@ -78,9 +78,6 @@ class RunStore:
         with self._lock:
             run_dir = self._run_dir(stored.id)
             run_dir.mkdir(parents=True, exist_ok=True)
-            (run_dir / "contexts").mkdir(parents=True, exist_ok=True)
-            (run_dir / "artifacts").mkdir(parents=True, exist_ok=True)
-            (run_dir / "tool-results").mkdir(parents=True, exist_ok=True)
             metadata = StoredRunMetadata(
                 id=stored.id,
                 workflow_id=workflow_id,
@@ -94,7 +91,7 @@ class RunStore:
                 status_reason=result.status_reason,
                 status_code=result.status_code,
             )
-            (run_dir / "metadata.json").write_text(metadata.model_dump_json(indent=2), encoding="utf-8")
+            self.partitions.metadata.write(stored.id, metadata.model_dump(mode="json"))
             self._upsert_index(metadata, updated_at=time.time())
             result_payload = result.model_dump(mode="json")
             result_payload["events"] = []
@@ -105,9 +102,9 @@ class RunStore:
                 result_data.get("token_ledger") if isinstance(result_data, dict) else None,
                 result_data.get("trace_spans") if isinstance(result_data, dict) else None,
             )
-            (run_dir / "result.json").write_text(json.dumps(result_payload, indent=2), encoding="utf-8")
-            events = self._externalize_context_packets(run_dir, result.events)
-            events = self._externalize_tool_results(run_dir, events)
+            self.partitions.results.write(stored.id, result_payload)
+            events = self._externalize_context_packets(stored.id, result.events)
+            events = self._externalize_tool_results(stored.id, events)
             self._write_events(stored.id, events)
         return stored
 
@@ -349,9 +346,10 @@ class RunStore:
         safe_packet_id = self._safe_object_id(packet_id)
         run_dir = self._run_dir(run_id)
         if run_dir.exists():
-            path = run_dir / "contexts" / f"{safe_packet_id}.json"
-            if path.exists():
-                return json.loads(path.read_text(encoding="utf-8"))
+            try:
+                return self.partitions.contexts.read(run_id, safe_packet_id)
+            except KeyError:
+                pass
             for event in self._read_events(run_dir / "events.jsonl"):
                 packet = self._embedded_context_packet(event, safe_packet_id)
                 if packet is not None:
@@ -390,9 +388,10 @@ class RunStore:
         safe_tool_result_id = self._safe_object_id(tool_result_id)
         run_dir = self._run_dir(run_id)
         if run_dir.exists():
-            path = run_dir / "tool-results" / f"{safe_tool_result_id}.json"
-            if path.exists():
-                return json.loads(path.read_text(encoding="utf-8"))
+            try:
+                return self.partitions.tool_results.read(run_id, safe_tool_result_id)
+            except KeyError:
+                pass
             for event in self._read_events(run_dir / "events.jsonl"):
                 result = self._embedded_tool_result(event, safe_tool_result_id)
                 if result is not None:
@@ -449,8 +448,9 @@ class RunStore:
         return self.runs_dir / f"{self._safe_run_id(run_id)}.json"
 
     def _read_split_run(self, run_dir: Path, *, include_events: bool) -> StoredRun:
-        metadata = StoredRunMetadata.model_validate(json.loads((run_dir / "metadata.json").read_text(encoding="utf-8")))
-        result_payload = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        run_id = run_dir.name
+        metadata = StoredRunMetadata.model_validate(self.partitions.metadata.read(run_id))
+        result_payload = self.partitions.results.read(run_id)
         result_payload["events"] = [
             event.model_dump(mode="json")
             for event in self._read_events(run_dir / "events.jsonl")
@@ -569,17 +569,9 @@ class RunStore:
             current = current.parent
 
     def _write_events(self, run_id: str, events: list[RunEvent]) -> None:
-        path = self._run_dir(run_id) / "events.jsonl"
-        if path.exists():
-            path.unlink()
-        for event in events:
-            self.partitions.events.append(run_id, event)
-        if not events:
-            path.write_text("", encoding="utf-8")
+        self.partitions.events.write(run_id, events)
 
-    def _externalize_context_packets(self, run_dir: Path, events: list[RunEvent]) -> list[RunEvent]:
-        context_dir = run_dir / "contexts"
-        context_dir.mkdir(parents=True, exist_ok=True)
+    def _externalize_context_packets(self, run_id: str, events: list[RunEvent]) -> list[RunEvent]:
         compact_events: list[RunEvent] = []
         for event in events:
             if event.type != "agent.context_packet":
@@ -596,8 +588,7 @@ class RunStore:
                 packet_id = self._safe_object_id(raw_packet_id)
             except KeyError:
                 packet_id = self._safe_object_id(event.id)
-            packet_json = json.dumps(packet, ensure_ascii=False, indent=2)
-            (context_dir / f"{packet_id}.json").write_text(packet_json, encoding="utf-8")
+            self.partitions.contexts.write(run_id, packet_id, packet)
             compact_payload = {
                 "packet_id": packet_id,
                 "summary": self._context_packet_summary(packet),
@@ -606,9 +597,7 @@ class RunStore:
             compact_events.append(event.model_copy(update={"payload": compact_payload}))
         return compact_events
 
-    def _externalize_tool_results(self, run_dir: Path, events: list[RunEvent]) -> list[RunEvent]:
-        tool_result_dir = run_dir / "tool-results"
-        tool_result_dir.mkdir(parents=True, exist_ok=True)
+    def _externalize_tool_results(self, run_id: str, events: list[RunEvent]) -> list[RunEvent]:
         compact_events: list[RunEvent] = []
         for event in events:
             if event.type != "tool.result":
@@ -626,8 +615,7 @@ class RunStore:
             except KeyError:
                 tool_result_id = self._safe_object_id(event.id)
             stored_result = self._externalize_large_values(result)
-            result_json = json.dumps(stored_result, ensure_ascii=False, indent=2)
-            (tool_result_dir / f"{tool_result_id}.json").write_text(result_json, encoding="utf-8")
+            self.partitions.tool_results.write(run_id, tool_result_id, stored_result)
             compact_payload = {
                 "tool_result_id": tool_result_id,
                 "tool": event.payload.get("tool"),
@@ -663,18 +651,10 @@ class RunStore:
         if not run_id:
             raise ValueError("live run payload requires id")
         with self._lock:
-            self._live_path(run_id).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            self.partitions.live_runs.write(run_id, payload)
 
     def list_live(self) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
-        for path in sorted(self.live_runs_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if isinstance(payload, dict):
-                items.append(payload)
-        return items
+        return self.partitions.live_runs.list()
 
     def _live_path(self, run_id: str) -> Path:
         safe = "".join(char for char in run_id if char.isalnum() or char in {"-", "_"})

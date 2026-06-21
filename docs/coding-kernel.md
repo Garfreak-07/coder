@@ -10,10 +10,10 @@ Current services:
   previews, applies approved patches, and rolls back snapshots.
 - `CommandService`: validates cwd/scope, enforces approval for product checks,
   runs sandbox/local checks, and captures output.
-- `ArtifactRepairService`: central one-shot JSON artifact repair for
-  Planner/Worker/Tester paths.
+- `ArtifactRepairService`: one-shot JSON artifact repair implementation kept
+  behind `ActionGateway`.
 
-In v0.9.2 these services sit behind `ActionGateway`:
+In v0.9.3 these services sit behind `ActionGateway`:
 
 ```text
 AgentGraphRunner / AgentEngine
@@ -37,9 +37,11 @@ The controlled coding loop is:
 ```text
 execution_result.proposed_changes
 -> ActionGateway propose_patch
--> patch_preview hidden effect
+-> patch_preview artifact/ref
 -> ActionGateway apply_patch_sandbox when sandbox_root is available
+-> sandbox_apply artifact/ref
 -> ActionGateway run_command_sandbox
+-> check_result artifact/ref
 -> DebugFinding on failed check
 -> PlannerInputBundle.effects
 -> PlannerDecision continue/replan or ask_human
@@ -50,17 +52,19 @@ time and converted into Planner interrupts. Sandbox actions use `sandbox_root`
 when provided; otherwise they are marked `sandbox_unavailable` and fall back to
 the repo-root compatibility path with normal approval behavior.
 
-## v0.9.2 Boundary
+## v0.9.3 Boundary
 
 - Ordinary users see coding capabilities through Agents and workflow edges, not
   kernel services.
 - `RunController` owns loop control when coding work asks for another round.
 - `BudgetBroker` reserves context, command, patch, and model resources before
   execution.
-- `ActionGateway` fronts all kernel service access from product runtime paths.
-- `AgentEngineRegistry` owns Planner, Worker, Tester, FinalReview, and
-  Synthesizer execution.
-- Partitioned stores separate patch previews, command output blobs, token
-  ledgers, trace spans, artifacts, and run events.
+- `ActionGateway` fronts all kernel service access from product runtime paths,
+  including model artifact validation and repair.
+- `AgentRun` and `AgentEngineRegistry` own Planner, Worker, Tester,
+  FinalReview, Synthesizer, and PlannerDecision execution.
+- Partitioned stores separate metadata, results, patch previews, command output
+  blobs, token ledgers, trace spans, artifacts, contexts, tool results, live
+  runs, and run events.
 - Legacy `plan_artifact`, `patch_artifact`, and `review_artifact` remain only
   for old `WorkflowSpec` flows.

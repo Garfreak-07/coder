@@ -229,6 +229,10 @@ export function getLiveRun(runId: string): Promise<LiveRunDetail> {
   return requestJson<LiveRunDetail>(`/api/v2/live-runs/${runId}`);
 }
 
+export function getLiveAgentRun(runId: string): Promise<LiveRunDetail> {
+  return requestJson<LiveRunDetail>(`/api/v2/live-agent-runs/${runId}`);
+}
+
 export async function getDefaultAgentWorkflow(): Promise<{
   agent_workflow: AgentWorkflowSpec;
   runtime_boundary: "legacy_runtime_preview";

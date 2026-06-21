@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from coder_workbench.agent_engine.runtime import AgentGraphExecutorError, ModelFactory
+from coder_workbench.agent_engine.runtime import AgentEngineRuntimeError, ModelFactory
 from coder_workbench.agent_graph.agent_run import AgentRun
 from coder_workbench.agent_graph.schema import (
     AgentTaskEnvelope,
@@ -18,6 +18,9 @@ from coder_workbench.config import RuntimeConfig, load_runtime_config
 from coder_workbench.core import AgentWorkflowSpec
 from coder_workbench.llm import create_chat_model
 from coder_workbench.skills.index import SkillIndex
+
+
+AgentGraphExecutorError = AgentEngineRuntimeError
 
 
 class AgentGraphExecutorProtocol(Protocol):

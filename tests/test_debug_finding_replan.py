@@ -31,7 +31,7 @@ class DebugFindingReplanTests(unittest.TestCase):
 
         self.assertIn("Debug findings from previous round:", order_prompt)
         self.assertIn("work_item_id=executor-work", order_prompt)
-        self.assertIn("raw_output_ref=check_output_1", order_prompt)
+        self.assertIn("raw_output_ref=check_output_round_1_1", order_prompt)
         self.assertIn("prefer continue/replan", decision_prompt)
         self.assertIn("same error repeated", decision_prompt)
 
@@ -76,6 +76,19 @@ class DebugFindingReplanTests(unittest.TestCase):
         self.assertGreaterEqual(result.data["coding_eval"]["details"]["debug_findings"], 1)
         self.assertTrue(result.data["coding_eval"]["details"]["sandbox_checks_passed"])
         self.assertFalse(any(event.type == "planner.human_prompt" for event in result.events))
+        first_bundle = result.artifacts["planner_input_bundle_round_1"]
+        first_effects = first_bundle["effects"]
+        first_patch = next(effect for effect in first_effects if effect["action_type"] == "propose_patch")
+        first_apply = next(effect for effect in first_effects if effect["action_type"] == "apply_patch_sandbox")
+        first_check = next(effect for effect in first_effects if effect["action_type"] == "run_command_sandbox")
+        debug_effect = next(effect for effect in first_effects if effect["effect_type"] == "debug_finding")
+
+        self.assertEqual(result.artifacts[first_patch["artifact_ref"]]["artifact_type"], "patch_preview")
+        self.assertEqual(result.artifacts[first_apply["artifact_ref"]]["artifact_type"], "sandbox_apply")
+        self.assertEqual(result.artifacts[first_check["artifact_ref"]]["artifact_type"], "check_result")
+        self.assertEqual(first_check["status"], "failed")
+        self.assertEqual(debug_effect["raw_output_ref"], first_check["output_ref"])
+        self.assertEqual(result.artifacts[debug_effect["debug_finding_ref"]]["raw_output_ref"], first_check["output_ref"])
 
 
 class AutoLoopExecutor:
@@ -207,7 +220,7 @@ def _bundle_with_debug_finding() -> PlannerInputBundle:
                 "work_item_id": "executor-work",
                 "failure_summary": "AssertionError: value was 0",
                 "likely_files": ["sample.py"],
-                "raw_output_ref": "check_output_1",
+                "raw_output_ref": "check_output_round_1_1",
             }
         ],
     )

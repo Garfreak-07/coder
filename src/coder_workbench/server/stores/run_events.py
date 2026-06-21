@@ -11,6 +11,13 @@ class RunEventStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
 
+    def write(self, run_id: str, events: list[RunEvent]) -> None:
+        path = run_dir(self.root, run_id) / "events.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+        for event in events:
+            self.append(run_id, event)
+
     def append(self, run_id: str, event: RunEvent) -> None:
         path = run_dir(self.root, run_id) / "events.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)

@@ -59,26 +59,35 @@ def _handle_optional_check_commands(
             ),
         )
         result = dict(action.payload.get("result") or {})
+        check_artifact_ref = graph_artifact_id("check_result", "round", cache.round, index)
+        output_ref = graph_artifact_id("check_output", "round", cache.round, index)
         if action.status == "blocked" or result.get("blocked"):
             record = {
                 "effect_type": "optional_check_command",
+                "action_type": "run_command_sandbox",
                 "status": "check_requires_planner_confirmation",
                 "work_item_id": command_request.get("work_item_id"),
+                "artifact_ref": check_artifact_ref,
+                "output_ref": output_ref,
+                "requires_planner_replan": True,
                 "command": command_request["command"],
                 "approval_key": result.get("approval_key"),
                 "reason": result.get("message") or result.get("output"),
             }
-            cache.record_hidden_effect(record)
+            cache.record_hidden_effect(record, output=result)
             records.append(record)
             continue
 
-        output_ref = graph_artifact_id("check_output", index)
         record = {
             "effect_type": "optional_check_command",
+            "action_type": "run_command_sandbox",
             "status": "completed" if result.get("passed") else "failed",
             "work_item_id": command_request.get("work_item_id"),
+            "artifact_ref": check_artifact_ref,
             "command": command_request["command"],
             "output_ref": output_ref,
+            "requires_planner_replan": not bool(result.get("passed")),
+            "reason": action.summary,
             "passed": bool(result.get("passed")),
             "returncode": result.get("returncode"),
         }
@@ -116,27 +125,37 @@ def _handle_patch_previews(
     )
     preview = dict(action.payload.get("preview") or {})
     if action.status == "failed":
+        artifact_ref = graph_artifact_id("patch_preview", "failed", cache.round)
         record = {
             "effect_type": "modify_files",
+            "action_type": "propose_patch",
             "status": "patch_preview_failed",
             "work_item_id": None,
+            "artifact_ref": artifact_ref,
+            "output_ref": artifact_ref,
+            "requires_planner_replan": True,
             "reason": action.summary,
             "error_code": action.error_code,
         }
-        cache.record_hidden_effect(record)
+        cache.record_hidden_effect(record, output={"status": "failed", "message": action.summary, "error_code": action.error_code})
         return [record]
     if preview.get("status") == "blocked":
         risky_changes = list(preview.get("risky_changes") or [])
         work_item_id = str(risky_changes[0].get("work_item_id") or "") if risky_changes else ""
         execution = cache.execution_cache.get(work_item_id) if work_item_id else None
+        artifact_ref = graph_artifact_id("patch_preview", "blocked", work_item_id or "runtime")
         record = {
             "effect_type": "modify_files",
+            "action_type": "propose_patch",
             "status": "patch_preview_blocked",
             "work_item_id": work_item_id or None,
+            "artifact_ref": artifact_ref,
+            "output_ref": artifact_ref,
+            "requires_planner_replan": True,
             "reason": str(preview.get("message") or "Proposed change targets a risk path."),
             "errors": list(preview.get("risk_errors") or []),
         }
-        cache.record_hidden_effect(record)
+        cache.record_hidden_effect(record, output=preview)
         cache.record_interrupt(
             {
                 "round": cache.round,
@@ -148,7 +167,7 @@ def _handle_patch_previews(
                 "planner_question": "Should Planner reject this change, narrow scope, or ask the user for explicit permission?",
                 "continue_without_human_possible": False,
                 "candidate_options": [],
-                "artifact_ref": graph_artifact_id("patch_preview", "blocked", work_item_id or "runtime"),
+                "artifact_ref": artifact_ref,
             }
         )
         return [record]
@@ -156,10 +175,16 @@ def _handle_patch_previews(
     patch_ref = graph_artifact_id("patch_preview", preview["patch_id"])
     record = {
         "effect_type": "modify_files",
+        "action_type": "propose_patch",
         "status": "patch_preview_created",
+        "work_item_id": _single_work_item_id(changes),
+        "artifact_ref": patch_ref,
         "patch_ref": patch_ref,
+        "output_ref": patch_ref,
         "change_count": preview.get("change_count", 0),
         "requires_approval": True,
+        "requires_planner_replan": False,
+        "reason": action.summary,
     }
     cache.record_hidden_effect(record, output=preview)
     records = [record]
@@ -183,11 +208,15 @@ def _handle_patch_previews(
         apply_ref = graph_artifact_id("sandbox_apply", cache.round)
         apply_record = {
             "effect_type": "sandbox_apply",
+            "action_type": "apply_patch_sandbox",
             "status": "applied" if result.get("status") == "applied" else action.status,
+            "work_item_id": record.get("work_item_id"),
+            "artifact_ref": apply_ref,
             "patch_ref": patch_ref,
             "output_ref": apply_ref,
             "sandbox_root": action.payload.get("sandbox_root"),
             "sandbox_unavailable": action.payload.get("sandbox_unavailable", False),
+            "requires_planner_replan": result.get("status") != "applied",
             "reason": action.summary,
         }
         cache.record_hidden_effect(apply_record, output=result)
@@ -245,6 +274,17 @@ def _requested_patch_changes(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [dict(item) for item in value if isinstance(item, dict)]
     return []
+
+
+def _single_work_item_id(changes: list[dict[str, Any]]) -> str | None:
+    work_item_ids = {
+        str(change.get("work_item_id") or "")
+        for change in changes
+        if str(change.get("work_item_id") or "").strip()
+    }
+    if len(work_item_ids) == 1:
+        return next(iter(work_item_ids))
+    return None
 
 
 def _sandbox_root_from_data(data: dict[str, Any]) -> str | None:

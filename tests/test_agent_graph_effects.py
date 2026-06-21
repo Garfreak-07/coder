@@ -51,16 +51,18 @@ class AgentGraphEffectsTests(unittest.TestCase):
 
         effect = result.data["planner_input_bundle"]["effects"][0]
         self.assertEqual(effect["status"], "completed")
-        self.assertEqual(effect["output_ref"], "check_output_1")
-        output = result.data["graph_run_cache"]["hidden_effect_outputs"]["check_output_1"]
+        self.assertEqual(effect["artifact_ref"], "check_result_round_1_1")
+        self.assertEqual(effect["output_ref"], "check_output_round_1_1")
+        self.assertEqual(result.artifacts["check_result_round_1_1"]["artifact_type"], "check_result")
+        output = result.data["graph_run_cache"]["hidden_effect_outputs"]["check_output_round_1_1"]
         self.assertIn("42", output["output"])
         tool_event = next(event for event in result.events if event.type == "tool.result")
-        self.assertEqual(tool_event.payload["tool_result_id"], "check_output_1")
+        self.assertEqual(tool_event.payload["tool_result_id"], "check_output_round_1_1")
 
         with tempfile.TemporaryDirectory() as tmp:
             store = RunStore(Path(tmp) / ".coder")
             stored = store.save("agent-graph", tmp, "Run hidden effect.", result)
-            loaded = store.get_tool_result(stored.id, "check_output_1")
+            loaded = store.get_tool_result(stored.id, "check_output_round_1_1")
 
         self.assertIn("42", loaded["output"])
 
@@ -97,6 +99,8 @@ class AgentGraphEffectsTests(unittest.TestCase):
         self.assertEqual(effect["status"], "patch_preview_created")
         patch_ref = effect["patch_ref"]
         self.assertTrue(patch_ref.startswith("patch_preview_"))
+        self.assertEqual(effect["artifact_ref"], patch_ref)
+        self.assertEqual(result.artifacts[patch_ref]["artifact_type"], "patch_preview")
         preview = result.data["graph_run_cache"]["hidden_effect_outputs"][patch_ref]
         self.assertEqual(preview["status"], "proposed")
         self.assertTrue(preview["requires_approval"])

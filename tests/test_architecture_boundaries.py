@@ -11,9 +11,10 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from coder_workbench.actions import ActionGateway, ActionResult
-from coder_workbench.agent_engine import CodeWorkerEngine, HarnessBlock, HarnessGraph, HarnessValidator
+from coder_workbench.agent_engine import CodeWorkerEngine, HarnessBlock, HarnessGraph, HarnessValidator, default_agent_engine_registry
 from coder_workbench.agent_engine.schema import AgentEngineSpec
 from coder_workbench.agent_graph.cache import GraphRunCache
+from coder_workbench.agent_graph.agent_run import AgentRun
 from coder_workbench.agent_graph.effects import apply_hidden_effects
 from coder_workbench.agent_graph.executor import AgentGraphExecutor, AgentGraphExecutorError
 from coder_workbench.agent_graph.runner import AgentGraphRunner
@@ -21,6 +22,7 @@ from coder_workbench.agent_graph.schema import ExecutionRecord, TestRecord
 from coder_workbench.agent_model import AgentRecipe, RuntimeProfileCompiler, TokenBudget
 from coder_workbench.budget import BudgetBroker, BudgetLimit
 from coder_workbench.core import AgentWorkflowSpec, default_planner_led_agent_workflow, validate_agent_workflow_payload
+from coder_workbench.server.storage import RunStore
 from coder_workbench.server.settings import ProviderSettings
 from coder_workbench.server.app import create_app
 
@@ -45,11 +47,17 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(response.json()["status"], {"queued", "running", "completed"})
+        self.assertIn("/api/v2/live-agent-runs/", response.json()["events_url"])
+        self.assertIn("/api/v2/live-agent-runs/", response.json()["result_url"])
+        self.assertNotIn("/api/v2/live-runs/", response.json()["events_url"])
+        self.assertNotIn("/api/v2/live-runs/", response.json()["result_url"])
 
-    def test_agent_graph_runner_does_not_import_default_agent_executor(self) -> None:
+    def test_agent_graph_runner_does_not_import_legacy_agent_execution_adapter(self) -> None:
         source = inspect.getsource(__import__("coder_workbench.agent_graph.runner", fromlist=["_"]))
 
         self.assertNotIn("DefaultAgentExecutor", source)
+        self.assertNotIn("AgentGraphExecutor", source)
+        self.assertNotIn("signature(", source)
         self.assertIn("AgentRun", source)
 
     def test_agent_graph_low_level_services_route_through_action_gateway(self) -> None:
@@ -82,6 +90,37 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
         self.assertEqual(result.status, "completed")
         self.assertIn("executor-work", calls)
+
+    def test_product_agent_work_dispatches_through_agent_run_facade(self) -> None:
+        calls: list[str] = []
+        originals = {
+            "planner_order": AgentRun.run_planner_order,
+            "execution": AgentRun.run_execution,
+            "test": AgentRun.run_test,
+            "final_test": AgentRun.run_final_test,
+            "planner_decision": AgentRun.run_planner_decision,
+        }
+
+        def track(name: str, original: Any):
+            def wrapper(self: AgentRun, *args: Any, **kwargs: Any):
+                calls.append(name)
+                return original(self, *args, **kwargs)
+
+            return wrapper
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(AgentRun, "run_planner_order", track("planner_order", originals["planner_order"])),
+                patch.object(AgentRun, "run_execution", track("execution", originals["execution"])),
+                patch.object(AgentRun, "run_test", track("test", originals["test"])),
+                patch.object(AgentRun, "run_final_test", track("final_test", originals["final_test"])),
+                patch.object(AgentRun, "run_planner_decision", track("planner_decision", originals["planner_decision"])),
+            ):
+                result = AgentGraphRunner(_workflow_with_final_tester()).run("Use every product AgentRun path.", tmp)
+
+        self.assertEqual(result.status, "completed")
+        for name in originals:
+            self.assertIn(name, calls)
 
     def test_start_work_item_builds_context_through_action_gateway(self) -> None:
         action_types: list[str] = []
@@ -195,6 +234,49 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, "model_call_budget_exceeded")
         self.assertFalse(model.invoked)
+
+    def test_model_artifact_validation_and_repair_route_through_action_gateway(self) -> None:
+        class InvalidModel:
+            def invoke(self, prompt: str):
+                return type("Response", (), {"content": "not json"})()
+
+        action_types: list[str] = []
+        repaired_order = {
+            "artifact_type": "planner_order",
+            "round": 1,
+            "round_goal": "Repair planner output.",
+            "plan_graph": {"work_items": []},
+        }
+        original = ActionGateway.run
+
+        def tracking_run(self: ActionGateway, spec, *, run_context):
+            action_types.append(spec.action_type)
+            if spec.action_type == "validate_artifact":
+                return ActionResult(status="failed", summary="invalid artifact")
+            if spec.action_type == "repair_artifact":
+                return ActionResult(status="ok", summary="repaired", payload={"artifact": repaired_order})
+            return original(self, spec, run_context=run_context)
+
+        settings = ProviderSettings(
+            default_provider="openai",
+            default_model="fake-model",
+            api_keys={"openai": "test-key"},
+            mock_mode=False,
+        )
+        with patch.object(ActionGateway, "run", tracking_run):
+            order = default_agent_engine_registry().planner().run_planner_order(
+                "Repair planner output.",
+                agent_workflow=default_planner_led_agent_workflow(),
+                runtime_settings=settings,
+                model_factory=lambda config: InvalidModel(),
+                budget_broker=BudgetBroker(),
+                action_gateway=ActionGateway(),
+                run_id="run",
+            )
+
+        self.assertEqual(order.round_goal, "Repair planner output.")
+        self.assertIn("validate_artifact", action_types)
+        self.assertIn("repair_artifact", action_types)
 
     def test_ordinary_ui_does_not_expose_legacy_runtime_json_editor(self) -> None:
         app_source = (Path(__file__).parents[1] / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
@@ -317,9 +399,11 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
     def test_repair_logic_is_centralized_outside_executor_classes(self) -> None:
         executor_source = inspect.getsource(AgentGraphExecutor)
+        runtime_source = inspect.getsource(__import__("coder_workbench.agent_engine.runtime", fromlist=["_"]))
 
         self.assertNotIn("def _repair_once", executor_source)
         self.assertNotIn("ArtifactRepairService", executor_source)
+        self.assertNotIn("ArtifactRepairService", runtime_source)
         self.assertNotIn("build_planner_order_prompt", executor_source)
         self.assertNotIn("build_planner_decision_prompt", executor_source)
         self.assertNotIn("build_tester_prompt", executor_source)
@@ -346,9 +430,55 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIn("_rollback_patch", registry_source)
         self.assertIn("PatchService", registry_source)
 
+    def test_run_store_save_uses_partitioned_primary_write_path(self) -> None:
+        source = inspect.getsource(RunStore.save)
+
+        self.assertIn("partitions.metadata.write", source)
+        self.assertIn("partitions.results.write", source)
+        self.assertIn("_write_artifacts", source)
+        self.assertIn("_write_events", source)
+        self.assertIn("_write_ledgers", source)
+        self.assertIn("_externalize_context_packets", source)
+        self.assertIn("_externalize_tool_results", source)
+        self.assertNotIn("metadata.json", source)
+        self.assertNotIn("result.json", source)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _workflow_with_final_tester() -> AgentWorkflowSpec:
+    payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+    payload["agents"].append(
+        {
+            "id": "tester2",
+            "name": "Second Tester Agent",
+            "role": "tester",
+            "model_tier": "standard",
+            "can_talk_to_human": False,
+            "capabilities": ["model_review", "return_test_result"],
+        }
+    )
+    payload["agents"].append(
+        {
+            "id": "final_tester",
+            "name": "Final Tester Agent",
+            "role": "reviewer",
+            "model_tier": "standard",
+            "can_talk_to_human": False,
+            "capabilities": ["aggregate_tests", "return_test_result"],
+        }
+    )
+    payload["edges"].extend(
+        [
+            {"from": "executor", "to": "tester2"},
+            {"from": "tester", "to": "final_tester"},
+            {"from": "tester2", "to": "final_tester"},
+            {"from": "final_tester", "to": "planner", "loop": True},
+        ]
+    )
+    return AgentWorkflowSpec.model_validate(payload)
 
 
 def _wait_for_live_run(client: TestClient, run_id: str) -> dict[str, Any]:

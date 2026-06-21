@@ -6,7 +6,7 @@ Coder is built around an AgentGraph runtime where Planner owns global decisions,
 Code Worker performs bounded implementation work, Tester returns evidence, and
 the runtime passes compact structured artifacts instead of transcripts.
 
-The current architecture target is v0.9.2:
+The current architecture target is v0.9.3 control-plane hardening:
 
 ```text
 Ordinary Agent workflow UI
@@ -20,7 +20,7 @@ Ordinary Agent workflow UI
 -> AgentRun
 -> AgentEngineRegistry
 -> PlannerEngine / CodeWorkerEngine / TesterEngine / FinalReviewEngine / SynthesizerEngine
--> patch preview / sandbox apply / sandbox check / DebugFinding replan
+-> patch_preview / sandbox_apply / check_result / DebugFinding refs
 -> TraceSpan, partitioned stores, structured artifacts, PlannerDecision
 ```
 
@@ -35,7 +35,7 @@ src/coder_workbench/
   actions/           ActionSpec and ActionGateway for controlled effects
   agent_engine/      AgentEngine specs, registry, harness validation, engines
   agent_graph/       Planner-led graph runner, scheduling, cache, merge logic
-  agent_harness/     Harness loops and shared ArtifactRepairService
+  agent_harness/     Harness loops and JSON artifact repair implementation
   budget/            BudgetBroker reservations before model/tool/context work
   coding/            Repo intelligence, PatchService, CommandService, checks
   context/           ContextService, ContextPacketV2 and TokenLedger wiring
@@ -121,18 +121,22 @@ retained only for old `WorkflowSpec` flows.
   context, token, artifact, plugin, skill, memory, repair, and tool policies.
 - `RuntimeProfileCache` avoids recompiling identical workflow/extension/profile
   combinations.
-- `AgentRun` dispatches work through `AgentEngineRegistry`.
-- `AgentGraphExecutor` is a compatibility adapter over the registered engines.
+- `AgentRun` dispatches PlannerOrder, Worker, Tester, FinalReview, Synthesizer,
+  and PlannerDecision work through `AgentEngineRegistry`.
+- `AgentGraphExecutor` is a legacy compatibility adapter and is not constructed
+  by the product `AgentGraphRunner`.
 - `PatchService` owns proposed change validation, risk path blocking, patch
   preview, apply, and rollback behind `ActionGateway`.
 - `CommandService` owns scoped cwd validation, command approval, timeouts, and
   output capture behind `ActionGateway`.
-- `ArtifactRepairService` owns one-shot JSON artifact repair for model outputs.
+- Model-output validation and repair enter through `ActionGateway` actions;
+  the repair service remains behind that gateway boundary.
 - `ExtensionRouter` routes globally installed plugins and skills per work item.
 - `TraceContext` attaches `trace_id`, `span_id`, and `parent_span_id` to run
   events.
-- `PartitionedRunStores` provides the event, artifact, blob, ledger, extension,
-  and cache write path over the `.coder` layout.
+- `PartitionedRunStores` provides the metadata, result, event, artifact, blob,
+  ledger, context, tool-result, live-run, extension, and cache write path over
+  the `.coder` layout.
 
 ## Install
 
@@ -203,6 +207,7 @@ Common development endpoints:
 - `POST /api/v2/agent-workflows/runtime-profiles`
 - `POST /api/v2/live-agent-runs`
 - `GET /api/v2/live-agent-runs/{run_id}`
+- `GET /api/v2/live-agent-runs/{run_id}/events`
 - `POST /api/v2/live-agent-runs/{run_id}/planner-response`
 - `GET /api/v2/extensions/plugins`
 - `GET /api/v2/extensions/skills`
@@ -249,12 +254,15 @@ Focused architecture boundary tests:
   through `ActionGateway`; services such as `ContextService`, `PatchService`,
   and `CommandService` stay behind that boundary.
 - Budget-affecting work should reserve through `BudgetBroker` before execution.
-- New model-output repair behavior should go through `ArtifactRepairService`.
-- New Planner, Tester, FinalReview, Synthesizer, and Worker execution behavior
-  should enter through `AgentEngineRegistry`; keep `AgentGraphExecutor` as an
-  adapter only.
+- New model-output validation and repair behavior should go through
+  `ActionGateway` `validate_artifact` and `repair_artifact` actions.
+- New Planner, Tester, FinalReview, Synthesizer, Worker, and PlannerDecision
+  execution behavior should enter through `AgentRun` and
+  `AgentEngineRegistry`; keep `AgentGraphExecutor` as a compatibility adapter
+  only.
 - Coding auto-loop behavior should preserve the path:
-  `proposed_changes -> patch preview -> sandbox apply/check -> DebugFinding -> PlannerDecision`.
+  `proposed_changes -> patch_preview -> sandbox_apply/check_result -> DebugFinding -> PlannerDecision`,
+  with structured artifact refs carried in `PlannerInputBundle.effects`.
 - Extensions are globally installed and routed per work item.
 - Ordinary UI should not expose runtime JSON, harness graphs, context policies,
   token budgets, or manual capability checklists.

@@ -22,6 +22,7 @@ import {
   getAgentWorkflow,
   getDefaultAgentWorkflow,
   getLibrary,
+  getLiveAgentRun,
   getLiveRun,
   getRun,
   getRunEvents,
@@ -280,10 +281,13 @@ export function App() {
     }
   }
 
-  async function openLiveRun(runId: string, attach = false) {
+  async function openLiveRun(runId: string, attach = false, runtimeType?: LiveRunDetail["runtime_type"]) {
     setStatus(`Loading live run ${runId}...`);
     try {
-      const detail = await getLiveRun(runId);
+      let detail = runtimeType === "agent_graph" ? await getLiveAgentRun(runId) : await getLiveRun(runId);
+      if (detail.runtime_type === "agent_graph" && detail.deprecated) {
+        detail = await getLiveAgentRun(runId);
+      }
       setSelectedRunKind("live");
       setSelectedRunDetail(detail);
       setActiveRunId(detail.id);
@@ -295,7 +299,7 @@ export function App() {
       setRequest(detail.request);
       setStatus(`Live run ${runId}: ${detail.status}`);
       if (attach || detail.status === "queued" || detail.status === "running") {
-        subscribeToRun(detail.id, `/api/v2/live-runs/${detail.id}/events`);
+        subscribeToRun(detail.id, liveEventsUrl(detail));
       }
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
@@ -1039,6 +1043,12 @@ export function App() {
     );
   }
 
+  function liveEventsUrl(detail: LiveRunDetail) {
+    return detail.runtime_type === "agent_graph"
+      ? `/api/v2/live-agent-runs/${detail.id}/events`
+      : `/api/v2/live-runs/${detail.id}/events`;
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -1142,7 +1152,7 @@ export function App() {
           </div>
           <div className="list compact-list">
             {liveRuns.slice(0, 5).map((run) => (
-              <button className="list-item" key={run.id} onClick={() => openLiveRun(run.id)}>
+              <button className="list-item" key={run.id} onClick={() => openLiveRun(run.id, false, run.runtime_type)}>
                 <span>{run.workflow_id}</span>
                 <small>{run.status} / {run.events} events</small>
               </button>
@@ -1513,7 +1523,7 @@ export function App() {
             <div className="panel-subtitle">Live</div>
             <div className="list compact-list">
               {liveRuns.map((run) => (
-                <button className="list-item" key={run.id} onClick={() => openLiveRun(run.id)}>
+                <button className="list-item" key={run.id} onClick={() => openLiveRun(run.id, false, run.runtime_type)}>
                   <span>{run.workflow_id}</span>
                   <small>{run.status} / {run.events} events</small>
                 </button>

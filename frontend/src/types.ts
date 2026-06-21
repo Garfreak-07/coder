@@ -285,6 +285,7 @@ export interface RunEvent {
 export interface RunSummaryItem {
   id: string;
   workflow_id: string;
+  runtime_type?: "agent_graph" | "legacy_workflow";
   repo_root: string;
   request: string;
   status: string;

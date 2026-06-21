@@ -31,7 +31,7 @@ PlannerInputBundle -> PlannerDecision -> RunController
 Legacy `WorkflowSpec` remains only as a compatibility and advanced preview
 boundary. Product live Agent workflows use `AgentGraphRunner`.
 
-## v0.9.2 Control Plane
+## v0.9.3 Control Plane
 
 `RunController` owns global continuation decisions after each
 `PlannerDecision`. It enforces max rounds and plan fingerprint loop guards
@@ -50,17 +50,22 @@ run result data.
 run. Reservation diagnostics are written alongside `TokenLedger`, which remains
 the audit record after context is built.
 
-`AgentEngineRegistry` owns agent execution. It registers Planner, Code Worker,
-Tester, Final Review, and Synthesizer engines. `AgentGraphExecutor` remains as
-a compatibility adapter for older call sites and must not own prompt, repair, or
-artifact-specific execution logic.
+`AgentRun` is the product Agent execution facade. It dispatches PlannerOrder,
+Worker, Tester, Final Review, Synthesizer, and PlannerDecision work through
+`AgentEngineRegistry`. `AgentGraphExecutor` remains only as a compatibility
+adapter for older call sites and must not be constructed by the product
+`AgentGraphRunner`.
 
 Coding work follows the controlled auto-loop path:
 
 ```text
-proposed_changes -> patch preview -> sandbox apply/check -> DebugFinding
+proposed_changes -> patch_preview -> sandbox_apply/check_result -> DebugFinding
 -> PlannerInputBundle -> PlannerDecision -> next RunController decision
 ```
+
+Patch preview, sandbox apply, sandbox check, and DebugFinding records carry
+structured artifact refs in `PlannerInputBundle.effects`, so Planner replan
+prompts can cite raw failed-check output instead of summaries only.
 
 Run events carry trace fields in their payloads:
 
@@ -71,8 +76,11 @@ parent_span_id
 ```
 
 Partitioned run stores keep the existing `.coder` layout while providing the
-explicit event, artifact, blob, ledger, extension, and cache write path.
+explicit metadata, result, event, artifact, blob, ledger, context, tool-result,
+live-run, extension, and cache write path. `RunStore.save()` orchestrates these
+stores instead of owning primary object file writes directly.
 
 Legacy `WorkflowSpec` endpoints remain compatibility-only. Preview compilers
 return `runtime_type=legacy_preview`, and `/api/v2/live-runs` is deprecated in
-favor of `/api/v2/live-agent-runs` for product AgentGraph execution.
+favor of `/api/v2/live-agent-runs` for product AgentGraph execution. Live
+AgentGraph creation returns `live-agent-runs` event and result URLs.
