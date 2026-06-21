@@ -18,8 +18,9 @@ export function EventReplayList({ events, runId }: { events: RunEvent[]; runId: 
     <>
       {groupReplayEvents(events).map((item, index) => {
         if (isLoopReplayGroup(item)) {
-          const contextLinks = item.events.filter((event) => event.type === "agent.context_packet").length;
+          const contextLinks = item.events.filter(isContextPacketEvent).length;
           const artifactLinks = item.events.filter((event) => event.type === "artifact.produced").length;
+          const tokenEntries = item.events.filter((event) => event.type === "token.ledger.entry").length;
           return (
             <div className="loop-replay-group" key={item.key}>
               <div className="event-heading">
@@ -31,6 +32,7 @@ export function EventReplayList({ events, runId }: { events: RunEvent[]; runId: 
                 <span>{item.events.length} events</span>
                 <span>{contextLinks} ContextPacket links</span>
                 <span>{artifactLinks} Artifact links</span>
+                <span>{tokenEntries} TokenLedger entries</span>
               </div>
               {item.events.map((event, eventIndex) => (
                 <EventRow event={event} key={event.id ?? `${event.type}-${eventIndex}`} runId={runId} />
@@ -45,6 +47,9 @@ export function EventReplayList({ events, runId }: { events: RunEvent[]; runId: 
 }
 
 function EventRow({ event, runId }: { event: RunEvent; runId: string | null }) {
+  const contextPacket = isContextPacketEvent(event);
+  const artifact = event.type === "artifact.produced";
+  const tokenLedger = event.type === "token.ledger.entry";
   return (
     <div className="event-row" id={eventDomId(event)}>
       <div className="event-heading">
@@ -52,10 +57,12 @@ function EventRow({ event, runId }: { event: RunEvent; runId: string | null }) {
         {event.node_id && <code>{event.node_id}</code>}
       </div>
       <span>{event.message ?? ""}</span>
-      {event.type === "agent.context_packet" && <ContextPacketCard event={event} runId={runId} />}
-      {event.type === "artifact.produced" && <ArtifactCard event={event} runId={runId} />}
-      {event.type !== "agent.context_packet" &&
-        event.type !== "artifact.produced" &&
+      {contextPacket && <ContextPacketCard event={event} runId={runId} />}
+      {artifact && <ArtifactCard event={event} runId={runId} />}
+      {tokenLedger && <TokenLedgerCard event={event} />}
+      {!contextPacket &&
+        !artifact &&
+        !tokenLedger &&
         event.payload &&
         Object.keys(event.payload).length > 0 && <pre>{JSON.stringify(event.payload, null, 2)}</pre>}
     </div>
@@ -68,6 +75,10 @@ function eventDomId(event: RunEvent): string {
 
 function isLoopReplayGroup(item: ReplayItem): item is LoopReplayGroup {
   return "kind" in item && item.kind === "loop";
+}
+
+function isContextPacketEvent(event: RunEvent): boolean {
+  return event.type === "agent.context_packet" || event.type === "agent.context_packet_v2";
 }
 
 function groupReplayEvents(events: RunEvent[]): ReplayItem[] {
@@ -154,6 +165,10 @@ function ContextPacketCard({ event, runId }: { event: RunEvent; runId: string | 
   }
 
   const value = packet as Record<string, unknown>;
+  if (event.type === "agent.context_packet_v2" || typeof value.agent_id === "string") {
+    return <ContextPacketV2Card packet={value} />;
+  }
+
   const agent = objectValue(value.agent);
   const token = objectValue(value.token_estimate);
   const project = objectValue(value.project_context);
@@ -190,6 +205,68 @@ function ContextPacketCard({ event, runId }: { event: RunEvent; runId: string | 
       <details>
         <summary>View full context packet</summary>
         <pre>{JSON.stringify(value, null, 2)}</pre>
+      </details>
+    </div>
+  );
+}
+
+function ContextPacketV2Card({ packet }: { packet: Record<string, unknown> }) {
+  const includedSkillIds = stringList(packet.included_skill_ids);
+  const omittedSkillIds = stringList(packet.omitted_skill_ids);
+  const includedRefs = stringList(packet.included_refs);
+  const omittedRefs = stringList(packet.omitted_refs);
+  return (
+    <div className="context-packet-card">
+      <div className="panel-subtitle">ContextPacketV2</div>
+      <KeyValueList
+        items={[
+          ["Agent", String(packet.agent_id ?? "unknown")],
+          ["Work item", String(packet.work_item_id ?? "unknown")],
+          ["Artifact", String(packet.artifact_type ?? "unknown")],
+          ["Input tokens", String(packet.estimated_input_tokens ?? 0)],
+          ["Omitted tokens", String(packet.estimated_omitted_tokens ?? 0)],
+          ["Compression", formatRatio(packet.compression_ratio)]
+        ]}
+      />
+      <div className="summary-grid">
+        <span>selected skills: {includedSkillIds.join(", ") || "none"}</span>
+        <span>omitted skills: {omittedSkillIds.join(", ") || "none"}</span>
+      </div>
+      {includedRefs.length > 0 && <InlineList title="Included refs" values={includedRefs} />}
+      {omittedRefs.length > 0 && <InlineList title="Omitted refs" values={omittedRefs} />}
+      <details>
+        <summary>View raw ContextPacketV2</summary>
+        <pre>{JSON.stringify(packet, null, 2)}</pre>
+      </details>
+    </div>
+  );
+}
+
+function TokenLedgerCard({ event }: { event: RunEvent }) {
+  const payload = objectValue(event.payload);
+  const entry = objectValue(payload?.entry) ?? payload;
+  if (!entry) return null;
+  const available = numberValue(entry.skill_tokens_available);
+  const loaded = numberValue(entry.skill_tokens_loaded);
+  const skillTokens = available === null || loaded === null ? "unknown" : `${loaded}/${available}`;
+  return (
+    <div className="context-packet-card">
+      <div className="panel-subtitle">TokenLedger</div>
+      <KeyValueList
+        items={[
+          ["Agent", String(entry.agent_id ?? "unknown")],
+          ["Work item", String(entry.work_item_id ?? "unknown")],
+          ["Artifact", String(entry.artifact_type ?? "unknown")],
+          ["Skill tokens", skillTokens],
+          ["Input tokens", String(entry.estimated_input_tokens ?? 0)],
+          ["Output tokens", String(entry.estimated_output_tokens ?? 0)],
+          ["Omitted tokens", String(entry.omitted_tokens ?? 0)],
+          ["Compression", formatRatio(entry.compression_ratio)]
+        ]}
+      />
+      <details>
+        <summary>View raw TokenLedger entry</summary>
+        <pre>{JSON.stringify(entry, null, 2)}</pre>
       </details>
     </div>
   );
@@ -527,6 +604,17 @@ export async function hydrateBlobRefs(value: unknown, runId: string): Promise<un
     return Object.fromEntries(entries);
   }
   return value;
+}
+
+function numberValue(value: unknown): number | null {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatRatio(value: unknown): string {
+  const number = numberValue(value);
+  if (number === null) return "unknown";
+  return `${Math.round(number * 100)}%`;
 }
 
 export function objectValue(value: unknown): Record<string, unknown> | null {
