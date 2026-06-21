@@ -85,6 +85,7 @@ class AgentTaskEnvelope(MergeIndexedModel):
     loaded_skill_refs: list[str] = Field(default_factory=list)
     omitted_skill_ids: list[str] = Field(default_factory=list)
     estimated_skill_tokens: int = 0
+    selected_skill_context: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ExecutionRecord(MergeIndexedModel):

@@ -44,6 +44,7 @@ from coder_workbench.skills import (
     TokenLedgerEntry,
     build_skill_index,
     estimate_tokens,
+    load_selected_skill_contexts,
 )
 
 
@@ -116,6 +117,8 @@ class AgentGraphRunner:
             data["agent_workflow"] = workflow_payload
             skill_index = _skill_index_from_data_or_repo(data, repo_root)
             data["skill_index"] = skill_index.model_dump(mode="json")
+            skill_store_root = _skill_store_root_from_data_or_repo(data, repo_root)
+            data["skill_store_root"] = str(skill_store_root)
 
             emit(
                 "agent_graph.run.started",
@@ -198,6 +201,7 @@ class AgentGraphRunner:
                     previous_round_summary=previous_round_summary,
                     planner_human_response=planner_human_response if round_number == start_round else None,
                     skill_index=skill_index,
+                    skill_store_root=skill_store_root,
                 )
                 action = outcome.planner_decision["next_action"]
                 if action == "continue":
@@ -276,6 +280,7 @@ class AgentGraphRunner:
         previous_round_summary: dict[str, Any] | None,
         planner_human_response: dict[str, Any] | None,
         skill_index: SkillIndex,
+        skill_store_root: Path,
     ) -> RoundOutcome:
         emit(
             "agent_graph.round.started",
@@ -405,6 +410,7 @@ class AgentGraphRunner:
                     emit,
                     request=request,
                     skill_index=skill_index,
+                    skill_store_root=skill_store_root,
                     run_id=str(data.get("run_id") or ""),
                 )
                 task_contexts.append({"item": item, "envelope": envelope})
@@ -681,6 +687,7 @@ class AgentGraphRunner:
         emit: Any,
         request: str,
         skill_index: SkillIndex,
+        skill_store_root: Path,
         run_id: str,
     ) -> Any:
         upstream_refs = upstream_refs_for_item(cache, item)
@@ -689,11 +696,29 @@ class AgentGraphRunner:
             work_item=item,
             role=self._agent_role(item.assignee_agent_id),
         ) if skill_index.skills else SkillRouteDecision(work_item_id=item.work_item_id)
+        selected_context = load_selected_skill_contexts(
+            skill_store_root=skill_store_root,
+            decision=route,
+            skill_index=skill_index.skills,
+            task_summary=item.task_summary,
+        )
+        actual_skill_tokens = sum(context.estimated_tokens for context in selected_context)
+        route = route.model_copy(
+            update={
+                "estimated_skill_tokens": actual_skill_tokens,
+                "loaded_skill_refs": [context.ref for context in selected_context],
+            }
+        )
+        route_payload = route.model_dump(mode="json")
+        route_payload["selected_skill_context"] = [
+            context.model_dump(mode="json")
+            for context in selected_context
+        ]
         envelope = cache.create_agent_task(
             item,
             planner_order_ref=planner_order_ref,
             upstream_refs=upstream_refs,
-            skill_route=route.model_dump(mode="json"),
+            skill_route=route_payload,
         )
         packet = _context_packet_v2(
             envelope=envelope,
@@ -1017,6 +1042,13 @@ def _skill_index_from_data_or_repo(data: dict[str, Any], repo_root: str) -> Skil
         return build_skill_index(InstalledSkillStore(Path(repo_root) / ".coder").list_installed())
     except Exception:
         return SkillIndex()
+
+
+def _skill_store_root_from_data_or_repo(data: dict[str, Any], repo_root: str) -> Path:
+    value = data.get("skill_store_root")
+    if isinstance(value, str) and value.strip():
+        return Path(value)
+    return Path(repo_root) / ".coder"
 
 
 def _context_packet_v2(

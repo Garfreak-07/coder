@@ -1,4 +1,10 @@
-from .context import ContextPacketV2, SkillContextRef, build_skill_context_refs
+from .context import (
+    ContextPacketV2,
+    SkillContextRef,
+    SkillLoadedContext,
+    build_skill_context_refs,
+    load_selected_skill_contexts,
+)
 from .index import SkillIndex, SkillIndexEntry, build_skill_index
 from .installer import SkillInstallResult, SkillInstaller
 from .ledger import TokenLedgerEntry, estimate_tokens
@@ -28,6 +34,7 @@ __all__ = [
     "SkillIndex",
     "SkillIndexEntry",
     "SkillInstallResult",
+    "SkillLoadedContext",
     "SkillInstaller",
     "SkillPackageManifest",
     "SkillRouteDecision",
@@ -38,6 +45,7 @@ __all__ = [
     "build_skill_context_refs",
     "build_skill_index",
     "estimate_tokens",
+    "load_selected_skill_contexts",
     "select_skills_for_work_item",
     "sha256_digest",
     "verify_sha256",

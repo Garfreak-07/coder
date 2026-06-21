@@ -57,6 +57,7 @@ class GraphRunCache(BaseModel):
         skill_route: dict[str, Any] | None = None,
     ) -> AgentTaskEnvelope:
         route = skill_route or {}
+        selected_skill_context = list(route.get("selected_skill_context") or [])
         envelope = AgentTaskEnvelope(
             round=self.round,
             work_item_id=item.work_item_id,
@@ -73,6 +74,7 @@ class GraphRunCache(BaseModel):
             loaded_skill_refs=list(route.get("loaded_skill_refs") or []),
             omitted_skill_ids=list(route.get("omitted_skill_ids") or []),
             estimated_skill_tokens=int(route.get("estimated_skill_tokens") or 0),
+            selected_skill_context=selected_skill_context,
         )
         self.agent_tasks[item.work_item_id] = envelope
         if skill_route is not None:

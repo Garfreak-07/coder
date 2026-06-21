@@ -36,6 +36,18 @@ class InstalledSkillStore:
             raise KeyError(skill_id)
         return InstalledSkillRecord.model_validate(json.loads(path.read_text(encoding="utf-8")))
 
+    def skill_root(self, skill_id: str) -> Path:
+        path = self._skill_dir(skill_id)
+        if not path.exists():
+            raise KeyError(skill_id)
+        return path
+
+    def read_skill_body(self, skill_id: str) -> str:
+        path = self.skill_root(skill_id) / "SKILL.md"
+        if not path.exists():
+            raise KeyError(skill_id)
+        return path.read_text(encoding="utf-8")
+
     def enable(self, skill_id: str) -> InstalledSkillRecord:
         return self._set_enabled(skill_id, True)
 

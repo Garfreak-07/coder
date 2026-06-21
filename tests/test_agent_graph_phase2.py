@@ -11,7 +11,8 @@ from coder_workbench.agent_graph.runner import AgentGraphRunner
 from coder_workbench.agent_graph.schema import ExecutionRecord, PlannerOrder, TestRecord, WorkItem
 from coder_workbench.core import AgentWorkflowSpec, default_planner_led_agent_workflow
 from coder_workbench.server.storage import RunStore
-from coder_workbench.skills import SkillIndex, SkillIndexEntry
+from coder_workbench.skills import InstalledSkillStore, build_skill_index
+from coder_workbench.skills.schema import SkillPackageManifest
 
 
 class AgentGraphSchemaTests(unittest.TestCase):
@@ -202,10 +203,11 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
 
     def test_runner_routes_installed_skills_into_task_envelope_and_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            skill_store = _install_skill(Path(tmp) / ".coder")
             result = AgentGraphRunner(default_planner_led_agent_workflow()).run(
                 "Research GitHub repositories for comparable tools.",
                 tmp,
-                initial_data={"skill_index": _skill_index().model_dump(mode="json")},
+                initial_data={"skill_index": build_skill_index(skill_store.list_installed()).model_dump(mode="json")},
             )
 
         self.assertEqual(result.status, "completed")
@@ -213,12 +215,15 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         task = cache["agent_tasks"]["executor-work"]
         self.assertEqual(task["allowed_skill_ids"], ["github-research"])
         self.assertEqual(task["loaded_skill_refs"], ["skill:github-research:SKILL.md"])
+        self.assertEqual(task["selected_skill_context"][0]["skill_id"], "github-research")
+        self.assertIn("# GitHub Research", task["selected_skill_context"][0]["content"])
         self.assertEqual(cache["skill_routes"]["executor-work"]["allowed_skill_ids"], ["github-research"])
         self.assertEqual(
             cache["context_packets_v2"]["executor-work"]["included_skill_ids"],
             ["github-research"],
         )
-        self.assertEqual(cache["token_ledger"][0]["skill_tokens_loaded"], 1200)
+        self.assertGreater(cache["token_ledger"][0]["skill_tokens_loaded"], 0)
+        self.assertLess(cache["token_ledger"][0]["skill_tokens_loaded"], 1200)
         self.assertEqual(result.data["token_ledger"][0]["work_item_id"], "executor-work")
         self.assertGreater(result.estimated_tokens_used, 0)
         self.assertIn("skill.route.selected", {event.type for event in result.events})
@@ -258,24 +263,50 @@ def _workflow_with_final_tester() -> AgentWorkflowSpec:
     return AgentWorkflowSpec.model_validate(payload)
 
 
-def _skill_index() -> SkillIndex:
-    return SkillIndex(
-        skills=[
-            SkillIndexEntry(
-                id="github-research",
-                name="GitHub Research",
-                description="Search and compare open-source GitHub repositories.",
-                when_to_use=["github", "repository", "research"],
-                category="research",
-                risk_level="low",
-                produces=["source_collection"],
-                requires=["search_query"],
-                connectors=["github_readonly"],
-                trust_level="official",
-                max_skill_tokens=1200,
-            )
-        ]
+def _install_skill(root: Path) -> InstalledSkillStore:
+    package_dir = root.parent / "skill-package"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    manifest = SkillPackageManifest.model_validate(
+        {
+            "id": "github-research",
+            "name": "GitHub Research",
+            "version": "0.1.0",
+            "description": "Search and compare open-source GitHub repositories.",
+            "category": "research",
+            "skill_type": "procedure",
+            "risk_level": "low",
+            "publisher": "coder-official",
+            "allowed_authorities": ["planner", "worker", "tester", "synthesizer"],
+            "requires": ["search_query"],
+            "produces": ["source_collection", "execution_result"],
+            "connectors": ["github_readonly"],
+            "external_effect": False,
+            "requires_preview": False,
+            "requires_human_approval": False,
+            "context_policy": {
+                "load_mode": "on_demand",
+                "max_skill_tokens": 1200,
+            },
+            "compatibility": {
+                "coder_min_version": "0.7.0",
+                "agent_graph_runtime": True,
+            },
+            "trigger_hints": ["github", "repository", "research"],
+        }
     )
+    (package_dir / "skill.json").write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
+    (package_dir / "SKILL.md").write_text(
+        "# GitHub Research\n\nUse for GitHub source research.\n",
+        encoding="utf-8",
+    )
+    store = InstalledSkillStore(root)
+    store.install_from_directory(
+        package_dir,
+        manifest=manifest,
+        package_sha256="0" * 64,
+        trust_level="official",
+    )
+    return store
 
 
 if __name__ == "__main__":

@@ -75,6 +75,8 @@ def build_worker_execution_prompt(
             _compact_json(item.model_dump(mode="json")),
             "AgentTaskEnvelope JSON:",
             _compact_json(envelope.model_dump(mode="json")),
+            "Selected Skill context JSON:",
+            _compact_json(envelope.selected_skill_context),
         ]
     )
 

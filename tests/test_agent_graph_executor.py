@@ -130,6 +130,31 @@ class AgentGraphExecutorTests(unittest.TestCase):
             ["agent_graph.agent_call.started", "agent_graph.agent_call.completed"],
         )
 
+    def test_worker_prompt_includes_selected_skill_context(self) -> None:
+        model = FakeChatModel(
+            ['{"artifact_type":"execution_result","status":"completed","summary":"Used skill context."}']
+        )
+        executor = _executor(model)
+
+        executor.create_execution_result(
+            item=_item(),
+            envelope=_envelope(
+                selected_skill_context=[
+                    {
+                        "skill_id": "github-research",
+                        "ref": "skill:github-research:SKILL.md",
+                        "content": "# GitHub Research\nUse for GitHub source research.",
+                        "estimated_tokens": 12,
+                        "truncated": False,
+                        "load_mode": "on_demand",
+                    }
+                ]
+            ),
+        )
+
+        self.assertIn("Selected Skill context JSON", model.prompts[0])
+        self.assertIn("# GitHub Research", model.prompts[0])
+
     def test_invalid_worker_json_repairs_once(self) -> None:
         model = FakeChatModel(
             [
@@ -258,7 +283,7 @@ def _item() -> WorkItem:
     )
 
 
-def _envelope() -> AgentTaskEnvelope:
+def _envelope(selected_skill_context: list[dict[str, Any]] | None = None) -> AgentTaskEnvelope:
     return AgentTaskEnvelope(
         round=1,
         work_item_id="executor-work",
@@ -266,6 +291,7 @@ def _envelope() -> AgentTaskEnvelope:
         assigned_agent_id="executor",
         task_summary="Do the work.",
         planner_order_ref="planner_order_round_1",
+        selected_skill_context=selected_skill_context or [],
     )
 
 
