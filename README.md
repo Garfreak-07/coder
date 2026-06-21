@@ -2,53 +2,71 @@
 
 Planner-led local agent workflow workbench for controlled coding tasks.
 
-Coder runs a local workflow where a strong Planner owns the global decision,
-Executor performs authorized implementation work, and Tester returns evidence.
-Agents exchange compact structured artifacts instead of full transcripts.
+Coder is built around an AgentGraph runtime where Planner owns global decisions,
+Code Worker performs bounded implementation work, Tester returns evidence, and
+the runtime passes compact structured artifacts instead of transcripts.
 
-## Current Product Target
-
-The active direction is:
+The current architecture target is v0.9:
 
 ```text
-v0.9 Ordinary-First Unified Agent Architecture
-+ Planner-led coding loop
-+ AgentRecipe role cards compiled into RuntimeProfiles
-+ AgentRun / AgentEngine execution for coding work
-+ Extension System with Plugins and Skills
-+ ContextService, TokenLedger, PatchService, CommandService, and ArtifactRepairService
+Ordinary Agent workflow UI
+-> AgentRecipe / RuntimeProfileCompiler
+-> AgentGraphRunner
+-> ContextService
+-> AgentRun
+-> AgentEngineRegistry
+-> CodeWorkerEngine / Tester / Planner paths
+-> structured artifacts and PlannerDecision
 ```
 
-The default user-facing template is:
+Only Planner can ask the user. Non-Planner Agents return artifacts, blockers, or
+evidence to Planner.
+
+## Repository Layout
 
 ```text
-Planner Agent -> Code Worker Agent -> Tester Agent -> Planner Agent
-      ^                                             |
-      +----------- automatic replan / finish --------+
+src/coder_workbench/
+  agent_model/       AgentRecipe, RuntimeProfileCompiler, runtime profiles
+  agent_engine/      AgentEngine specs, registry, harness validation, engines
+  agent_graph/       Planner-led graph runner, scheduling, cache, merge logic
+  agent_harness/     Harness loops and shared ArtifactRepairService
+  coding/            Repo intelligence, PatchService, CommandService, checks
+  context/           ContextService, ContextPacketV2 and TokenLedger wiring
+  core/              AgentWorkflowSpec, artifacts, authority, legacy compile
+  extensions/        Extension manifests, plugin/skill routing and runtime
+  runtime/           Legacy WorkflowSpec interpreter and run state
+  server/            FastAPI app, storage, live run managers
+  skills/            Installed skill store, registry client, skill router
+  tools/             Compatibility tool registry and low-level tool wrappers
+frontend/
+  src/               React + TypeScript workbench
+tests/               Python unittest suite
+docs/                Architecture and migration notes
 ```
 
-The product runtime also supports AgentGraph execution where Planner can split a
-round into multiple work items, assign them to reachable downstream Agents, wait
-on `depends_on`, and submit an ordered compact `PlannerInputBundle` back to
-Planner.
+## Runtime Boundary
 
-Only Planner can ask the human or decide whether to continue, finish, stop, or
-request confirmation. Worker, Tester, and Final Reviewer return structured
-facts, evidence, or blockers to Planner. Runtime internals such as repository
-indexing, context selection, artifact storage, loop routing, path guards, patch
-safety, sandbox checks, approvals, and replay stay behind that agent-only
-surface.
+Product Agent workflow runs use:
 
-The v0.4 AgentWorkflow builder remains the user-facing workflow surface.
-v0.8 strengthens the coding runtime underneath it: Coder first builds repo
-intelligence, Planner creates reachable concrete work items, Code Worker emits
-`proposed_changes`, runtime creates patch previews, Tester returns evidence,
-debug findings are fed back to Planner, and coding diagnostics report whether
-the loop actually improved the task.
+```text
+AgentWorkflowSpec
+-> PlannerOrder.plan_graph
+-> GraphRunCache
+-> AgentTaskEnvelope
+-> ContextService
+-> AgentRun
+-> AgentEngine
+-> execution_result / test_result
+-> PlannerInputBundle
+-> PlannerDecision
+```
+
+`WorkflowSpec` and `WorkflowRunner` are legacy compatibility paths for old saved
+workflows and advanced preview only. Do not add new product behavior there.
 
 ## Core Artifacts
 
-The default workflow uses six validated planning artifacts:
+Default AgentGraph artifacts:
 
 - `run_contract`
 - `planner_order`
@@ -57,7 +75,7 @@ The default workflow uses six validated planning artifacts:
 - `planner_decision`
 - `round_summary`
 
-The v0.9 coding kernel also produces internal coding artifacts:
+Coding diagnostics:
 
 - `repo_index`
 - `command_discovery`
@@ -69,76 +87,22 @@ The v0.9 coding kernel also produces internal coding artifacts:
 - `debug_finding`
 - `coding_evaluation_report`
 
-Legacy `plan_artifact`, `patch_artifact`, and `review_artifact` are retained
-only for old saved workflows.
+Legacy artifacts `plan_artifact`, `patch_artifact`, and `review_artifact` are
+retained only for old `WorkflowSpec` flows.
 
-## AgentGraph Plan Semantics
+## Key Services
 
-AgentGraph `PlannerOrder.plan_graph.work_items` separates execution dependencies
-from result presentation:
-
-1. Planner may emit work items in any list order.
-2. `depends_on` is the only semantic execution dependency.
-3. Work items with empty `depends_on` are ready together by default.
-4. `merge_index` controls stable result presentation back to Planner.
-5. `merge_index` does not make earlier work items block later independent work.
-6. Resource limits such as `max_concurrency` may limit dispatch, but do not
-   create dependency meaning.
-7. `PlannerInputBundle` and `round_summary.ordered_state` are sorted by
-   `merge_index`.
-
-Execution order is derived from dependency readiness, not from Planner list
-order or `merge_index`.
-
-## Runtime Boundary
-
-Product runs use the AgentGraph runtime:
-
-```text
-AgentWorkflowSpec -> PlannerOrder.plan_graph -> GraphRunCache -> AgentTaskEnvelope
--> Execution/Test caches -> PlannerInputBundle -> PlannerDecision
-```
-
-Legacy `WorkflowSpec` / `WorkflowRunner` remain for advanced inspection and old
-saved workflows only. New product behavior should not be added to the legacy
-runner.
-
-## Current Capabilities
-
-- `AgentWorkflowSpec` for the user-visible Planner / Executor / Tester layer.
-- Ordinary Agent creation can use role cards and omit manual capability
-  selection; runtime derives compatible capabilities and profiles.
-- `AgentRecipe` and `RuntimeProfileCompiler` compile ordinary Agent choices into
-  internal engine, context, token, artifact, plugin, skill, memory, repair, and
-  tool policies.
-- `AgentRun` dispatches code work through `AgentEngineRegistry` and
-  `CodeWorkerEngine`.
-- Extensions page separates Plugins, Skills, Installed, and Updates.
-- `AgentHarness` base loop with Planner, Code Worker, Tester, and Final Review
-  policies.
-- Repository intelligence for Python packages, Vite/React frontends, risk
-  paths, check commands, and regex-backed symbol navigation.
-- Coding context packet selection that includes relevant files and snippets
-  without loading the full repository.
-- v0.4 Agent workflow validation with one primary Planner, arbitrary Agent
-  count, hidden handoff inference, and deterministic save-blocking errors.
-- Initial capability registry for Planner, Executor/Worker, and Tester/Reviewer
-  capabilities.
-- `AgentGraphRuntime` powers product `/api/v2/live-agent-runs` executions
-  without compiling Agent workflows into legacy `WorkflowSpec`.
-- Legacy `WorkflowSpec` compilation remains available only for advanced runtime
-  preview and old saved workflows.
-- FastAPI runtime API and React + TypeScript workbench.
-- Mock-mode executor for local development without model credentials.
-- Structured artifact validation, event emission, storage, and replay.
-- Context packet events before agent calls.
-- Provider settings for OpenAI-compatible model providers.
-- Local run history, stored run replay, and artifact/blob loading.
-- Scoped path guards, patch preview/apply/rollback primitives, command
-  approvals, and preflight checks retained behind `PatchService` and
-  `CommandService`.
-- DebugFinding artifacts and `coding_eval` diagnostics for Planner replan and
-  benchmark reporting.
+- `ContextService` builds `ContextPacketV2`, selects skill context, prepares
+  coding context packets, and writes token ledger entries.
+- `RuntimeProfileCompiler` converts ordinary Agent roles into internal engine,
+  context, token, artifact, plugin, skill, memory, repair, and tool policies.
+- `AgentRun` dispatches work through `AgentEngineRegistry`.
+- `PatchService` owns proposed change validation, risk path blocking, patch
+  preview, apply, and rollback.
+- `CommandService` owns scoped cwd validation, command approval, timeouts, and
+  output capture.
+- `ArtifactRepairService` owns one-shot JSON artifact repair for model outputs.
+- `ExtensionRouter` routes globally installed plugins and skills per work item.
 
 ## Install
 
@@ -152,30 +116,26 @@ python -m venv .venv
 pip install -e .
 ```
 
-Frontend dependencies are in `frontend/`:
+Install frontend dependencies:
 
 ```powershell
 cd frontend
 npm install
 ```
 
-## Run the API
+## Run Locally
+
+Start the API:
 
 ```powershell
-coder-api --host 127.0.0.1 --port 8876
+.\.venv\Scripts\coder-api.exe --host 127.0.0.1 --port 8876
 ```
 
-If `frontend/dist` exists, the API serves it from:
-
-```text
-http://127.0.0.1:8876
-```
-
-## Run the Frontend in Development
+Start the frontend dev server:
 
 ```powershell
 cd frontend
-npm run dev
+npm.cmd run dev
 ```
 
 Open:
@@ -184,53 +144,97 @@ Open:
 http://127.0.0.1:5173
 ```
 
-Vite proxies `/api/*` to the API on port `8876`.
+Vite proxies `/api/*` to `http://127.0.0.1:8876`.
 
-## Run the Default Workflow from the CLI
+If `frontend/dist` exists, the API can serve the built frontend from:
+
+```text
+http://127.0.0.1:8876
+```
+
+## CLI Example
 
 ```powershell
-coder --repo . `
+.\.venv\Scripts\coder.exe --repo . `
   --workflow examples\workflows\coding-workbench.json `
   --request "Build the smallest Planner-led loop"
 ```
 
-Use `--approve` only for workflows that include explicit human gates.
+Use `--approve` only for workflows that include explicit human gates or local
+effects that should be preapproved.
 
-## Coding Harness Diagnostics
+## API Surface
 
-AgentGraph runs now include repository intelligence and coding diagnostics in
-their run data:
+Common development endpoints:
 
-```text
-repo_intelligence.repo_index
-repo_intelligence.command_discovery
-repo_intelligence.risk_map
-repo_intelligence.symbol_index
-graph_run_cache.context_packets_v2
-debug_findings
-coding_eval
-```
+- `GET /api/v2/health`
+- `GET /api/v2/agent-role-cards`
+- `POST /api/v2/agent-workflows/validate`
+- `POST /api/v2/agent-workflows/runtime-profiles`
+- `POST /api/v2/live-agent-runs`
+- `GET /api/v2/live-agent-runs/{run_id}`
+- `POST /api/v2/live-agent-runs/{run_id}/planner-response`
+- `GET /api/v2/extensions/plugins`
+- `GET /api/v2/extensions/skills`
+- `GET /api/v2/extensions/search`
 
-The first benchmark fixture is in:
+Legacy `/api/v2/skills/*`, `/api/v2/live-runs`, and `WorkflowSpec` endpoints
+remain for compatibility. New Agent product behavior should use the AgentGraph
+and Extensions endpoints.
 
-```text
-tests/fixtures/coding_tasks/python_bugfix_001.json
-```
+## Testing
 
-Run backend validation with:
+Backend:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 .\.venv\Scripts\python.exe -m compileall src tests
 ```
 
-## API Keys and Local Secrets
+Frontend:
+
+```powershell
+cd frontend
+npm.cmd run build
+```
+
+Focused architecture boundary tests:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_architecture_boundaries
+```
+
+## Development Rules
+
+- Keep the ordinary product path Agent-first.
+- User interaction must remain `User <-> Planner` only.
+- Worker, Tester, and Final Tester must not ask the user directly.
+- Product live Agent workflows must not compile into legacy `WorkflowSpec`.
+- New patch and command behavior should go through `PatchService` and
+  `CommandService`.
+- New model-output repair behavior should go through `ArtifactRepairService`.
+- Extensions are globally installed and routed per work item.
+- Ordinary UI should not expose runtime JSON, harness graphs, context policies,
+  token budgets, or manual capability checklists.
+
+## Documentation
+
+Architecture notes:
+
+- [docs/architecture.md](docs/architecture.md)
+- [docs/extensions.md](docs/extensions.md)
+- [docs/agent-recipes.md](docs/agent-recipes.md)
+- [docs/agent-engines.md](docs/agent-engines.md)
+- [docs/coding-kernel.md](docs/coding-kernel.md)
+- [docs/deletion-plan.md](docs/deletion-plan.md)
+
+## Secrets
 
 Do not commit API keys or local secrets. Copy `.env.example` to `.env` for local
 model configuration. `.env` is ignored by Git.
 
-Supported provider configuration is OpenAI-compatible and remains optional.
-When credentials are missing, the runtime uses mock mode for safe local testing.
+Provider configuration is OpenAI-compatible and optional. Without credentials,
+the runtime uses mock mode for safe local development.
 
 ## License
 
