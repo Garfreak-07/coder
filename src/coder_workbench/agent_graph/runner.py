@@ -10,6 +10,10 @@ from coder_workbench.agent_graph.artifacts import AgentGraphArtifactRecorder, gr
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.agent_graph.context import upstream_refs_for_item
 from coder_workbench.agent_graph.effects import apply_hidden_effects
+from coder_workbench.agent_graph.evaluation import (
+    build_agent_evaluation_reports,
+    build_skill_evaluation_reports,
+)
 from coder_workbench.agent_graph.executor import (
     AgentGraphExecutor,
     AgentGraphExecutorError,
@@ -634,10 +638,11 @@ class AgentGraphRunner:
         status_reason: str | None = None,
         status_code: str | None = None,
     ) -> RunResult:
+        result_data = self._data_with_evaluation_reports(data, events)
         return RunResult(
             status=status,
-            data=data,
-            summaries={key: summarize_value(value) for key, value in data.items()},
+            data=result_data,
+            summaries={key: summarize_value(value) for key, value in result_data.items()},
             artifacts=artifacts,
             events=events,
             estimated_tokens_used=_estimated_tokens_used(data),
@@ -648,6 +653,33 @@ class AgentGraphRunner:
             status_reason=status_reason,
             status_code=status_code,
         )
+
+    def _data_with_evaluation_reports(self, data: dict[str, Any], events: list[RunEvent]) -> dict[str, Any]:
+        if "agent_evaluation_reports" in data and "skill_evaluation_reports" in data:
+            return data
+        output = dict(data)
+        graph_run_cache = output.get("graph_run_cache")
+        token_ledger = output.get("token_ledger")
+        if not isinstance(graph_run_cache, dict):
+            return output
+        ledger = token_ledger if isinstance(token_ledger, list) else []
+        output["agent_evaluation_reports"] = [
+            report.model_dump(mode="json")
+            for report in build_agent_evaluation_reports(
+                workflow=self.agent_workflow,
+                graph_run_cache=graph_run_cache,
+                events=events,
+                token_ledger=ledger,
+            )
+        ]
+        output["skill_evaluation_reports"] = [
+            report.model_dump(mode="json")
+            for report in build_skill_evaluation_reports(
+                graph_run_cache=graph_run_cache,
+                token_ledger=ledger,
+            )
+        ]
+        return output
 
     def _block_for_planner_human(
         self,

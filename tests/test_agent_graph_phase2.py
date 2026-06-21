@@ -125,6 +125,10 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         self.assertEqual(cache["agent_tasks"]["executor-work"]["assigned_agent_id"], "executor")
         self.assertEqual(cache["execution_cache"]["executor-work"]["status"], "completed")
         self.assertEqual(cache["test_cache"]["executor-work"][0]["tester_agent_id"], "tester")
+        self.assertIn("agent_evaluation_reports", result.data)
+        executor_report = next(report for report in result.data["agent_evaluation_reports"] if report["agent_id"] == "executor")
+        self.assertEqual(executor_report["calls"], 1)
+        self.assertEqual(executor_report["schema_valid_rate"], 1.0)
         self.assertIn("agent_task.completed", {event.type for event in result.events})
         self.assertIn("test.local.completed", {event.type for event in result.events})
 
@@ -225,6 +229,10 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         self.assertGreater(cache["token_ledger"][0]["skill_tokens_loaded"], 0)
         self.assertLess(cache["token_ledger"][0]["skill_tokens_loaded"], 1200)
         self.assertEqual(result.data["token_ledger"][0]["work_item_id"], "executor-work")
+        skill_report = result.data["skill_evaluation_reports"][0]
+        self.assertEqual(skill_report["skill_id"], "github-research")
+        self.assertEqual(skill_report["success_when_used"], 1)
+        self.assertGreater(skill_report["average_token_cost"], 0)
         self.assertGreater(result.estimated_tokens_used, 0)
         self.assertIn("skill.route.selected", {event.type for event in result.events})
         self.assertIn("agent.context_packet_v2", {event.type for event in result.events})
