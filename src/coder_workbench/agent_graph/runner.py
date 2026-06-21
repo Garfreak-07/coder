@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from coder_workbench.agent_graph.artifacts import AgentGraphArtifactRecorder, graph_artifact_id
+from coder_workbench.agent_graph.agent_run import AgentRun
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.agent_graph.context import upstream_refs_for_item
 from coder_workbench.agent_graph.effects import apply_hidden_effects
@@ -83,9 +84,11 @@ class AgentGraphRunner:
         self.agent_workflow = agent_workflow
         self.event_sink = event_sink
         self.runtime_settings = runtime_settings
+        self.agent_run = AgentRun(agent_workflow)
         self.executor = executor or AgentGraphExecutor(
             agent_workflow,
             runtime_settings=runtime_settings,
+            agent_run=self.agent_run,
         )
 
     def run(

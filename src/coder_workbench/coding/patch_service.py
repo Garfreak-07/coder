@@ -13,11 +13,12 @@ class PatchService:
         self.scopes = scopes or []
         self.data = data or {}
 
-    def preview(self, proposed_changes: list[dict[str, Any]], *, risk_map: dict[str, Any] | None = None) -> dict[str, Any]:
+    def preview(self, proposed_changes: Any, *, risk_map: dict[str, Any] | None = None) -> dict[str, Any]:
+        changes = _normalize_changes(proposed_changes)
         active_risk_map = risk_map or build_risk_map(self.repo_root).model_dump(mode="json")
         risky_changes = [
             change
-            for change in proposed_changes
+            for change in changes
             if is_risk_path(str(change.get("path") or change.get("file") or ""), active_risk_map)
         ]
         if risky_changes:
@@ -35,7 +36,7 @@ class PatchService:
                 ],
                 "risky_changes": risky_changes,
             }
-        return propose_patch({"changes": proposed_changes}, self._runtime_context())
+        return propose_patch({"changes": changes}, self._runtime_context())
 
     def apply(self, patch: dict[str, Any], *, approved: bool = False) -> dict[str, Any]:
         return apply_patch({"patch": patch, "approved": approved}, self._runtime_context())
@@ -45,3 +46,16 @@ class PatchService:
 
     def _runtime_context(self) -> dict[str, Any]:
         return {"repo_root": self.repo_root, "scopes": self.scopes, "data": self.data}
+
+
+def _normalize_changes(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        for key in ("changes", "files", "patches"):
+            if isinstance(value.get(key), list):
+                return [dict(item) for item in value[key] if isinstance(item, dict)]
+        if "path" in value:
+            return [dict(value)]
+        return []
+    if isinstance(value, list):
+        return [dict(item) for item in value if isinstance(item, dict)]
+    return []

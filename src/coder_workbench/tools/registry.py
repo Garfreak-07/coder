@@ -7,7 +7,6 @@ from typing import Any, Callable, Literal
 
 from coder_workbench.project_index import annotate_recommendations, build_project_modules, recommend_modules
 from coder_workbench.tools.mcp import call_mcp_tool
-from coder_workbench.tools.patching import apply_patch, propose_patch, rollback_patch
 from coder_workbench.tools.filesystem import summarize_project
 
 
@@ -97,7 +96,7 @@ def default_tool_registry() -> ToolRegistry:
     )
     registry.register(
         "propose_patch",
-        propose_patch,
+        _propose_patch,
         ToolCapability(
             id="propose_patch",
             display_name="Propose patch",
@@ -109,7 +108,7 @@ def default_tool_registry() -> ToolRegistry:
     )
     registry.register(
         "apply_patch",
-        apply_patch,
+        _apply_patch,
         ToolCapability(
             id="apply_patch",
             display_name="Apply patch",
@@ -121,7 +120,7 @@ def default_tool_registry() -> ToolRegistry:
     )
     registry.register(
         "rollback_patch",
-        rollback_patch,
+        _rollback_patch,
         ToolCapability(
             id="rollback_patch",
             display_name="Rollback patch",
@@ -186,10 +185,44 @@ def _recommend_modules(args: dict[str, Any], runtime_context: dict[str, Any]) ->
 
 
 def _dry_run_patch(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
-    return propose_patch(args, runtime_context) | {
+    preview = _patch_service(runtime_context).preview(args)
+    if preview.get("status") == "blocked":
+        return preview
+    return preview | {
         "status": "dry_run",
         "message": "Patch preview generated without applying files.",
     }
+
+
+def _propose_patch(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
+    return _patch_service(runtime_context).preview(args)
+
+
+def _apply_patch(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
+    patch = args.get("patch") or runtime_context.get("data", {}).get(str(args.get("patch_key") or "patch_preview")) or args
+    return _patch_service(runtime_context).apply(
+        patch,
+        approved=bool(args.get("approved") or args.get("patch_approved")),
+    )
+
+
+def _rollback_patch(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:
+    snapshot_id = str(args.get("snapshot_id") or "").strip()
+    if not snapshot_id:
+        patch_result = args.get("patch_result") or runtime_context.get("data", {}).get("patch_apply")
+        if isinstance(patch_result, dict):
+            snapshot_id = str(patch_result.get("snapshot_id") or "").strip()
+    return _patch_service(runtime_context).rollback(snapshot_id)
+
+
+def _patch_service(runtime_context: dict[str, Any]):
+    from coder_workbench.coding.patch_service import PatchService
+
+    return PatchService(
+        runtime_context["repo_root"],
+        scopes=_list_value(runtime_context.get("scopes")),
+        data=runtime_context.get("data") if isinstance(runtime_context.get("data"), dict) else {},
+    )
 
 
 def _run_check(args: dict[str, Any], runtime_context: dict[str, Any]) -> dict[str, Any]:

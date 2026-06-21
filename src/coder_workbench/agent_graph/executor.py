@@ -108,6 +108,7 @@ class AgentGraphExecutor:
         *,
         runtime_settings: Any | None = None,
         model_factory: ModelFactory = create_chat_model,
+        agent_run: AgentRun | None = None,
     ) -> None:
         self.agent_workflow = agent_workflow
         self.runtime_settings = runtime_settings
@@ -115,7 +116,7 @@ class AgentGraphExecutor:
         self.planner_harness = PlannerHarness()
         self.test_harness = TestHarness()
         self.final_review_harness = FinalReviewHarness()
-        self.agent_run = AgentRun(agent_workflow)
+        self.agent_run = agent_run or AgentRun(agent_workflow)
 
     def create_planner_order(
         self,

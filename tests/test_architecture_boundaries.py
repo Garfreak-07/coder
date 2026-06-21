@@ -44,6 +44,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         source = inspect.getsource(__import__("coder_workbench.agent_graph.runner", fromlist=["_"]))
 
         self.assertNotIn("DefaultAgentExecutor", source)
+        self.assertIn("AgentRun", source)
 
     def test_code_work_item_uses_agent_engine_path(self) -> None:
         calls: list[str] = []
@@ -180,6 +181,14 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual(skills.status_code, 200)
         self.assertEqual(search.status_code, 200)
         self.assertTrue(any(item["extension_type"] in {"plugin", "agent_engine"} for item in plugins.json()["plugins"]))
+
+    def test_legacy_patch_tools_route_through_patch_service(self) -> None:
+        registry_source = inspect.getsource(__import__("coder_workbench.tools.registry", fromlist=["_"]))
+
+        self.assertIn("_propose_patch", registry_source)
+        self.assertIn("_apply_patch", registry_source)
+        self.assertIn("_rollback_patch", registry_source)
+        self.assertIn("PatchService", registry_source)
 
 
 if __name__ == "__main__":
