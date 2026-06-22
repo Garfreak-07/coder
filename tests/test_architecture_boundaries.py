@@ -25,6 +25,7 @@ from coder_workbench.budget import BudgetBroker, BudgetLimit
 from coder_workbench.core import AgentWorkflowSpec, default_planner_led_agent_workflow, validate_agent_workflow_payload
 from coder_workbench.server.storage import RunStore
 from coder_workbench.server.settings import ProviderSettings
+import coder_workbench.server.app as server_app
 from coder_workbench.server.app import create_app
 
 
@@ -33,18 +34,18 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
             payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-            with patch("coder_workbench.server.app.WorkflowRunner", side_effect=AssertionError("legacy runner called")):
-                response = client.post(
-                    "/api/v2/live-agent-runs",
-                    json={
-                        "repo": tmp,
-                        "request": "Run the default AgentGraph path.",
-                        "agent_workflow": payload,
-                        "approved": True,
-                    },
-                )
-                if response.status_code == 200:
-                    _wait_for_live_run(client, response.json()["run_id"])
+            self.assertFalse(hasattr(server_app, "WorkflowRunner"))
+            response = client.post(
+                "/api/v2/live-agent-runs",
+                json={
+                    "repo": tmp,
+                    "request": "Run the default AgentGraph path.",
+                    "agent_workflow": payload,
+                    "approved": True,
+                },
+            )
+            if response.status_code == 200:
+                _wait_for_live_run(client, response.json()["run_id"])
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(response.json()["status"], {"queued", "running", "completed"})

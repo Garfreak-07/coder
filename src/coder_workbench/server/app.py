@@ -13,23 +13,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from coder_workbench.core import (
     AgentWorkflowSpec,
     AgentWorkflowValidationError,
-    WorkflowSpec,
     capability_catalog,
-    compile_runtime_profiles,
     compile_agent_workflow_legacy_preview,
+    compile_runtime_profiles,
     default_planner_led_agent_workflow,
-    load_workflow,
     role_card_catalog,
     validate_agent_workflow_payload,
 )
-from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.extensions import builtin_plugin_manifests, extension_search
-from coder_workbench.runtime import run_workflow
-from coder_workbench.runtime.runner import WorkflowRunner
 from coder_workbench.server.agent_manager import AgentGraphRunManager
 from coder_workbench.server.library import LibraryStore
-from coder_workbench.server.manager import RunManager
-from coder_workbench.server.settings import ProviderSettingsStore, provider_status, workflow_provider_status
+from coder_workbench.server.settings import ProviderSettingsStore, provider_status
 from coder_workbench.server.storage import RunStore
 from coder_workbench.skills import (
     InstalledSkillStore,
@@ -52,18 +46,6 @@ from coder_workbench.tools.patching import rollback_patch
 LEGACY_RUNTIME_PREVIEW_BOUNDARY = "legacy_runtime_preview"
 
 
-class RunRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    repo: str
-    request: str
-    workflow_path: str | None = None
-    workflow: dict[str, Any] | None = None
-    approved: bool = False
-    scopes: list[str] = Field(default_factory=list)
-    initial_data: dict[str, Any] = Field(default_factory=dict)
-
-
 class AgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -73,14 +55,6 @@ class AgentRunRequest(BaseModel):
     approved: bool = False
     scopes: list[str] = Field(default_factory=list)
     initial_data: dict[str, Any] = Field(default_factory=dict)
-
-
-class ApprovalRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    approved: bool = True
-    reason: str | None = None
-    data: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlannerResponseRequest(BaseModel):
@@ -160,7 +134,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     settings_store = ProviderSettingsStore(store_root)
     library = LibraryStore(Path(store_root) / "library")
     skill_store = InstalledSkillStore(store_root)
-    manager = RunManager(store, runner_factory=lambda workflow: WorkflowRunner(workflow, runtime_settings=settings_store.load()))
     agent_manager = AgentGraphRunManager(store, runtime_settings_loader=settings_store.load)
 
     @app.get("/api/v2/health")
@@ -501,53 +474,11 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
 
     @app.get("/api/v2/live-runs")
     def list_live_runs() -> dict[str, Any]:
-        return {"deprecated": True, "runs": [*agent_manager.list(), *manager.list()]}
-
-    @app.post("/api/v2/runs")
-    def create_run(body: RunRequest) -> dict[str, Any]:
-        workflow = _load_workflow_from_request(body)
-        repo_root = resolve_existing_dir(body.repo)
-        initial_data = _initial_data_from_request(body, repo_root)
-        result = run_workflow(
-            workflow=workflow,
-            request=body.request,
-            repo_root=str(repo_root),
-            initial_data=initial_data,
-            runner_factory=lambda spec: WorkflowRunner(spec, runtime_settings=settings_store.load()),
-        )
-        stored = store.save(
-            workflow_id=workflow.id,
-            repo_root=str(repo_root),
-            request=body.request,
-            result=result,
-        )
         return {
-            "run_id": stored.id,
-            "status": result.status,
-            "agent_calls": result.agent_calls,
-            "tool_calls": result.tool_calls,
-            "estimated_tokens_used": result.estimated_tokens_used,
-            "events_url": f"/api/v2/runs/{stored.id}/events",
-        }
-
-    @app.post("/api/v2/live-runs")
-    def create_live_run(body: RunRequest) -> dict[str, Any]:
-        workflow = _load_workflow_from_request(body)
-        repo_root = resolve_existing_dir(body.repo)
-        initial_data = _initial_data_from_request(body, repo_root)
-        live = manager.start(
-            workflow=workflow,
-            repo_root=str(repo_root),
-            request=body.request,
-            initial_data=initial_data,
-        )
-        return {
-            "run_id": live.id,
-            "status": live.status,
-            "runtime_type": "legacy_workflow",
             "deprecated": True,
-            "events_url": f"/api/v2/live-runs/{live.id}/events",
-            "result_url": f"/api/v2/live-runs/{live.id}",
+            "removed": True,
+            "replacement": "/api/v2/live-agent-runs",
+            "runs": [],
         }
 
     @app.post("/api/v2/live-agent-runs")
@@ -575,36 +506,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "status": live.status,
             "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
             "result_url": f"/api/v2/live-agent-runs/{live.id}",
-        }
-
-    @app.post("/api/v2/live-runs/{run_id}/approve")
-    def approve_live_run(run_id: str, body: ApprovalRequest) -> dict[str, Any]:
-        try:
-            live = manager.approve(run_id, approved=body.approved, data=body.data, reason=body.reason)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="live run not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {
-            "run_id": live.id,
-            "status": live.status,
-            "events_url": f"/api/v2/live-runs/{live.id}/events",
-            "result_url": f"/api/v2/live-runs/{live.id}",
-        }
-
-    @app.post("/api/v2/live-runs/{run_id}/retry-current-node")
-    def retry_current_live_node(run_id: str) -> dict[str, Any]:
-        try:
-            live = manager.retry_current_node(run_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="live run not found") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {
-            "run_id": live.id,
-            "status": live.status,
-            "events_url": f"/api/v2/live-runs/{live.id}/events",
-            "result_url": f"/api/v2/live-runs/{live.id}",
         }
 
     @app.post("/api/v2/patches/rollback")
@@ -637,24 +538,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
 
     @app.get("/api/v2/live-runs/{run_id}")
     def get_live_run(run_id: str) -> dict[str, Any]:
-        try:
-            live = manager.get(run_id)
-            return {
-                "id": live.id,
-                "workflow_id": live.workflow.id,
-                "runtime_type": "legacy_workflow",
-                "deprecated": True,
-                "repo_root": live.repo_root,
-                "request": live.request,
-                "status": live.status,
-                "events": [event.model_dump(mode="json") for event in live.events],
-                "result": live.result.model_dump(mode="json") if live.result else None,
-                "stored_run_id": live.stored_run_id,
-                "error": live.error,
-                "approval_required": manager.approval_required(live),
-            }
-        except KeyError:
-            pass
         try:
             live = agent_manager.get(run_id)
         except KeyError as exc:
@@ -736,56 +619,20 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="blob not found") from exc
 
-    @app.post("/api/v2/workflows/validate")
-    def validate_workflow(workflow: dict[str, Any]) -> dict[str, Any]:
-        try:
-            spec = WorkflowSpec.model_validate(workflow)
-        except Exception as exc:
-            return {
-                "status": "error",
-                "issues": [
-                    {
-                        "level": "error",
-                        "code": "schema_invalid",
-                        "message": str(exc),
-                        "target_type": "workflow",
-                    }
-                ],
-            }
-        registry = default_tool_registry()
-        return validate_workflow_preflight(
-            spec,
-            registered_tools=registry.names(),
-            tool_capabilities=registry.capabilities(),
-            provider_status=workflow_provider_status(settings_store.load(), spec),
-        )
-
     @app.get("/api/v2/live-runs/{run_id}/events")
     def stream_live_events(run_id: str) -> StreamingResponse:
         try:
-            manager.get(run_id)
-            stream = manager.stream
-        except KeyError:
-            try:
-                live = agent_manager.get(run_id)
-            except KeyError as exc:
-                raise HTTPException(status_code=404, detail="live run not found") from exc
-            raise HTTPException(
-                status_code=410,
-                detail={
-                    "message": f"AgentGraph live run events moved to /api/v2/live-agent-runs/{live.id}/events",
-                    "result_url": f"/api/v2/live-agent-runs/{live.id}",
-                    "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
-                },
-            )
-
-        def event_stream():
-            for event in stream(run_id):
-                payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
-                yield f"event: {event.type}\n"
-                yield f"data: {payload}\n\n"
-
-        return StreamingResponse(event_stream(), media_type="text/event-stream")
+            live = agent_manager.get(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live run not found") from exc
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "message": f"AgentGraph live run events moved to /api/v2/live-agent-runs/{live.id}/events",
+                "result_url": f"/api/v2/live-agent-runs/{live.id}",
+                "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
+            },
+        )
 
     @app.get("/api/v2/live-agent-runs/{run_id}")
     def get_live_agent_run(run_id: str) -> dict[str, Any]:
@@ -844,14 +691,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     return app
 
 
-def _load_workflow_from_request(body: RunRequest) -> WorkflowSpec:
-    if body.workflow:
-        return WorkflowSpec.model_validate(body.workflow)
-    if body.workflow_path:
-        return load_workflow(body.workflow_path)
-    raise HTTPException(status_code=400, detail="workflow or workflow_path is required")
-
-
 def _raise_agent_workflow_validation(agent_workflow: dict[str, Any]) -> None:
     validation = validate_agent_workflow_payload(agent_workflow)
     if validation.status == "error":
@@ -908,7 +747,7 @@ def _skill_update_report(skill_store: InstalledSkillStore, entries: list[Any]) -
     return updates
 
 
-def _initial_data_from_request(body: RunRequest, repo_root: Path) -> dict[str, Any]:
+def _initial_data_from_request(body: AgentRunRequest, repo_root: Path) -> dict[str, Any]:
     try:
         scopes = normalize_scope_paths(repo_root, body.scopes)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:

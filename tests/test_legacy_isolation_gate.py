@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from coder_workbench.agent_graph.runner import AgentGraphRunner
 from coder_workbench.core import default_planner_led_agent_workflow
+import coder_workbench.server.app as server_app
 from coder_workbench.server.app import LEGACY_RUNTIME_PREVIEW_BOUNDARY, create_app
 
 
@@ -20,8 +21,8 @@ class LegacyIsolationGateTests(unittest.TestCase):
                     "coder_workbench.server.app.compile_agent_workflow_legacy_preview",
                     side_effect=AssertionError("legacy compiler called"),
                 ),
-                patch("coder_workbench.server.app.WorkflowRunner", side_effect=AssertionError("legacy runner called")),
             ):
+                self.assertFalse(hasattr(server_app, "WorkflowRunner"))
                 client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
                 response = client.post(
                     "/api/v2/live-agent-runs",
