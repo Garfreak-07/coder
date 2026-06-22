@@ -9,10 +9,11 @@ from uuid import uuid4
 from coder_workbench.agent_graph import AgentGraphRunner
 from coder_workbench.core import AgentWorkflowSpec
 from coder_workbench.runtime import RunEvent, RunResult
+from coder_workbench.runtime_kernel import RunControl
 from coder_workbench.server.storage import RunStore
 
 
-LiveStatus = Literal["queued", "running", "completed", "blocked", "failed"]
+LiveStatus = Literal["queued", "running", "paused", "cancelling", "cancelled", "completed", "blocked", "failed"]
 
 
 @dataclass
@@ -25,6 +26,7 @@ class LiveAgentRun:
     status: LiveStatus = "queued"
     events: list[RunEvent] = field(default_factory=list)
     queue: Queue[RunEvent | None] = field(default_factory=Queue)
+    run_control: RunControl = field(default_factory=RunControl)
     result: RunResult | None = None
     stored_run_id: str | None = None
     error: str | None = None
@@ -92,6 +94,49 @@ class AgentGraphRunManager:
         thread.start()
         return run
 
+    def pause(self, run_id: str) -> LiveAgentRun:
+        run = self.get(run_id)
+        if run.status not in {"queued", "running"}:
+            raise ValueError("run cannot be paused from its current status")
+        run.run_control.request_pause()
+        run.status = "paused"
+        self._persist_live(run)
+        return run
+
+    def resume(self, run_id: str) -> LiveAgentRun:
+        run = self.get(run_id)
+        if run.status != "paused":
+            raise ValueError("run is not paused")
+        run.run_control.request_resume()
+        run.status = "running" if run.result is None else run.result.status
+        self._persist_live(run)
+        return run
+
+    def cancel(self, run_id: str) -> LiveAgentRun:
+        run = self.get(run_id)
+        if run.status not in {"queued", "running", "paused", "cancelling"}:
+            raise ValueError("run cannot be cancelled from its current status")
+        run.run_control.request_cancel()
+        run.status = "cancelling"
+        self._persist_live(run)
+        return run
+
+    def heartbeat(self, run_id: str) -> dict[str, Any]:
+        run = self.get(run_id)
+        return self._heartbeat_payload(run)
+
+    def _heartbeat_payload(self, run: LiveAgentRun) -> dict[str, Any]:
+        diagnostics = run.run_control.diagnostics()
+        return {
+            "run_id": run.id,
+            "status": run.status,
+            "last_heartbeat_at": diagnostics.get("last_heartbeat_at"),
+            "location": diagnostics.get("location"),
+            "active_round": diagnostics.get("active_round"),
+            "active_wave": diagnostics.get("active_wave"),
+            "active_work_item_ids": diagnostics.get("active_work_item_ids", []),
+        }
+
     def list(self) -> list[dict[str, Any]]:
         with self._lock:
             return [
@@ -107,6 +152,7 @@ class AgentGraphRunManager:
                     "error": run.error,
                     "status_reason": run.result.status_reason if run.result else run.error,
                     "status_code": run.result.status_code if run.result else None,
+                    "heartbeat": self._heartbeat_payload(run),
                     "approval_required": False,
                 }
                 for run in self._runs.values()
@@ -153,6 +199,7 @@ class AgentGraphRunManager:
                     initial_data=dict(payload.get("initial_data", {})),
                     status=status,
                     events=events,
+                    run_control=RunControl(),
                     result=result,
                     stored_run_id=payload.get("stored_run_id"),
                     error=payload.get("error"),
@@ -162,10 +209,12 @@ class AgentGraphRunManager:
                 continue
 
     def _execute(self, run: LiveAgentRun, prior_events: list[RunEvent] | None = None) -> None:
-        run.status = "running"
+        if run.status != "paused":
+            run.status = "running"
 
         def sink(event: RunEvent) -> None:
             run.events.append(event)
+            self._update_heartbeat_from_event(run, event)
             run.queue.put(event)
             self._persist_live(run)
 
@@ -180,6 +229,7 @@ class AgentGraphRunManager:
                 repo_root=run.repo_root,
                 initial_data=run.initial_data,
                 prior_events=prior_events,
+                run_control=run.run_control,
             )
             run.result = result
             stored = self.store.save(
@@ -189,7 +239,7 @@ class AgentGraphRunManager:
                 result=result,
             )
             run.stored_run_id = stored.id
-            run.status = result.status
+            run.status = "cancelled" if result.status == "cancelled" else result.status
         except Exception as exc:  # pragma: no cover - background boundary
             run.status = "failed"
             run.error = str(exc)
@@ -211,5 +261,20 @@ class AgentGraphRunManager:
                 "result": run.result.model_dump(mode="json") if run.result else None,
                 "stored_run_id": run.stored_run_id,
                 "error": run.error,
+                "run_control": run.run_control.diagnostics(),
             }
+        )
+
+    def _update_heartbeat_from_event(self, run: LiveAgentRun, event: RunEvent) -> None:
+        payload = event.payload
+        round_number = payload.get("round") or payload.get("active_round")
+        wave_index = payload.get("wave_index") or payload.get("active_wave")
+        work_item_ids = payload.get("work_item_ids") or payload.get("active_work_item_ids")
+        if work_item_ids is None and payload.get("work_item_id"):
+            work_item_ids = [payload.get("work_item_id")]
+        run.run_control.heartbeat(
+            event.type,
+            round_number=int(round_number) if isinstance(round_number, int) else None,
+            wave_index=int(wave_index) if isinstance(wave_index, int) else None,
+            active_work_item_ids=[str(item) for item in work_item_ids] if isinstance(work_item_ids, list) else None,
         )

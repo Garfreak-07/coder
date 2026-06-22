@@ -35,6 +35,14 @@ EventType = Literal[
     "action.completed",
     "action.blocked",
     "action.failed",
+    "action.execution.started",
+    "action.execution.completed",
+    "action.execution.failed",
+    "action.execution.blocked",
+    "action.execution.cancelled",
+    "action.execution.timeout",
+    "action.execution.batch.started",
+    "action.execution.batch.completed",
     "run.completed",
     "run.blocked",
     "run.failed",
@@ -53,11 +61,19 @@ EventType = Literal[
     "planner.order.produced",
     "planner.plan_cached",
     "agent_graph.wave.started",
+    "agent_graph.wave.diagnostics",
     "agent_task.ready",
     "agent_task.started",
     "agent_task.completed",
     "agent_task.failed",
     "agent_task.blocked",
+    "agent_task.attempt.started",
+    "agent_task.attempt.completed",
+    "agent_task.attempt.failed",
+    "agent_task.retry.scheduled",
+    "agent_task.timeout",
+    "agent_task.cancelled",
+    "agent.context_compaction.applied",
     "join.waiting",
     "join.completed",
     "resource.deferred",
@@ -75,6 +91,10 @@ EventType = Literal[
     "agent_graph.run.completed",
     "agent_graph.run.blocked",
     "agent_graph.run.failed",
+    "agent_graph.run.paused",
+    "agent_graph.run.resumed",
+    "agent_graph.run.cancelled",
+    "agent_graph.run.heartbeat",
 ]
 
 
@@ -106,7 +126,7 @@ class RunState(BaseModel):
     estimated_tokens_used: int = 0
     agent_calls: int = 0
     tool_calls: int = 0
-    status: Literal["running", "completed", "blocked", "failed"] = "running"
+    status: Literal["running", "completed", "blocked", "failed", "cancelled"] = "running"
     status_reason: str | None = None
     status_code: str | None = None
     current_node: str | None = None
@@ -130,7 +150,7 @@ class RunState(BaseModel):
 class RunResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    status: Literal["completed", "blocked", "failed"]
+    status: Literal["completed", "blocked", "failed", "cancelled"]
     data: dict[str, Any]
     summaries: dict[str, str]
     artifacts: dict[str, Any] = Field(default_factory=dict)

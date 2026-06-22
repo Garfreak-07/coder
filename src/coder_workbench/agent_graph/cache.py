@@ -28,6 +28,8 @@ class GraphRunCache(BaseModel):
     skill_index: dict[str, Any] | None = None
     skill_routes: dict[str, dict[str, Any]] = Field(default_factory=dict)
     context_packets_v2: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    context_compactions: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    context_external_refs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     token_ledger: list[dict[str, Any]] = Field(default_factory=list)
     hidden_effects: list[dict[str, Any]] = Field(default_factory=list)
     hidden_effect_outputs: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -83,6 +85,14 @@ class GraphRunCache(BaseModel):
     def record_context_packet_v2(self, work_item_id: str, packet: dict[str, Any]) -> dict[str, Any]:
         self.context_packets_v2[work_item_id] = packet
         return packet
+
+    def record_context_compaction(self, work_item_id: str, record: dict[str, Any]) -> dict[str, Any]:
+        self.context_compactions[work_item_id] = record
+        return record
+
+    def record_context_external_refs(self, records: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        self.context_external_refs.update(records)
+        return records
 
     def record_token_ledger_entry(self, entry: dict[str, Any]) -> dict[str, Any]:
         self.token_ledger.append(entry)

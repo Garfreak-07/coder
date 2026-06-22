@@ -586,15 +586,28 @@ class TesterEngine(ModelBackedEngine):
                 "tester_agent_id": tester_agent_id,
             },
         )
-        artifact = self._validate_payload(
-            payload,
-            artifact_type="test_result",
-            agent_id=tester.id,
-            emit=emit,
-            fallback_payload=_blocked_test_payload(item, tester_agent_id, round_number),
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-        )
+        from coder_workbench.agent_harness.self_check import TesterSelfChecker, harness_self_check_enabled
+
+        if harness_self_check_enabled():
+            checked = TesterSelfChecker().check(
+                payload,
+                item=item,
+                tester_agent_id=tester_agent_id,
+                evidence_refs=evidence_refs,
+                round_number=round_number,
+                emit=emit,
+            )
+            artifact = checked.artifact
+        else:
+            artifact = self._validate_payload(
+                payload,
+                artifact_type="test_result",
+                agent_id=tester.id,
+                emit=emit,
+                fallback_payload=_blocked_test_payload(item, tester_agent_id, round_number),
+                work_item_id=item.work_item_id,
+                merge_index=item.merge_index,
+            )
         return TestRecord(
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,

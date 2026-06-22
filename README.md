@@ -16,6 +16,34 @@ The Planner owns global decisions and is the only agent that can ask the user.
 Executors perform bounded implementation work. Testers return evidence. The
 runtime passes structured artifacts instead of transcript-sized context.
 
+## Runtime Hardening
+
+The AgentGraph runtime now includes a hardened execution layer while preserving
+the same Planner -> Executor -> Tester -> Planner authority model:
+
+- `ActionGateway` can route low-level tool effects through an internal
+  `ToolExecutionService` with ordered results, conservative concurrency,
+  per-action timeout handling, structured execution events, and large result
+  budgeting.
+- Context construction supports artifact-aware compaction with recoverable
+  external refs for oversized snippets, artifacts, and tool outputs.
+- Executor and Tester harnesses support bounded self-checks and multi-stage
+  artifact repair. Invalid model output becomes a Planner-visible blocked
+  artifact instead of an unstructured runtime crash.
+- `WaveExecutor` records per-work-item attempts, timeout/cancel evidence,
+  conservative retry diagnostics, partial results, and wave-level summaries.
+- Live AgentGraph runs expose pause, resume, cancel, and heartbeat control for
+  long/background execution.
+
+Most low-level runtime behavior is feature-flagged during rollout:
+
+```powershell
+CODER_ENABLE_TOOL_EXECUTION_SERVICE=1
+CODER_ENABLE_CONTEXT_COMPACTION=1
+CODER_ENABLE_HARNESS_SELF_CHECK=1
+CODER_ENABLE_WAVE_RETRY=1
+```
+
 ## Current Product Surface
 
 The app uses a ChatGPT-style left sidebar and keeps chat separate from workflow
@@ -127,6 +155,10 @@ Common development endpoints:
 - `GET /api/v2/live-agent-runs/{run_id}`
 - `GET /api/v2/live-agent-runs/{run_id}/events`
 - `POST /api/v2/live-agent-runs/{run_id}/planner-response`
+- `POST /api/v2/live-agent-runs/{run_id}/pause`
+- `POST /api/v2/live-agent-runs/{run_id}/resume`
+- `POST /api/v2/live-agent-runs/{run_id}/cancel`
+- `GET /api/v2/live-agent-runs/{run_id}/heartbeat`
 - `GET /api/v2/extensions/plugins`
 - `GET /api/v2/extensions/skills`
 - `GET /api/v2/extensions/search`

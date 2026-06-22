@@ -7,6 +7,9 @@ from typing import Any
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, WorkItem
 from coder_workbench.coding import build_coding_context_packet
+from coder_workbench.context.budget import ContextBudget, context_compaction_enabled
+from coder_workbench.context.compaction import CompactionResult, ContextCompactor
+from coder_workbench.context.external_refs import ContextExternalRefStore
 from coder_workbench.extensions import ExtensionRouter
 from coder_workbench.skills import (
     ContextPacketV2,
@@ -25,6 +28,8 @@ class AgentContextBuildResult:
     context_packet: ContextPacketV2
     token_ledger_entry: TokenLedgerEntry
     coding_context_packet: Any
+    compact_coding_context_packet: dict[str, Any] | None = None
+    compaction_result: CompactionResult | None = None
 
 
 class ContextService:
@@ -43,6 +48,8 @@ class ContextService:
         repo_root: str,
         repo_intelligence: dict[str, Any],
         artifact_type: str,
+        context_budget: ContextBudget | None = None,
+        enable_context_compaction: bool | None = None,
     ) -> AgentContextBuildResult:
         route = ExtensionRouter(skill_index).route_skills(
             user_request=user_request,
@@ -82,8 +89,38 @@ class ContextService:
             upstream_refs=upstream_refs,
             selected_skills=route_payload["selected_skill_context"],
         )
+        coding_packet_payload = coding_packet.model_dump(mode="json")
+        compaction_result = None
+        should_compact = (
+            bool(enable_context_compaction)
+            if enable_context_compaction is not None
+            else context_compaction_enabled()
+        )
+        if should_compact:
+            ref_store = ContextExternalRefStore({})
+            compaction_result = ContextCompactor(context_budget or ContextBudget()).compact(
+                coding_packet_payload,
+                run_id=run_id,
+                work_item_id=item.work_item_id,
+                store=ref_store,
+            )
+            coding_packet_payload = compaction_result.packet
+            if ref_store.backing:
+                cache.record_context_external_refs(ref_store.backing)
+            if compaction_result.externalized_refs or compaction_result.warnings:
+                cache.record_context_compaction(
+                    item.work_item_id,
+                    {
+                        "work_item_id": item.work_item_id,
+                        "token_estimate_before": compaction_result.token_estimate_before,
+                        "token_estimate_after": compaction_result.token_estimate_after,
+                        "externalized_refs": compaction_result.externalized_refs,
+                        "summaries": compaction_result.summaries,
+                        "warnings": compaction_result.warnings,
+                    },
+                )
         envelope = envelope.model_copy(
-            update={"coding_context_packet": coding_packet.model_dump(mode="json")}
+            update={"coding_context_packet": coding_packet_payload}
         )
         cache.agent_tasks[item.work_item_id] = envelope
         context_packet = _context_packet_v2(
@@ -109,6 +146,8 @@ class ContextService:
             context_packet=context_packet,
             token_ledger_entry=ledger_entry,
             coding_context_packet=coding_packet,
+            compact_coding_context_packet=coding_packet_payload,
+            compaction_result=compaction_result,
         )
 
 
@@ -125,6 +164,7 @@ def _context_packet_v2(
         estimate_tokens(envelope.task_summary)
         + estimate_tokens(" ".join(envelope.upstream_refs))
         + estimate_tokens(envelope.planner_order_ref)
+        + estimate_tokens(str(envelope.coding_context_packet))
         + route.estimated_skill_tokens
     )
     total_skill_tokens = route.estimated_skill_tokens + estimated_omitted

@@ -12,12 +12,14 @@ from .policies import (
 )
 from .repair import ArtifactRepairService
 from .scratchpad import Scratchpad, ScratchpadEntry
+from .self_check import ExecutorSelfChecker, SelfCheckResult, TesterSelfChecker, harness_self_check_enabled
 from .tester import TestHarness
 
 __all__ = [
     "AgentHarness",
     "ArtifactRepairService",
     "CodeWorkerHarness",
+    "ExecutorSelfChecker",
     "HarnessAction",
     "HarnessObservation",
     "HarnessPermissionPolicy",
@@ -27,8 +29,11 @@ __all__ = [
     "PlannerHarness",
     "Scratchpad",
     "ScratchpadEntry",
+    "SelfCheckResult",
     "TestHarness",
+    "TesterSelfChecker",
     "code_worker_policy",
+    "harness_self_check_enabled",
     "planner_policy",
     "tester_policy",
 ]

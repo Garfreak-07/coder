@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from coder_workbench.actions.result_budget import ResultBudget, apply_result_budget
 from coder_workbench.actions.schema import ACTION_TYPES, ActionResult, ActionSpec
+from coder_workbench.actions.tool_execution import ToolExecutionResult, ToolExecutionService, ToolExecutionSpec
 from coder_workbench.budget import BudgetBroker, BudgetLimit
+from coder_workbench.context.budget import ContextBudget, context_compaction_enabled
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
 from coder_workbench.coding import build_repo_intelligence
 from coder_workbench.coding.command_service import CommandService
@@ -18,6 +22,17 @@ from coder_workbench.skills import SkillIndex, estimate_tokens
 PatchServiceFactory = Callable[[str | Path, list[str], dict[str, Any]], PatchService]
 CommandServiceFactory = Callable[[str | Path, list[str], dict[str, Any]], CommandService]
 ExtensionRuntimeFactory = Callable[[], ExtensionRuntime]
+
+
+TOOL_EXECUTION_ACTION_TYPES = {
+    "call_plugin",
+    "call_mcp",
+    "repo_index",
+    "propose_patch",
+    "apply_patch_sandbox",
+    "run_command_sandbox",
+    "run_command",
+}
 
 
 @dataclass
@@ -63,6 +78,9 @@ class ActionGateway:
         patch_service_factory: PatchServiceFactory | None = None,
         command_service_factory: CommandServiceFactory | None = None,
         extension_runtime_factory: ExtensionRuntimeFactory | None = None,
+        tool_execution_service: ToolExecutionService | None = None,
+        result_budget: ResultBudget | None = None,
+        enable_tool_execution_service: bool | None = None,
     ) -> None:
         self.budget_broker = budget_broker or BudgetBroker(BudgetLimit())
         if context_service is None:
@@ -82,8 +100,28 @@ class ActionGateway:
             lambda repo_root, scopes, data: CommandService(repo_root, scopes=scopes, data=data)
         )
         self.extension_runtime_factory = extension_runtime_factory or ExtensionRuntime
+        self.tool_execution_service = tool_execution_service or ToolExecutionService()
+        self.result_budget = result_budget or ResultBudget()
+        self.enable_tool_execution_service = (
+            _feature_enabled("CODER_ENABLE_TOOL_EXECUTION_SERVICE")
+            if enable_tool_execution_service is None
+            else bool(enable_tool_execution_service)
+        )
 
     def run(self, spec: ActionSpec, *, run_context: RunContext) -> ActionResult:
+        closed_action_types = (
+            "build_context",
+            "call_plugin",
+            "call_mcp",
+            "repo_index",
+            "propose_patch",
+            "apply_patch_sandbox",
+            "run_command_sandbox",
+            "run_command",
+            "validate_artifact",
+            "repair_artifact",
+        )
+        _ = closed_action_types
         if spec.action_type not in ACTION_TYPES:
             return ActionResult(
                 status="failed",
@@ -91,31 +129,57 @@ class ActionGateway:
                 error_code="unknown_action_type",
             )
         try:
-            if spec.action_type == "build_context":
-                return self._build_context(spec, run_context)
-            if spec.action_type == "propose_patch":
-                return self._propose_patch(spec, run_context)
-            if spec.action_type == "apply_patch_sandbox":
-                return self._apply_patch_sandbox(spec, run_context)
-            if spec.action_type in {"run_command", "run_command_sandbox"}:
-                return self._run_command(spec, run_context)
-            if spec.action_type == "repo_index":
-                return self._repo_index(spec, run_context)
-            if spec.action_type == "call_plugin":
-                return self._call_plugin(spec, run_context)
-            if spec.action_type == "call_mcp":
-                return self._call_mcp(spec, run_context)
-            if spec.action_type == "validate_artifact":
-                return self._validate_artifact(spec)
-            if spec.action_type == "repair_artifact":
-                return self._repair_artifact(spec, run_context)
-            return ActionResult(
-                status="failed",
-                summary=f"Action type {spec.action_type} is not implemented yet.",
-                error_code="action_not_implemented",
-            )
+            if self.enable_tool_execution_service and spec.action_type in TOOL_EXECUTION_ACTION_TYPES:
+                return self._run_with_tool_execution_service(spec, run_context)
+            return self._run_direct(spec, run_context)
         except Exception as exc:  # pragma: no cover - defensive gateway boundary
             return ActionResult(status="failed", summary=str(exc), error_code="action_gateway_exception")
+
+    def _run_direct(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
+        if spec.action_type == "build_context":
+            return self._build_context(spec, run_context)
+        if spec.action_type == "propose_patch":
+            return self._propose_patch(spec, run_context)
+        if spec.action_type == "apply_patch_sandbox":
+            return self._apply_patch_sandbox(spec, run_context)
+        if spec.action_type in {"run_command", "run_command_sandbox"}:
+            return self._run_command(spec, run_context)
+        if spec.action_type == "repo_index":
+            return self._repo_index(spec, run_context)
+        if spec.action_type == "call_plugin":
+            return self._call_plugin(spec, run_context)
+        if spec.action_type == "call_mcp":
+            return self._call_mcp(spec, run_context)
+        if spec.action_type == "validate_artifact":
+            return self._validate_artifact(spec)
+        if spec.action_type == "repair_artifact":
+            return self._repair_artifact(spec, run_context)
+        return ActionResult(
+            status="failed",
+            summary=f"Action type {spec.action_type} is not implemented yet.",
+            error_code="action_not_implemented",
+        )
+
+    def _run_with_tool_execution_service(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
+        tool_spec = _tool_execution_spec(spec, run_context)
+
+        def handler(_: ToolExecutionSpec, __: RunContext) -> ActionResult:
+            return self._run_direct(spec, run_context)
+
+        result = self.tool_execution_service.run_one(tool_spec, run_context, handler=handler)
+        payload = dict(result.payload)
+        if payload:
+            payload, externalized_refs = apply_result_budget(
+                payload,
+                data=run_context.mutable_data,
+                run_id=run_context.run_id,
+                action_id=spec.action_id,
+                action_type=spec.action_type,
+                budget=self.result_budget,
+            )
+            if externalized_refs:
+                payload.setdefault("result_budget", {})["externalized_refs"] = externalized_refs
+        return _action_result_from_tool_execution(result, payload)
 
     def _build_context(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
         skill_index = _input_or_context(spec, run_context, "skill_index")
@@ -132,6 +196,15 @@ class ActionGateway:
         if not reservation.approved and reservation.reason == "context_budget_exceeded" and skill_index.enabled():
             skill_index = SkillIndex(skills=[])
             estimated = _estimate_context_tokens(spec, run_context, skill_index)
+            reservation = self.budget_broker.reserve_context(
+                run_id=run_context.run_id,
+                agent_id=_agent_id(run_context),
+                estimated_tokens=estimated,
+                action_type=spec.action_type,
+            )
+            budget_compressed = True
+        if not reservation.approved and reservation.reason == "context_budget_exceeded" and context_compaction_enabled(run_context.data):
+            estimated = min(estimated, self.budget_broker.limit.max_context_tokens_per_call)
             reservation = self.budget_broker.reserve_context(
                 run_id=run_context.run_id,
                 agent_id=_agent_id(run_context),
@@ -160,6 +233,8 @@ class ActionGateway:
             repo_root=str(run_context.repo_root),
             repo_intelligence=dict(_input_or_context(spec, run_context, "repo_intelligence") or {}),
             artifact_type=str(_input_or_context(spec, run_context, "artifact_type") or "execution_result"),
+            context_budget=ContextBudget.from_data(run_context.data),
+            enable_context_compaction=context_compaction_enabled(run_context.data),
         )
         self.budget_broker.commit(reservation.reservation_id, actual_tokens=context.token_ledger_entry.estimated_input_tokens)
         return ActionResult(
@@ -175,6 +250,8 @@ class ActionGateway:
                 "context_packet": context.context_packet,
                 "token_ledger_entry": context.token_ledger_entry,
                 "coding_context_packet": context.coding_context_packet,
+                "compact_coding_context_packet": context.compact_coding_context_packet,
+                "context_compaction": context.compaction_result.__dict__ if context.compaction_result else None,
             },
         )
 
@@ -508,6 +585,83 @@ def _estimate_context_tokens(spec: ActionSpec, run_context: RunContext, skill_in
         ]
     )
     return estimate_tokens(text) + sum(skill.max_skill_tokens for skill in skill_index.enabled())
+
+
+def _tool_execution_spec(spec: ActionSpec, run_context: RunContext) -> ToolExecutionSpec:
+    timeout_seconds = float(spec.input.get("timeout_seconds") or 120)
+    return ToolExecutionSpec(
+        action_id=spec.action_id,
+        action_type=spec.action_type,
+        input=dict(spec.input),
+        agent_id=_agent_id(run_context),
+        work_item_id=str(getattr(run_context.item, "work_item_id", "") or "") or None,
+        timeout_seconds=max(0.001, timeout_seconds),  # type: ignore[arg-type]
+        concurrency_key=_concurrency_key(spec, run_context),
+        requires_exclusive_access=_requires_exclusive_access(spec),
+        is_read_only=_is_read_only_action(spec),
+        can_cancel=True,
+        cancel_pending_on_failure=bool(spec.input.get("cancel_pending_on_failure")),
+    )
+
+
+def _action_result_from_tool_execution(result: ToolExecutionResult, payload: dict[str, Any]) -> ActionResult:
+    if result.status == "ok":
+        status = "ok"
+    elif result.status == "blocked":
+        status = "blocked"
+    elif result.status == "cancelled":
+        status = "blocked"
+    else:
+        status = "failed"
+    return ActionResult(
+        status=status,
+        summary=result.summary,
+        error_code=result.error_code,
+        payload={
+            **payload,
+            "tool_execution": {
+                "action_id": result.action_id,
+                "action_type": result.action_type,
+                "status": result.status,
+                "started_at": result.started_at,
+                "completed_at": result.completed_at,
+                "elapsed_ms": result.elapsed_ms,
+                "error_code": result.error_code,
+            },
+        },
+    )
+
+
+def _requires_exclusive_access(spec: ActionSpec) -> bool:
+    if "requires_exclusive_access" in spec.input:
+        return bool(spec.input["requires_exclusive_access"])
+    return spec.action_type in {
+        "apply_patch_sandbox",
+        "run_command",
+        "run_command_sandbox",
+        "call_plugin",
+        "call_mcp",
+    }
+
+
+def _is_read_only_action(spec: ActionSpec) -> bool:
+    if "is_read_only" in spec.input:
+        return bool(spec.input["is_read_only"])
+    return spec.action_type == "repo_index"
+
+
+def _concurrency_key(spec: ActionSpec, run_context: RunContext) -> str:
+    if spec.input.get("concurrency_key"):
+        return str(spec.input["concurrency_key"])
+    if spec.action_type in {"run_command", "run_command_sandbox"}:
+        return f"repo:{Path(run_context.repo_root).resolve()}:command"
+    if spec.action_type in {"apply_patch_sandbox", "propose_patch"}:
+        return f"repo:{Path(run_context.repo_root).resolve()}:patch"
+    return f"repo:{Path(run_context.repo_root).resolve()}:{spec.action_type}"
+
+
+def _feature_enabled(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _input_or_context(spec: ActionSpec, run_context: RunContext, key: str) -> Any:

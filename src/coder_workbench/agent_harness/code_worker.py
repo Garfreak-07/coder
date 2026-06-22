@@ -6,6 +6,7 @@ from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.repair import parse_json_object
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, WorkItem
 from coder_workbench.agent_harness.repair import ArtifactRepairService
+from coder_workbench.agent_harness.self_check import ExecutorSelfChecker, harness_self_check_enabled
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
 
 from .base import AgentHarness
@@ -13,9 +14,10 @@ from .policies import code_worker_policy
 
 
 class CodeWorkerHarness(AgentHarness):
-    def __init__(self, *, model: Any | None = None) -> None:
+    def __init__(self, *, model: Any | None = None, enable_self_check: bool | None = None) -> None:
         super().__init__(policy=code_worker_policy())
         self.model = model
+        self.enable_self_check = harness_self_check_enabled(enable_self_check)
 
     def create_execution_result(
         self,
@@ -33,6 +35,24 @@ class CodeWorkerHarness(AgentHarness):
             emit=emit,
             prompt=prompt,
         )
+        if self.enable_self_check:
+            checked = ExecutorSelfChecker().check(
+                payload,
+                item=item,
+                envelope=envelope,
+                model=self.model,
+                emit=emit,
+            )
+            artifact = checked.artifact
+            return ExecutionRecord(
+                work_item_id=item.work_item_id,
+                merge_index=item.merge_index,
+                agent_id=item.assignee_agent_id,
+                status=artifact["status"],
+                execution_summary=artifact["summary"],
+                execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
+                artifact_payload=artifact,
+            )
         payload = _with_forced_fields(
             payload,
             {

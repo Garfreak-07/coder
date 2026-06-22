@@ -34,7 +34,7 @@ from coder_workbench.agent_graph.schema import (
     WorkItemOutcome,
 )
 from coder_workbench.agent_graph.validation import assert_valid_planner_order
-from coder_workbench.agent_graph.wave_executor import WaveExecutor
+from coder_workbench.agent_graph.wave_executor import WaveExecutor, WorkItemRuntimePolicy
 from coder_workbench.core import (
     AgentWorkflowSpec,
     AgentWorkflowValidationError,
@@ -49,7 +49,7 @@ from coder_workbench.coding import (
 )
 from coder_workbench.observability import TraceContext, TraceSpan
 from coder_workbench.runtime.state import RunEvent, RunResult, summarize_value
-from coder_workbench.runtime_kernel import RunController, RunGuard
+from coder_workbench.runtime_kernel import RunCancelled, RunControl, RunController, RunGuard
 from coder_workbench.skills import (
     InstalledSkillStore,
     SkillIndex,
@@ -115,6 +115,7 @@ class AgentGraphRunner:
         resume_checkpoint: dict[str, Any] | None = None,
         prior_events: list[RunEvent] | None = None,
         resume_after_node: str | None = None,
+        run_control: RunControl | None = None,
     ) -> RunResult:
         events = list(prior_events or [])
         data = dict(initial_data or {})
@@ -135,6 +136,7 @@ class AgentGraphRunner:
         )
         data["trace_id"] = trace.trace_id
         controller: RunController | None = None
+        active_run_control = run_control or RunControl()
         self.budget_broker = BudgetBroker(_budget_limit_from_data(data))
         self.action_gateway = ActionGateway(budget_broker=self.budget_broker)
         if hasattr(self.agent_run, "budget_broker"):
@@ -171,6 +173,7 @@ class AgentGraphRunner:
             data["budget_diagnostics"] = self.budget_broker.diagnostics(run_id)
             if controller is not None:
                 data["run_controller"] = controller.diagnostics()
+            data["run_control"] = active_run_control.diagnostics()
             return self._result(
                 status=final_status,
                 data=data,
@@ -209,6 +212,7 @@ class AgentGraphRunner:
                 repo_root=repo_root,
                 request=request,
             )
+            active_run_control.checkpoint("run_started", emit)
             emit(
                 "skill.index.available",
                 "Installed SkillIndex loaded",
@@ -328,6 +332,7 @@ class AgentGraphRunner:
                     trace_context=trace,
                     parent_span=run_span,
                     controller=controller,
+                    run_control=active_run_control,
                 )
                 estimated_tokens_used = _estimated_tokens_used(data)
                 controller.record_round(
@@ -386,6 +391,11 @@ class AgentGraphRunner:
             status_code = str(getattr(exc, "status_code", "agent_graph_blocked"))
             blocked_node_id = self.agent_workflow.primary_planner_id
             result_resume_checkpoint = {"data": data}
+        except RunCancelled as exc:
+            status = "cancelled"
+            status_reason = str(exc)
+            status_code = "run_cancelled"
+            emit("agent_graph.run.cancelled", f"Agent graph cancelled: {exc}", reason=str(exc))
         except Exception as exc:  # pragma: no cover - boundary safety
             status = "failed"
             status_reason = str(exc)
@@ -417,7 +427,9 @@ class AgentGraphRunner:
         trace_context: TraceContext,
         parent_span: TraceSpan,
         controller: RunController,
+        run_control: RunControl,
     ) -> RoundOutcome:
+        run_control.checkpoint("round_started", emit, round_number=round_number)
         round_span = trace_context.start_span(
             name=f"round:{round_number}",
             kind="round",
@@ -564,6 +576,13 @@ class AgentGraphRunner:
                     )
                 break
 
+            run_control.checkpoint(
+                "wave_started",
+                emit,
+                round_number=round_number,
+                wave_index=wave.wave_index,
+                active_work_item_ids=[item.work_item_id for item in wave.items],
+            )
             emit(
                 "agent_graph.wave.started",
                 f"Agent graph wave {wave.wave_index} started",
@@ -583,6 +602,13 @@ class AgentGraphRunner:
             wave_span = trace_context.spans[-1]
             task_contexts = []
             for item in wave.items:
+                run_control.checkpoint(
+                    "work_item_ready",
+                    emit,
+                    round_number=round_number,
+                    wave_index=wave.wave_index,
+                    active_work_item_ids=[item.work_item_id],
+                )
                 scheduler.mark_running(item.work_item_id)
                 if item.depends_on:
                     emit(
@@ -608,7 +634,13 @@ class AgentGraphRunner:
                     parent_span=wave_span,
                 )
                 task_contexts.append({"item": item, "envelope": envelope})
-            outcomes = WaveExecutor(self._build_work_item_outcome).run_wave(wave, task_contexts)
+            outcomes = WaveExecutor(
+                self._build_work_item_outcome,
+                runtime_policy=_work_item_runtime_policy_from_data(data),
+                emit=emit,
+                run_control=run_control,
+                enable_retry=_feature_enabled_from_data(data, "CODER_ENABLE_WAVE_RETRY", "enable_wave_retry"),
+            ).run_wave(wave, task_contexts)
             for outcome in outcomes:
                 execution = cache.record_execution(outcome.execution)
                 execution_artifact = self._record_execution_artifact(recorder, cache.round, execution)
@@ -684,6 +716,13 @@ class AgentGraphRunner:
                 blocked_work_item_ids=[
                     outcome.work_item_id for outcome in outcomes if outcome.execution.status == "blocked"
                 ],
+            )
+            run_control.checkpoint(
+                "wave_completed",
+                emit,
+                round_number=round_number,
+                wave_index=wave.wave_index,
+                active_work_item_ids=[],
             )
             if stop_after_current_wave:
                 emit(
@@ -1008,6 +1047,11 @@ class AgentGraphRunner:
         packet = context.context_packet
         ledger_entry = context.token_ledger_entry
         coding_packet = context.coding_context_packet
+        coding_packet_payload = (
+            context.compact_coding_context_packet
+            if context.compact_coding_context_packet is not None
+            else coding_packet.model_dump(mode="json")
+        )
         emit(
             "skill.route.selected",
             "ExtensionRouter selected skills for work item",
@@ -1033,9 +1077,21 @@ class AgentGraphRunner:
             "CodingContextPacket prepared for work item",
             round=cache.round,
             work_item_id=item.work_item_id,
-            packet=coding_packet.model_dump(mode="json"),
+            packet=coding_packet_payload,
             _span=action_span,
         )
+        if context.compaction_result is not None:
+            emit(
+                "agent.context_compaction.applied",
+                "Context compaction evaluated for work item",
+                round=cache.round,
+                work_item_id=item.work_item_id,
+                token_estimate_before=context.compaction_result.token_estimate_before,
+                token_estimate_after=context.compaction_result.token_estimate_after,
+                externalized_refs=context.compaction_result.externalized_refs,
+                warnings=context.compaction_result.warnings,
+                _span=action_span,
+            )
         emit(
             "token.ledger.entry",
             "Token ledger entry recorded",
@@ -1541,6 +1597,45 @@ def _round_preflight_context_tokens_per_call(data: dict[str, Any]) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _work_item_runtime_policy_from_data(data: dict[str, Any]) -> WorkItemRuntimePolicy:
+    raw = data.get("work_item_runtime_policy")
+    values = dict(raw) if isinstance(raw, dict) else {}
+    return WorkItemRuntimePolicy(
+        timeout_seconds=_float_value(values.get("timeout_seconds"), 600),
+        max_retries=_int_value(values.get("max_retries"), 0),
+        retry_on_status_codes=[
+            str(item)
+            for item in values.get("retry_on_status_codes", [])
+            if str(item).strip()
+        ]
+        if isinstance(values.get("retry_on_status_codes"), list)
+        else [],
+        allow_partial_result=bool(values.get("allow_partial_result", True)),
+    )
+
+
+def _feature_enabled_from_data(data: dict[str, Any], env_name: str, data_key: str) -> bool:
+    if data.get(data_key) is not None:
+        return bool(data.get(data_key))
+    import os
+
+    return str(os.getenv(env_name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _float_value(value: Any, default: float) -> float:
+    try:
+        return max(0.001, float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _int_value(value: Any, default: int) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _replay_planner_decision_available(data: dict[str, Any]) -> bool:

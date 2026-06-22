@@ -566,6 +566,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "result": live.result.model_dump(mode="json") if live.result else None,
             "stored_run_id": live.stored_run_id,
             "error": live.error,
+            "heartbeat": agent_manager.heartbeat(run_id),
             "approval_required": False,
         }
 
@@ -583,6 +584,43 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
                 yield f"data: {payload}\n\n"
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    @app.post("/api/v2/live-agent-runs/{run_id}/pause")
+    def pause_live_agent_run(run_id: str) -> dict[str, Any]:
+        try:
+            live = agent_manager.pause(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live agent run not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"run_id": live.id, "status": live.status, "heartbeat": agent_manager.heartbeat(run_id)}
+
+    @app.post("/api/v2/live-agent-runs/{run_id}/resume")
+    def resume_live_agent_run(run_id: str) -> dict[str, Any]:
+        try:
+            live = agent_manager.resume(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live agent run not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"run_id": live.id, "status": live.status, "heartbeat": agent_manager.heartbeat(run_id)}
+
+    @app.post("/api/v2/live-agent-runs/{run_id}/cancel")
+    def cancel_live_agent_run(run_id: str) -> dict[str, Any]:
+        try:
+            live = agent_manager.cancel(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live agent run not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"run_id": live.id, "status": live.status, "heartbeat": agent_manager.heartbeat(run_id)}
+
+    @app.get("/api/v2/live-agent-runs/{run_id}/heartbeat")
+    def get_live_agent_run_heartbeat(run_id: str) -> dict[str, Any]:
+        try:
+            return agent_manager.heartbeat(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="live agent run not found") from exc
 
     @app.post("/api/v2/live-agent-runs/{run_id}/planner-response")
     def submit_live_agent_planner_response(run_id: str, body: PlannerResponseRequest) -> dict[str, Any]:
