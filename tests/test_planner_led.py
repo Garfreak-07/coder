@@ -310,6 +310,28 @@ class AgentWorkflowContractTests(unittest.TestCase):
         self.assertEqual(validation.status, "error")
         self.assertIn("unsatisfied_capability_input", {issue.code for issue in validation.issues})
 
+    def test_agent_workflow_normalizes_edge_loop_and_label(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["edges"][0]["loop"] = True
+        payload["edges"][0]["label"] = "manual"
+        payload["edges"][2]["loop"] = False
+
+        spec = AgentWorkflowSpec.model_validate(payload)
+        edges = spec.model_dump(mode="json", by_alias=True, exclude_none=True)["edges"]
+
+        self.assertFalse(edges[0]["loop"])
+        self.assertNotIn("label", edges[0])
+        self.assertTrue(edges[2]["loop"])
+
+    def test_validation_rejects_duplicate_connections_after_normalization(self) -> None:
+        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+        payload["edges"].append({"from": "planner", "to": "executor", "loop": True, "label": "duplicate"})
+
+        validation = validate_agent_workflow_payload(payload)
+
+        self.assertEqual(validation.status, "error")
+        self.assertIn("duplicate_edge", {issue.code for issue in validation.issues})
+
 
 class AgentWorkflowApiTests(unittest.TestCase):
     def test_default_agent_workflow_api_returns_agent_contract_only(self) -> None:
@@ -342,6 +364,22 @@ class AgentWorkflowApiTests(unittest.TestCase):
 
             loaded = client.get("/api/v2/library/agent-workflows/default-planner-led").json()
             self.assertNotIn("handoff", loaded["agent_workflow"]["edges"][0])
+
+    def test_agent_workflow_library_saves_normalized_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
+            agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
+            agent_workflow["edges"][0]["loop"] = True
+            agent_workflow["edges"][0]["label"] = "manual"
+            agent_workflow["edges"][2]["loop"] = False
+
+            response = client.post("/api/v2/library/agent-workflows", json=agent_workflow)
+
+            self.assertEqual(response.status_code, 200)
+            edges = response.json()["agent_workflow"]["edges"]
+            self.assertFalse(edges[0]["loop"])
+            self.assertNotIn("label", edges[0])
+            self.assertTrue(edges[2]["loop"])
 
     def test_agent_workflow_validate_api_reports_deterministic_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

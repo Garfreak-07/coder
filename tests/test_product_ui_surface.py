@@ -33,7 +33,7 @@ class ProductUISurfaceTests(unittest.TestCase):
             "Planner Chat",
             "Send to Planner",
             "Run Evidence",
-            "Advanced event log",
+            "Event log",
             "submitPlannerResponse",
         ]:
             with self.subTest(token=token):

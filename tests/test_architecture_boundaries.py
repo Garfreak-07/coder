@@ -339,19 +339,12 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
     def test_ordinary_ui_does_not_expose_legacy_runtime_json_editor(self) -> None:
         app_source = (Path(__file__).parents[1] / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
-        agent_inspector_source = (
-            Path(__file__).parents[1]
-            / "frontend"
-            / "src"
-            / "features"
-            / "agent-workflow"
-            / "AgentWorkflowAgentInspector.tsx"
-        ).read_text(encoding="utf-8")
 
         self.assertNotIn("Legacy Runtime Preview JSON", app_source)
         self.assertNotIn("Apply Legacy Runtime JSON", app_source)
         self.assertNotIn("View legacy runtime preview", app_source)
-        self.assertNotIn("onChange={(event) => toggleCapability", agent_inspector_source)
+        self.assertNotIn("jsonText", app_source)
+        self.assertNotIn("Apply JSON", app_source)
 
         frontend_root = Path(__file__).parents[1] / "frontend" / "src"
         frontend_source = "\n".join(

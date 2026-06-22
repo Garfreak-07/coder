@@ -58,7 +58,6 @@ export interface AgentWorkflowEdge {
   to: string;
   handoff?: HandoffType | null;
   loop?: boolean;
-  label?: string | null;
 }
 
 export interface AgentWorkflowLoopPolicy {

@@ -256,7 +256,7 @@ label {
   align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(180px, 0.7fr) minmax(180px, 0.8fr) minmax(260px, 1.5fr) auto;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.5fr) auto;
 }
 
 .planner-request-field {
@@ -284,6 +284,23 @@ label {
   align-self: end;
 }
 
+.scope-details {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.scope-details summary {
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.scope-details label {
+  margin-top: 10px;
+}
+
 .button-row {
   display: flex;
   flex-wrap: wrap;
@@ -308,49 +325,6 @@ label {
   gap: 10px;
 }
 
-.template-list {
-  display: grid;
-  gap: 10px;
-}
-
-.template-card {
-  background: #101826;
-  border: 1px solid #263244;
-  border-radius: 12px;
-  display: grid;
-  gap: 10px;
-  padding: 10px;
-}
-
-.template-card p {
-  color: #aeb8c7;
-  font-size: 13px;
-  line-height: 1.5;
-  margin: 0;
-}
-
-.template-heading {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-}
-
-.template-heading span {
-  background: #172554;
-  border-radius: 999px;
-  color: #bfdbfe;
-  font-size: 11px;
-  padding: 3px 7px;
-}
-
-.template-meta {
-  color: #8fa0b3;
-  display: grid;
-  font-size: 12px;
-  gap: 5px;
-}
-
 .list-item {
   display: grid;
   justify-items: start;
@@ -370,6 +344,11 @@ label {
 .compact-list {
   max-height: 160px;
   overflow: auto;
+}
+
+.workflow-library-list {
+  max-height: calc(100vh - 170px);
+  overflow-y: auto;
 }
 
 .history-filters {
@@ -996,14 +975,21 @@ label {
 }
 
 .agent-workflow-panel {
-  grid-template-rows: auto auto auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
   overflow: auto;
+}
+
+.workflow-panel-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
 }
 
 .agent-workflow-settings {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .agent-description-field {
@@ -1075,6 +1061,50 @@ label {
 
 .agent-loop-edge path {
   stroke-dasharray: 6 4;
+}
+
+.workflow-minimap {
+  height: 82px;
+  width: 124px;
+}
+
+.workflow-structure-panel {
+  align-content: start;
+  overflow: auto;
+}
+
+.connection-builder {
+  display: grid;
+  gap: 10px;
+}
+
+.structure-row {
+  align-items: center;
+  border: 1px solid #263244;
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 6px;
+}
+
+.structure-row.selected {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35);
+}
+
+.structure-row-main {
+  background: transparent;
+  border: 0;
+  color: #e5e7eb;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding: 4px;
+  text-align: left;
+}
+
+.structure-row-main:hover {
+  background: #101826;
 }
 
 .skills-panel {
@@ -1168,7 +1198,8 @@ label {
   }
 
   .planner-chat-grid,
-  .planner-response-box {
+  .planner-response-box,
+  .agent-workflow-settings {
     grid-template-columns: 1fr;
   }
 }

@@ -11,7 +11,6 @@ WORKBENCH_SURFACES = [
     FRONTEND / "App.tsx",
     FRONTEND / "workflowGraph.ts",
     FRONTEND / "runEvents.tsx",
-    FRONTEND / "features" / "agent-workflow" / "AgentWorkflowAgentInspector.tsx",
 ]
 
 
@@ -36,24 +35,46 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
         self.assertIn('tester: "Tester"', source)
         self.assertNotIn("can ask user", source)
 
-    def test_agent_inspector_does_not_expose_runtime_internals(self) -> None:
-        source = (FRONTEND / "features" / "agent-workflow" / "AgentWorkflowAgentInspector.tsx").read_text(encoding="utf-8")
+    def test_removed_workbench_components_are_not_referenced(self) -> None:
+        source = (FRONTEND / "App.tsx").read_text(encoding="utf-8")
 
-        self.assertNotIn("CapabilitySpec", source)
-        self.assertNotIn("capabilities: CapabilitySpec", source)
-        self.assertNotIn('type="checkbox"', source)
-        self.assertNotIn("Runtime Role", source)
-        self.assertNotIn("Custom", source)
+        for token in [
+            "AgentWorkflowAgentInspector",
+            "AgentWorkflowEdgeInspector",
+            "agentWorkflowTemplateCards",
+            "instantiateAgentWorkflowTemplate",
+            "jsonText",
+            "applyJson",
+            "newAgentName",
+            "setApproved",
+        ]:
+            with self.subTest(token=token):
+                self.assertNotIn(token, source)
+
+        self.assertFalse((FRONTEND / "template.ts").exists())
+        self.assertFalse((FRONTEND / "features" / "agent-workflow" / "AgentWorkflowAgentInspector.tsx").exists())
+        self.assertFalse((FRONTEND / "features" / "agent-workflow" / "AgentWorkflowEdgeInspector.tsx").exists())
 
     def test_planner_delete_is_disabled_in_workbench(self) -> None:
         source = (FRONTEND / "App.tsx").read_text(encoding="utf-8")
 
-        self.assertRegex(source, re.compile(r"selectedAgentWorkflowAgent\?\.id === agentWorkflow\.primary_planner_id"))
+        self.assertRegex(source, re.compile(r"agent\.id === agentWorkflow\.primary_planner_id"))
         self.assertNotIn("Runtime profiles are compiled internally", source)
         self.assertNotIn("capabilities={", source)
 
     def test_removed_words_are_absent_from_user_visible_workbench_surfaces(self) -> None:
         forbidden = [
+            "Start From Template",
+            "System Status",
+            "Agent Inspector",
+            "Agent Topology",
+            "Purpose",
+            "Workflow ID",
+            "Description",
+            "Advanced",
+            "Apply JSON",
+            "This edge loops back to the Planner",
+            "handoff inferred",
             "Worker",
             "Do work",
             "Custom",

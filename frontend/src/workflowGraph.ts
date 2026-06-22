@@ -31,6 +31,26 @@ export function cloneAgentWorkflow(workflow: AgentWorkflowSpec): AgentWorkflowSp
   };
 }
 
+export function normalizeAgentWorkflow(workflow: AgentWorkflowSpec): AgentWorkflowSpec {
+  const primaryPlannerId = workflow.primary_planner_id;
+  return {
+    ...workflow,
+    id: workflow.id?.trim() || slugFromName(workflow.name) || `agent-workflow-${Date.now()}`,
+    description: workflow.description ?? "",
+    agents: workflow.agents.map((agent) => ({ ...agent, capabilities: [...agent.capabilities] })),
+    edges: workflow.edges.map((edge) => cleanAgentWorkflowEdge(edge, primaryPlannerId)),
+    loop_policy: {
+      ...workflow.loop_policy,
+      user_can_change: true
+    },
+    ui: {
+      layout: Object.fromEntries(
+        Object.entries(workflow.ui?.layout ?? {}).map(([agentId, position]) => [agentId, { ...position }])
+      )
+    }
+  };
+}
+
 export function toAgentFlowNodes(workflow: AgentWorkflowSpec): FlowNode[] {
   return workflow.agents.map((agent, index) => ({
     id: agent.id,
@@ -52,7 +72,6 @@ export function toAgentFlowEdges(workflow: AgentWorkflowSpec): FlowEdge[] {
     id: agentEdgeIdFromIndex(index),
     source: edge.from,
     target: edge.to,
-    label: edge.label ?? (edge.loop ? "loop" : undefined),
     animated: Boolean(edge.loop),
     className: edge.loop ? "agent-loop-edge" : "agent-handoff-edge"
   }));
@@ -67,13 +86,12 @@ export function agentEdgeIndexFromId(id: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
-export function cleanAgentWorkflowEdge(edge: AgentWorkflowEdge): AgentWorkflowEdge {
+export function cleanAgentWorkflowEdge(edge: AgentWorkflowEdge, primaryPlannerId?: string): AgentWorkflowEdge {
+  const loopsToPlanner = Boolean(primaryPlannerId && edge.to === primaryPlannerId);
   return {
     from: edge.from,
     to: edge.to,
-    ...(edge.handoff ? { handoff: edge.handoff } : {}),
-    ...(edge.loop ? { loop: true } : {}),
-    ...(edge.label ? { label: edge.label } : {})
+    ...(loopsToPlanner ? { loop: true } : {})
   };
 }
 
@@ -96,4 +114,12 @@ export function downloadJson(filename: string, value: unknown) {
 
 export function formatJson(value: unknown) {
   return JSON.stringify(value, null, 2);
+}
+
+function slugFromName(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }

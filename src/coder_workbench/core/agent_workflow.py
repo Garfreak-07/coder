@@ -176,6 +176,13 @@ class AgentWorkflowSpec(BaseModel):
                     migrated["primary_planner_id"] = planner["id"]
         return migrated
 
+    @model_validator(mode="after")
+    def normalize_edges(self) -> "AgentWorkflowSpec":
+        for edge in self.edges:
+            edge.loop = edge.to_agent == self.primary_planner_id
+            edge.label = None
+        return self
+
 
 def capability_registry() -> dict[str, CapabilitySpec]:
     return {capability.id: capability for capability in _CAPABILITIES}
@@ -397,7 +404,7 @@ def validate_agent_workflow(spec: AgentWorkflowSpec) -> AgentWorkflowValidationR
         produces_by_agent[agent.id] = produces
         requires_by_agent[agent.id] = requires
 
-    seen_edges: set[tuple[str, str, bool, str | None]] = set()
+    seen_edges: set[tuple[str, str]] = set()
     for edge in spec.edges:
         if not edge.from_agent:
             issues.append(_issue("missing_edge_source", "Edge source cannot be empty.", "edge"))
@@ -421,7 +428,7 @@ def validate_agent_workflow(spec: AgentWorkflowSpec) -> AgentWorkflowValidationR
                     edge.to_agent,
                 )
             )
-        edge_key = (edge.from_agent, edge.to_agent, edge.loop, edge.label)
+        edge_key = (edge.from_agent, edge.to_agent)
         if edge_key in seen_edges:
             issues.append(
                 _issue(

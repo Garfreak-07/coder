@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Background,
-  Controls,
   MiniMap,
   ReactFlow,
   applyEdgeChanges,
@@ -30,31 +29,26 @@ import {
 } from "./api";
 import { defaultPlannerLedAgentWorkflow } from "./examples";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
-import { AgentWorkflowAgentInspector } from "./features/agent-workflow/AgentWorkflowAgentInspector";
-import { AgentWorkflowEdgeInspector } from "./features/agent-workflow/AgentWorkflowEdgeInspector";
 import { AgentWorkflowValidationPanel } from "./features/agent-workflow/AgentWorkflowValidationPanel";
 import { SkillsPanel } from "./features/skills/SkillsPanel";
 import { useProviderSettings } from "./hooks/useProviderSettings";
 import { useRuntimeInfo } from "./hooks/useRuntimeInfo";
 import { enUS } from "./i18n";
 import { EventReplayList, hydrateBlobRefs, objectList, objectValue, stringList } from "./runEvents";
-import { agentWorkflowTemplateCards, instantiateAgentWorkflowTemplate, type AgentWorkflowTemplateCard } from "./template";
 import {
   agentEdgeIdFromIndex,
   agentEdgeIndexFromId,
   cleanAgentWorkflowEdge,
   cloneAgentWorkflow,
   downloadJson,
-  formatJson,
-  agentRoleLabel,
   linesToList,
+  normalizeAgentWorkflow,
   toAgentFlowEdges,
   toAgentFlowNodes
 } from "./workflowGraph";
 import type {
   AgentModelTier,
   AgentWorkflowAgent,
-  AgentWorkflowEdge,
   AgentWorkflowValidationResult,
   AgentWorkflowSpec,
   LibraryIndex,
@@ -74,7 +68,6 @@ export function App() {
   const [activeSection, setActiveSection] = useState<AppSection>("workflows");
   const [library, setLibrary] = useState<LibraryIndex>({ agents: [], agent_workflows: [] });
   const [agentWorkflow, setAgentWorkflow] = useState<AgentWorkflowSpec>(() => cloneAgentWorkflow(initialAgentWorkflow));
-  const [jsonText, setJsonText] = useState(() => formatJson(initialAgentWorkflow));
   const [agentWorkflowValidation, setAgentWorkflowValidation] = useState<AgentWorkflowValidationResult | null>(null);
   const [nodes, setNodes] = useState<FlowNode[]>(() => toAgentFlowNodes(initialAgentWorkflow));
   const [edges, setEdges] = useState<FlowEdge[]>(() => toAgentFlowEdges(initialAgentWorkflow));
@@ -84,7 +77,6 @@ export function App() {
   const [repo, setRepo] = useState(".");
   const [scopesText, setScopesText] = useState("");
   const [request, setRequest] = useState("Inspect this project and propose the next safe step.");
-  const [approved, setApproved] = useState(false);
   const [plannerResponse, setPlannerResponse] = useState("");
   const [plannerResponseLoading, setPlannerResponseLoading] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -95,7 +87,8 @@ export function App() {
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyStatusFilter, setHistoryStatusFilter] = useState("all");
   const [newAgentRoleCard, setNewAgentRoleCard] = useState("executor");
-  const [newAgentName, setNewAgentName] = useState("");
+  const [connectionFrom, setConnectionFrom] = useState("planner");
+  const [connectionTo, setConnectionTo] = useState("executor");
   const {
     runHistory,
     liveRuns,
@@ -115,21 +108,22 @@ export function App() {
   const [selectedRunDetail, setSelectedRunDetail] = useState<StoredRunDetail | LiveRunDetail | null>(null);
   const [selectedRunKind, setSelectedRunKind] = useState<"live" | "stored" | null>(null);
   const [runLoading, setRunLoading] = useState(false);
-  const selectedAgentWorkflowAgent = useMemo(
-    () => agentWorkflow.agents.find((agent) => agent.id === selectedAgentWorkflowId) ?? null,
-    [selectedAgentWorkflowId, agentWorkflow.agents]
-  );
-  const selectedAgentWorkflowEdge = useMemo(() => {
-    if (!selectedAgentWorkflowEdgeId) return null;
-    const edgeIndex = agentEdgeIndexFromId(selectedAgentWorkflowEdgeId);
-    return edgeIndex === null ? null : agentWorkflow.edges[edgeIndex] ?? null;
-  }, [selectedAgentWorkflowEdgeId, agentWorkflow.edges]);
   const primaryPlannerAgent = useMemo(
     () => agentWorkflow.agents.find((agent) => agent.id === agentWorkflow.primary_planner_id) ?? null,
     [agentWorkflow.agents, agentWorkflow.primary_planner_id]
   );
-  const selectedAgentIsPrimaryPlanner =
-    selectedAgentWorkflowAgent?.id === agentWorkflow.primary_planner_id;
+  const availableRoleCards = useMemo(
+    () => roleCards.filter((roleCard) => roleCard.id === "executor" || roleCard.id === "tester"),
+    [roleCards]
+  );
+  const connectionFromValue = useMemo(
+    () => resolveAgentSelectValue(agentWorkflow, connectionFrom, 0),
+    [agentWorkflow, connectionFrom]
+  );
+  const connectionToValue = useMemo(
+    () => resolveAgentSelectValue(agentWorkflow, connectionTo, 1),
+    [agentWorkflow, connectionTo]
+  );
   const filteredRunHistory = useMemo(
     () => filterRunHistory(runHistory, historyQuery, historyStatusFilter),
     [runHistory, historyQuery, historyStatusFilter]
@@ -236,18 +230,16 @@ export function App() {
   }
 
   function setCurrentAgentWorkflow(next: AgentWorkflowSpec) {
-    const clean = cloneAgentWorkflow(next);
+    const clean = normalizeAgentWorkflow(cloneAgentWorkflow(next));
     setAgentWorkflow(clean);
-    setJsonText(formatJson(clean));
     renderWorkflowCanvas(clean);
     setSelectedAgentWorkflowId(clean.agents[0]?.id ?? null);
     setSelectedAgentWorkflowEdgeId(null);
   }
 
   function updateAgentWorkflow(mutator: (current: AgentWorkflowSpec) => AgentWorkflowSpec) {
-    const next = cloneAgentWorkflow(mutator(cloneAgentWorkflow(agentWorkflow)));
+    const next = normalizeAgentWorkflow(mutator(cloneAgentWorkflow(agentWorkflow)));
     setAgentWorkflow(next);
-    setJsonText(formatJson(next));
     setAgentWorkflowValidation(null);
     renderWorkflowCanvas(next);
   }
@@ -260,12 +252,6 @@ export function App() {
         agent.id === current.primary_planner_id ? { ...agent, model_tier: modelTier } : agent
       )
     }));
-  }
-
-  function useTemplateCard(template: AgentWorkflowTemplateCard) {
-    const next = instantiateAgentWorkflowTemplate(template);
-    setCurrentAgentWorkflow(next);
-    setStatus(`Created from template: ${next.name}`);
   }
 
   async function loadDefaultAgentWorkflow() {
@@ -290,33 +276,17 @@ export function App() {
     }
   }
 
-  async function applyJson() {
-    try {
-      const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
-      setCurrentAgentWorkflow(parsed);
-      const validation = await validateAgentWorkflow(parsed);
-      setAgentWorkflowValidation(validation);
-      setStatus(
-        validation.status === "error"
-          ? "Agent workflow JSON applied with validation errors. Fix them before saving or running."
-          : "Agent workflow JSON applied locally. Save to persist it."
-      );
-    } catch (error) {
-      setStatus(error instanceof Error ? `Invalid Agent workflow JSON: ${error.message}` : "Invalid Agent workflow JSON");
-    }
-  }
-
   async function persistWorkflow() {
     try {
-      const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
-      const validation = await validateAgentWorkflow(parsed);
+      const workflow = normalizeAgentWorkflow(agentWorkflow);
+      const validation = await validateAgentWorkflow(workflow);
       setAgentWorkflowValidation(validation);
       if (validation.status === "error") {
-        setCurrentAgentWorkflow(parsed);
+        setCurrentAgentWorkflow(workflow);
         setStatus("Save blocked by Agent workflow validation errors.");
         return;
       }
-      const saved = await saveAgentWorkflow(parsed);
+      const saved = await saveAgentWorkflow(workflow);
       setCurrentAgentWorkflow(saved);
       refreshLibrary();
       setStatus(`Saved Agent workflow ${saved.id}`);
@@ -326,13 +296,9 @@ export function App() {
   }
 
   function exportWorkflow() {
-    try {
-      const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
-      downloadJson(`${parsed.id || "agent-workflow"}.json`, parsed);
-      setStatus(`Exported Agent workflow ${parsed.id || "agent-workflow"}`);
-    } catch (error) {
-      setStatus(error instanceof Error ? `Cannot export invalid Agent workflow JSON: ${error.message}` : "Cannot export invalid Agent workflow JSON");
-    }
+    const workflow = normalizeAgentWorkflow(agentWorkflow);
+    downloadJson(`${workflow.id || "agent-workflow"}.json`, workflow);
+    setStatus(`Exported Agent workflow ${workflow.id || "agent-workflow"}`);
   }
 
   function importWorkflow(file: File | null) {
@@ -340,7 +306,7 @@ export function App() {
     file
       .text()
       .then(async (text) => {
-        const parsed = JSON.parse(text) as AgentWorkflowSpec;
+        const parsed = normalizeAgentWorkflow(JSON.parse(text) as AgentWorkflowSpec);
         setCurrentAgentWorkflow(parsed);
         const validation = await validateAgentWorkflow(parsed);
         setAgentWorkflowValidation(validation);
@@ -353,27 +319,27 @@ export function App() {
       .catch((error) => setStatus(error instanceof Error ? `Import failed: ${error.message}` : "Import failed"));
   }
 
-  function uniqueAgentWorkflowAgentId(current: AgentWorkflowSpec) {
+  function uniqueAgentWorkflowAgentId(current: AgentWorkflowSpec, role: string) {
     const used = new Set(current.agents.map((agent) => agent.id));
-    let index = current.agents.length + 1;
-    let candidate = `agent_${index}`;
+    let index = 1;
+    let candidate = role;
     while (used.has(candidate)) {
       index += 1;
-      candidate = `agent_${index}`;
+      candidate = `${role}_${index}`;
     }
     return candidate;
   }
 
   function addAgentWorkflowAgent() {
-    const roleCard = roleCards.find((card) => card.id === newAgentRoleCard) ?? roleCards[0];
+    const roleCard = availableRoleCards.find((card) => card.id === newAgentRoleCard) ?? availableRoleCards[0];
     if (!roleCard) {
       setStatus("Role cards are unavailable.");
       return;
     }
-    const id = uniqueAgentWorkflowAgentId(agentWorkflow);
+    const id = uniqueAgentWorkflowAgentId(agentWorkflow, roleCard.role);
     const agent: AgentWorkflowAgent = {
       id,
-      name: newAgentName.trim() || roleCard.label,
+      name: nextAgentDisplayName(agentWorkflow, roleCard.role),
       role: roleCard.role,
       role_card: roleCard.id,
       model_tier: "standard",
@@ -392,8 +358,7 @@ export function App() {
     });
     setSelectedAgentWorkflowId(id);
     setSelectedAgentWorkflowEdgeId(null);
-    setNewAgentName("");
-    setStatus(`Added ${roleCard.label} Agent.`);
+    setStatus(`Added ${agent.name}.`);
   }
 
   function removeAgentWorkflowAgent(agentId = selectedAgentWorkflowId) {
@@ -419,35 +384,6 @@ export function App() {
     setStatus(`Deleted ${target.name}.`);
   }
 
-  function updateSelectedAgentWorkflowAgent(patch: Partial<AgentWorkflowAgent>) {
-    if (!selectedAgentWorkflowAgent) return;
-    updateAgentWorkflow((current) => ({
-      ...current,
-      agents: current.agents.map((agent) =>
-        agent.id === selectedAgentWorkflowAgent.id
-          ? {
-              ...agent,
-              ...patch,
-              id: agent.id,
-              can_talk_to_human: patch.role && patch.role !== "planner" ? false : patch.can_talk_to_human ?? agent.can_talk_to_human
-            }
-          : agent
-      )
-    }));
-  }
-
-  function updateSelectedAgentWorkflowEdge(patch: Partial<AgentWorkflowEdge>) {
-    if (!selectedAgentWorkflowEdgeId) return;
-    const edgeIndex = agentEdgeIndexFromId(selectedAgentWorkflowEdgeId);
-    if (edgeIndex === null) return;
-    updateAgentWorkflow((current) => ({
-      ...current,
-      edges: current.edges.map((edge, index) =>
-        index === edgeIndex ? cleanAgentWorkflowEdge({ ...edge, ...patch }) : edge
-      )
-    }));
-    setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(edgeIndex));
-  }
   const onAgentNodesChange = useCallback(
     (changes: NodeChange[]) => {
       const removedIds = changes.filter((change) => change.type === "remove").map((change) => change.id);
@@ -470,13 +406,12 @@ export function App() {
           for (const removedId of removableIds) {
             delete layout[removedId];
           }
-          const nextWorkflow = {
+          const nextWorkflow = normalizeAgentWorkflow({
             ...currentWorkflow,
             agents: currentWorkflow.agents.filter((agent) => !removableIds.has(agent.id)),
             edges: currentWorkflow.edges.filter((edge) => !removableIds.has(edge.from) && !removableIds.has(edge.to)),
             ui: { ...(currentWorkflow.ui ?? {}), layout }
-          };
-          setJsonText(formatJson(nextWorkflow));
+          });
           setAgentWorkflowValidation(null);
           setSelectedAgentWorkflowId((current) =>
             current && removableIds.has(current) ? nextWorkflow.agents[0]?.id ?? null : current
@@ -504,7 +439,6 @@ export function App() {
           ...currentWorkflow,
           edges: currentWorkflow.edges.filter((_, index) => !removedIndexes.has(index))
         };
-        setJsonText(formatJson(nextWorkflow));
         setEdges(toAgentFlowEdges(nextWorkflow));
         setAgentWorkflowValidation(null);
         setSelectedAgentWorkflowEdgeId(null);
@@ -527,20 +461,56 @@ export function App() {
     }
     updateAgentWorkflow((current) => ({
       ...current,
-      edges: [...current.edges, cleanAgentWorkflowEdge({ from: source, to: target })]
+      edges: [...current.edges, cleanAgentWorkflowEdge({ from: source, to: target }, current.primary_planner_id)]
     }));
     setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(agentWorkflow.edges.length));
     setSelectedAgentWorkflowId(null);
     setStatus(`Connected ${source} -> ${target}.`);
   }
-  async function runWorkflow(approvedOverride = approved) {
+
+  function addWorkflowConnection() {
+    const source = connectionFromValue;
+    const target = connectionToValue;
+    if (!source || !target) {
+      setStatus("Choose two Agents before adding a connection.");
+      return;
+    }
+    if (source === target) {
+      setStatus("Agent edges must connect two different Agents.");
+      return;
+    }
+    if (agentWorkflow.edges.some((edge) => edge.from === source && edge.to === target)) {
+      setStatus(`Connection ${agentDisplayName(agentWorkflow, source)} -> ${agentDisplayName(agentWorkflow, target)} already exists.`);
+      return;
+    }
+    updateAgentWorkflow((current) => ({
+      ...current,
+      edges: [...current.edges, cleanAgentWorkflowEdge({ from: source, to: target }, current.primary_planner_id)]
+    }));
+    setSelectedAgentWorkflowId(null);
+    setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(agentWorkflow.edges.length));
+    setStatus(`Connected ${agentDisplayName(agentWorkflow, source)} -> ${agentDisplayName(agentWorkflow, target)}.`);
+  }
+
+  function removeAgentWorkflowEdge(edgeIndex: number) {
+    const edge = agentWorkflow.edges[edgeIndex];
+    if (!edge) return;
+    updateAgentWorkflow((current) => ({
+      ...current,
+      edges: current.edges.filter((_, index) => index !== edgeIndex)
+    }));
+    setSelectedAgentWorkflowEdgeId(null);
+    setStatus(`Deleted connection ${agentDisplayName(agentWorkflow, edge.from)} -> ${agentDisplayName(agentWorkflow, edge.to)}.`);
+  }
+
+  async function runWorkflow() {
     setRunLoading(true);
     setStatus("Validating Agent workflow...");
     try {
-      const parsed = JSON.parse(jsonText) as AgentWorkflowSpec;
-      const validation = await validateAgentWorkflow(parsed);
+      const workflow = normalizeAgentWorkflow(agentWorkflow);
+      const validation = await validateAgentWorkflow(workflow);
       setAgentWorkflowValidation(validation);
-      setCurrentAgentWorkflow(parsed);
+      setCurrentAgentWorkflow(workflow);
       if (validation.status === "error") {
         setStatus("Run blocked by Agent workflow validation errors.");
         return;
@@ -551,12 +521,12 @@ export function App() {
       setEventHasMore(false);
       setEventsLoadingMore(false);
       setActiveRunId(null);
-      setStatus(approvedOverride ? "Starting approved Agent workflow run..." : "Starting Agent workflow run...");
+      setStatus("Starting Agent workflow run...");
       const run = await startLiveAgentRun({
         repo,
         request,
-        agent_workflow: parsed,
-        approved: approvedOverride,
+        agent_workflow: workflow,
+        approved: false,
         scopes
       });
       setActiveRunId(run.run_id);
@@ -660,19 +630,9 @@ export function App() {
       <>
       <aside className="sidebar">
         <section className="panel">
-          <div className="panel-title">{t.templates.title}</div>
-          <div className="template-list">
-            {agentWorkflowTemplateCards.map((template) => (
-              <TemplateCard key={template.id} template={template} onUse={useTemplateCard} />
-            ))}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-title">{t.library.title}</div>
+          <div className="panel-title">Workflow Library</div>
           <button onClick={loadDefaultAgentWorkflow}>{t.library.loadExample}</button>
-          <button onClick={refreshLibrary}>{t.library.refresh}</button>
-          <div className="list">
+          <div className="list workflow-library-list">
             {library.agent_workflows.length === 0 ? (
               <div className="muted">{t.library.empty}</div>
             ) : (
@@ -683,53 +643,6 @@ export function App() {
                 </button>
               ))
             )}
-          </div>
-        </section>
-
-        <section className="panel">
-          <div className="panel-title">System Status</div>
-          <button onClick={refreshRuntimeInfo}>{t.runtime.refresh}</button>
-          <div className="summary-grid">
-            <span>{health?.status ?? t.runtime.unknown}</span>
-            <span>{t.runtime.tools(health?.tools.length ?? 0)}</span>
-            <span>{t.runtime.liveRuns(liveRuns.length)}</span>
-            <span>{t.runtime.storedRuns(runHistory.length)}</span>
-          </div>
-          <div className="list compact-list">
-            {liveRuns.slice(0, 5).map((run) => (
-              <button className="list-item" key={run.id} onClick={() => openLiveRun(run.id)}>
-                <span>{run.workflow_id}</span>
-                <small>{run.status} / {run.events} events</small>
-              </button>
-            ))}
-            {liveRuns.length === 0 && <div className="muted">{t.runtime.noLiveRuns}</div>}
-          </div>
-          <div className="panel-subtitle">{t.runtime.storedHistory}</div>
-          <div className="history-filters">
-            <input
-              placeholder="Search runs"
-              value={historyQuery}
-              onChange={(event) => setHistoryQuery(event.target.value)}
-            />
-            <select value={historyStatusFilter} onChange={(event) => setHistoryStatusFilter(event.target.value)}>
-              <option value="all">All statuses</option>
-              <option value="completed">Completed</option>
-              <option value="blocked">Blocked</option>
-              <option value="failed">Failed</option>
-            </select>
-          </div>
-          <div className="list compact-list">
-            {filteredRunHistory.slice(0, 20).map((run) => (
-              <button className="list-item" key={run.id} onClick={() => openStoredRun(run.id)}>
-                <span>{run.workflow_id}</span>
-                <small>
-                  {run.status}
-                  {run.status_code ? `:${run.status_code}` : ""} / {run.events} events
-                </small>
-              </button>
-            ))}
-            {runHistory.length === 0 && <div className="muted">{t.runtime.noStoredRuns}</div>}
-            {runHistory.length > 0 && filteredRunHistory.length === 0 && <div className="muted">No runs match the filter.</div>}
           </div>
         </section>
       </aside>
@@ -751,8 +664,20 @@ export function App() {
               {t.run.repo}
               <input value={repo} onChange={(event) => setRepo(event.target.value)} />
             </label>
+            <label className="planner-request-field">
+              {t.run.request}
+              <textarea value={request} onChange={(event) => setRequest(event.target.value)} rows={5} />
+            </label>
+            <div className="planner-run-actions">
+              <button onClick={() => runWorkflow()} disabled={runLoading}>
+                {runLoading ? "Starting..." : "Send to Planner"}
+              </button>
+            </div>
+          </div>
+          <details className="scope-details">
+            <summary>Limit edit scope</summary>
             <label>
-              {t.run.scopes}
+              Optional, one repository-relative path per line.
               <textarea
                 placeholder={t.run.scopesPlaceholder}
                 value={scopesText}
@@ -760,20 +685,7 @@ export function App() {
                 rows={2}
               />
             </label>
-            <label className="planner-request-field">
-              {t.run.request}
-              <textarea value={request} onChange={(event) => setRequest(event.target.value)} rows={5} />
-            </label>
-            <div className="planner-run-actions">
-              <label className="checkbox-row">
-                <input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} />
-                {t.run.preApprove}
-              </label>
-              <button onClick={() => runWorkflow()} disabled={runLoading}>
-                {runLoading ? "Starting..." : "Send to Planner"}
-              </button>
-            </div>
-          </div>
+          </details>
           {isWaitingForPlannerHumanResponse(selectedRunDetail, selectedRunKind) && (
             <div className="planner-response-box">
               <div>
@@ -797,7 +709,7 @@ export function App() {
           <div className="toolbar">
             <div>
               <strong>{agentWorkflow.name}</strong>
-              <span>{agentWorkflow.id}</span>
+              <span>{agentWorkflow.agents.length} agents / {agentWorkflow.edges.length} connections</span>
             </div>
             <div className="node-add-controls">
             </div>
@@ -821,26 +733,32 @@ export function App() {
             fitView
           >
             <Background />
-            <Controls />
-            <MiniMap />
+            <MiniMap className="workflow-minimap" position="top-left" />
           </ReactFlow>
         </section>
 
         <section className="editor-panel agent-workflow-panel">
-          <div className="panel-title">Agent Workflow</div>
+          <div className="workflow-panel-heading">
+            <div className="panel-title">Agent Workflow</div>
+            <div className="button-row">
+              <button onClick={persistWorkflow}>{t.json.save}</button>
+              <label className="file-button">
+                {t.json.import}
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => importWorkflow(event.target.files?.[0] ?? null)}
+                />
+              </label>
+              <button onClick={exportWorkflow}>{t.json.export}</button>
+            </div>
+          </div>
           <div className="agent-workflow-settings">
             <label>
               Workflow Name
               <input
                 value={agentWorkflow.name}
                 onChange={(event) => updateAgentWorkflow((current) => ({ ...current, name: event.target.value }))}
-              />
-            </label>
-            <label>
-              Workflow ID
-              <input
-                value={agentWorkflow.id}
-                onChange={(event) => updateAgentWorkflow((current) => ({ ...current, id: event.target.value }))}
               />
             </label>
             <label>
@@ -869,27 +787,6 @@ export function App() {
                 <option value="strong">Strong</option>
               </select>
             </label>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={agentWorkflow.loop_policy.user_can_change}
-                onChange={(event) =>
-                  updateAgentWorkflow((current) => ({
-                    ...current,
-                    loop_policy: { ...current.loop_policy, user_can_change: event.target.checked }
-                  }))
-                }
-              />
-              User can change rounds
-            </label>
-            <label className="agent-description-field">
-              Description
-              <textarea
-                value={agentWorkflow.description}
-                onChange={(event) => updateAgentWorkflow((current) => ({ ...current, description: event.target.value }))}
-                rows={3}
-              />
-            </label>
           </div>
           <div className="summary-grid agent-policy-summary">
             <span>Only Planner can ask the user</span>
@@ -898,23 +795,6 @@ export function App() {
             <span>Planner reviews every round</span>
           </div>
           <AgentWorkflowValidationPanel result={agentWorkflowValidation} />
-          <details className="json-details">
-            <summary>Agent workflow import/export (Advanced)</summary>
-            <div className="button-row">
-              <button onClick={applyJson}>{t.json.apply}</button>
-              <button onClick={persistWorkflow}>{t.json.save}</button>
-              <button onClick={exportWorkflow}>{t.json.export}</button>
-              <label className="file-button">
-                {t.json.import}
-                <input
-                  type="file"
-                  accept="application/json,.json"
-                  onChange={(event) => importWorkflow(event.target.files?.[0] ?? null)}
-                />
-              </label>
-            </div>
-            <textarea className="json-editor" value={jsonText} onChange={(event) => setJsonText(event.target.value)} />
-          </details>
         </section>
       </main>
 
@@ -944,7 +824,7 @@ export function App() {
             <div className="muted">{t.events.empty}</div>
           ) : (
             <details className="event-log-details">
-              <summary>Advanced event log</summary>
+              <summary>Event log</summary>
               <EventReplayList
                 events={events}
                 runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
@@ -958,90 +838,90 @@ export function App() {
           )}
         </section>
 
-        <section className="panel">
-          <div className="panel-title">Agent Inspector</div>
-          {selectedAgentWorkflowAgent ? (
-            <AgentWorkflowAgentInspector
-              agent={selectedAgentWorkflowAgent}
-              roleCards={roleCards}
-              isPrimaryPlanner={selectedAgentIsPrimaryPlanner}
-              onChange={updateSelectedAgentWorkflowAgent}
-            />
-          ) : selectedAgentWorkflowEdge ? (
-            <AgentWorkflowEdgeInspector
-              edge={selectedAgentWorkflowEdge}
-              agents={agentWorkflow.agents}
-              onChange={updateSelectedAgentWorkflowEdge}
-            />
-          ) : (
-            <div className="muted">Select an Agent or edge.</div>
-          )}
-        </section>
-
-        <section className="panel">
-          <>
-              <div className="panel-title">Agent Topology</div>
-              <div className="add-agent-card">
-                <label>
-                  Role
-                  <select value={newAgentRoleCard} onChange={(event) => setNewAgentRoleCard(event.target.value)}>
-                    {roleCards.map((roleCard) => (
-                      <option key={roleCard.id} value={roleCard.id}>
-                        {roleCard.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Name
-                  <input value={newAgentName} onChange={(event) => setNewAgentName(event.target.value)} />
-                </label>
-              </div>
-              <div className="button-row">
-                <button disabled={roleCards.length === 0} onClick={addAgentWorkflowAgent}>Add Agent</button>
+        <section className="panel workflow-structure-panel">
+          <div className="panel-title">Workflow Structure</div>
+          <div className="add-agent-card">
+            <label>
+              Agent type
+              <select value={newAgentRoleCard} onChange={(event) => setNewAgentRoleCard(event.target.value)}>
+                {availableRoleCards.map((roleCard) => (
+                  <option key={roleCard.id} value={roleCard.id}>
+                    {roleCard.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button disabled={availableRoleCards.length === 0} onClick={addAgentWorkflowAgent}>Add</button>
+          </div>
+          <div className="list compact-list">
+            {agentWorkflow.agents.map((agent) => (
+              <div
+                className={`structure-row ${agent.id === selectedAgentWorkflowId ? "selected" : ""}`}
+                key={agent.id}
+              >
                 <button
-                  disabled={
-                    !selectedAgentWorkflowAgent ||
-                    selectedAgentIsPrimaryPlanner
-                  }
-                  onClick={() => removeAgentWorkflowAgent()}
+                  className="structure-row-main"
+                  onClick={() => {
+                    setSelectedAgentWorkflowId(agent.id);
+                    setSelectedAgentWorkflowEdgeId(null);
+                  }}
                 >
-                  Delete Agent
+                  {agent.name}
+                </button>
+                <button
+                  disabled={agent.id === agentWorkflow.primary_planner_id}
+                  onClick={() => removeAgentWorkflowAgent(agent.id)}
+                >
+                  Delete
                 </button>
               </div>
-              <div className="list compact-list">
+            ))}
+          </div>
+          <div className="panel-subtitle">Add Connection</div>
+          <div className="connection-builder">
+            <label>
+              From
+              <select value={connectionFromValue} onChange={(event) => setConnectionFrom(event.target.value)}>
                 {agentWorkflow.agents.map((agent) => (
-                  <button
-                    className={`list-item ${agent.id === selectedAgentWorkflowId ? "selected" : ""}`}
-                    key={agent.id}
-                    onClick={() => {
-                      setSelectedAgentWorkflowId(agent.id);
-                      setSelectedAgentWorkflowEdgeId(null);
-                    }}
-                  >
-                    <span>{agent.name}</span>
-                    <small>{agentRoleLabel(agent)}</small>
-                  </button>
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name}
+                  </option>
                 ))}
-              </div>
-              <div className="panel-subtitle">Edges</div>
-              <div className="list compact-list">
-                {agentWorkflow.edges.map((edge, index) => (
-                  <button
-                    className={`list-item ${agentEdgeIdFromIndex(index) === selectedAgentWorkflowEdgeId ? "selected" : ""}`}
-                    key={`${edge.from}-${edge.to}-${index}`}
-                    onClick={() => {
-                      setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(index));
-                      setSelectedAgentWorkflowId(null);
-                    }}
-                  >
-                    <span>{edge.from} -&gt; {edge.to}</span>
-                    <small>{edge.loop ? "loop" : "handoff inferred"}</small>
-                  </button>
+              </select>
+            </label>
+            <label>
+              To
+              <select value={connectionToValue} onChange={(event) => setConnectionTo(event.target.value)}>
+                {agentWorkflow.agents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name}
+                  </option>
                 ))}
-                {agentWorkflow.edges.length === 0 && <div className="muted">No edges yet.</div>}
+              </select>
+            </label>
+            <button onClick={addWorkflowConnection}>Add Connection</button>
+          </div>
+          <div className="panel-subtitle">Connections</div>
+          <div className="list compact-list">
+            {agentWorkflow.edges.map((edge, index) => (
+              <div
+                className={`structure-row ${agentEdgeIdFromIndex(index) === selectedAgentWorkflowEdgeId ? "selected" : ""}`}
+                key={`${edge.from}-${edge.to}-${index}`}
+              >
+                <button
+                  className="structure-row-main"
+                  onClick={() => {
+                    setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(index));
+                    setSelectedAgentWorkflowId(null);
+                  }}
+                >
+                  {agentDisplayName(agentWorkflow, edge.from)} -&gt; {agentDisplayName(agentWorkflow, edge.to)}
+                </button>
+                <button onClick={() => removeAgentWorkflowEdge(index)}>Delete</button>
               </div>
-          </>
+            ))}
+            {agentWorkflow.edges.length === 0 && <div className="muted">No connections yet.</div>}
+          </div>
         </section>
 
       </aside>
@@ -1198,6 +1078,21 @@ function modelTierForPlannerStrength(strength: PlannerStrength): AgentModelTier 
   if (strength === "fast") return "economy";
   if (strength === "balanced") return "standard";
   return "best";
+}
+
+function resolveAgentSelectValue(workflow: AgentWorkflowSpec, preferredId: string, fallbackIndex: number): string {
+  if (workflow.agents.some((agent) => agent.id === preferredId)) return preferredId;
+  return workflow.agents[fallbackIndex]?.id ?? workflow.agents[0]?.id ?? "";
+}
+
+function nextAgentDisplayName(workflow: AgentWorkflowSpec, role: string): string {
+  const base = role === "tester" ? "Tester" : "Executor";
+  const count = workflow.agents.filter((agent) => agent.role === role).length;
+  return count === 0 ? base : `${base} ${count + 1}`;
+}
+
+function agentDisplayName(workflow: AgentWorkflowSpec, agentId: string): string {
+  return workflow.agents.find((agent) => agent.id === agentId)?.name ?? agentId;
 }
 
 const evidenceArtifactTypes = new Set([
@@ -1552,55 +1447,6 @@ function PatchPanel({
         </div>
       )}
     </div>
-  );
-}
-
-function TemplateCard({
-  template,
-  onUse
-}: {
-  template: AgentWorkflowTemplateCard;
-  onUse: (template: AgentWorkflowTemplateCard) => void;
-}) {
-  const isDefaultCoding = template.id === "default-coding";
-  const name = isDefaultCoding ? t.templates.defaultCodingName : t.templates.blankName;
-  const purpose = isDefaultCoding ? t.templates.defaultCodingPurpose : t.templates.blankPurpose;
-  const approvals =
-    template.approvals === "plannerOnlyHuman" ? t.templates.plannerOnlyHuman : t.templates.requiredApprovals;
-  const modelRequirement =
-    template.modelRequirement === "optionalModel" ? t.templates.optionalModel : template.modelRequirement;
-  const knowledgeRequirement =
-    template.knowledgeRequirement === "projectKnowledge"
-      ? t.templates.projectKnowledge
-      : template.knowledgeRequirement;
-  const risk = template.risk === "mediumRisk" ? t.templates.mediumRisk : t.templates.lowRisk;
-
-  return (
-    <article className="template-card">
-      <div className="template-heading">
-        <strong>{name}</strong>
-        <span>{template.workflow.version}</span>
-      </div>
-      <p>{purpose}</p>
-      <div className="template-meta">
-        <span>
-          {t.templates.agents}: {template.agentCount}
-        </span>
-        <span>
-          {t.templates.approvals}: {approvals}
-        </span>
-        <span>
-          {t.templates.model}: {modelRequirement}
-        </span>
-        <span>
-          {t.templates.knowledge}: {knowledgeRequirement}
-        </span>
-        <span>
-          {t.templates.risk}: {risk}
-        </span>
-      </div>
-      <button onClick={() => onUse(template)}>{t.templates.useTemplate}</button>
-    </article>
   );
 }
 
