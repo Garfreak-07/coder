@@ -27,7 +27,7 @@ def build_planner_order_prompt(
         "If work items can run independently, leave depends_on empty.",
         "merge_index is only the stable result presentation order returned to Planner.",
         "If previous PlannerInputBundle or RoundSummary exists, plan only remaining or corrective work.",
-        "Do not repeat completed passed work unless necessary. New work_item_id values should be unique for this round.",
+        "Do not repeat completed work unless necessary. New work_item_id values should be unique for this round.",
         "Use repo intelligence before creating work_items.",
         "Do not create vague work items.",
         "Assign work_items to reachable Agents only.",
@@ -85,10 +85,13 @@ def build_worker_execution_prompt(
         [
             _json_only_header("execution_result"),
             "You are an Executor Agent. Return execution facts only.",
+            "Use the fixed lifecycle: inspect the WorkItem, execute only inside its scope, verify the result, then report.",
             "Do not ask the human. Do not make global continue/finish decisions.",
+            "All file edits, commands, connector calls, and external effects must go through the runtime ActionGateway; do not claim a side effect happened unless the runtime evidence exists.",
+            "The Executor may run allowed checks, but check/test evidence must be stored inside execution_result.verification.",
             "If you cannot safely complete the work item, return status=\"blocked\", "
             "needs_planner_decision=true, blocker_type, planner_question, candidate_options, "
-            "and continue_without_human_possible.",
+            "remaining_work, verification, and continue_without_human_possible.",
             "Do not ask the human directly. Do not decide whether to continue the whole workflow.",
             "If changes are needed, describe them in proposed_changes; do not claim files were modified directly.",
             _execution_result_schema_notes(),
@@ -104,32 +107,6 @@ def build_worker_execution_prompt(
             _compact_json(envelope.selected_skill_context),
         ]
     )
-
-
-def build_tester_prompt(
-    *,
-    tester: AgentWorkflowAgent,
-    item: WorkItem,
-    execution_result: dict[str, Any],
-    upstream_artifacts: list[dict[str, Any]] | None = None,
-) -> str:
-    parts = [
-        _json_only_header("test_result"),
-        "You are a Tester Agent. Return evidence only.",
-        "Do not ask the human. Do not make global continue/finish decisions.",
-        "Use check_commands only for optional commands that would materially improve evidence.",
-        "If upstream test_result artifacts are supplied, aggregate them into a new test_result.",
-        _test_result_schema_notes(),
-        "Tester Agent JSON:",
-        _compact_json(_agent_summary(tester)),
-        "Work item JSON:",
-        _compact_json(item.model_dump(mode="json")),
-        "ExecutionResult JSON:",
-        _compact_json(execution_result),
-    ]
-    if upstream_artifacts:
-        parts.extend(["Upstream artifacts JSON:", _compact_json(upstream_artifacts)])
-    return "\n\n".join(parts)
 
 
 def build_planner_decision_prompt(
@@ -171,8 +148,6 @@ def schema_notes_for_artifact(artifact_type: str) -> str:
         return _planner_order_schema_notes()
     if artifact_type == "execution_result":
         return _execution_result_schema_notes()
-    if artifact_type == "test_result":
-        return _test_result_schema_notes()
     if artifact_type == "planner_decision":
         return _planner_decision_schema_notes()
     return "Return a JSON object with artifact_type set to the expected type."
@@ -189,29 +164,28 @@ def _planner_order_schema_notes() -> str:
     return (
         "Required planner_order fields: artifact_type, round, round_goal, plan_graph.\n"
         "plan_graph.work_items is a list of objects with work_item_id, merge_index, assignee_agent_id, "
-        "task_summary, depends_on, tester_agent_ids.\n"
-        "Each work item may list tester_agent_ids for evidence review."
+        "task_summary, depends_on.\n"
+        "Do not include legacy review-agent workflow fields."
     )
 
 
 def _execution_result_schema_notes() -> str:
     return (
-        "Required execution_result fields: artifact_type, status, summary.\n"
-        "Allowed status values: completed, blocked, failed.\n"
+        "Required execution_result fields: artifact_type, status, summary, verification.\n"
+        "Allowed status values: completed, blocked. Never return failed for execution_result.\n"
+        "verification.status must be one of pass, fail, blocked, skipped.\n"
+        "Store all check/test evidence inside execution_result.verification.\n"
+        "If verification.status is fail or blocked, execution_result.status must be blocked.\n"
+        "If verification.status is skipped, include no_check_rationale or evidence_refs.\n"
         "Optional fields include proposed_changes, changed_files, created_files, deleted_files, patch_refs, "
         "outputs, unexpected_issues, out_of_contract, needs_planner_decision, blocker_type, "
-        "planner_question, candidate_options, continue_without_human_possible, tester_notes.\n"
+        "planner_question, candidate_options, planner_options, continue_without_human_possible, "
+        "attempted_actions, evidence_refs, remaining_work, no_op_rationale.\n"
         "Allowed blocker_type values: technical_blocker, ambiguity, scope_boundary, risk_boundary, "
-        "dependency_missing, context_missing, plan_conflict, schema_validation_failed.\n"
+        "dependency_missing, context_missing, plan_conflict, schema_validation_failed, permission_blocked, "
+        "verification_failed, tool_error, unsafe_action, transient_error_exhausted, command_unavailable, "
+        "patch_rejected, out_of_contract.\n"
         "candidate_options is a list of objects with option_id, summary, risk_level, and requires_human."
-    )
-
-
-def _test_result_schema_notes() -> str:
-    return (
-        "Required test_result fields: artifact_type, status, summary.\n"
-        "Allowed status values: pass, fail, blocked.\n"
-        "Optional fields include evidence, issues, remaining_work, confidence, check_commands, check_outputs_ref."
     )
 
 

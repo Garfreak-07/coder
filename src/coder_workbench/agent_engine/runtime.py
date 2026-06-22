@@ -18,7 +18,6 @@ if TYPE_CHECKING:
         ExecutionRecord,
         PlannerInputBundle,
         PlannerOrder,
-        TestRecord,
         WorkItem,
     )
     from coder_workbench.core import AgentWorkflowSpec
@@ -416,8 +415,8 @@ class PlannerEngine(ModelBackedEngine):
 
         planner = _agent(agent_workflow, agent_workflow.primary_planner_id)
         has_interrupts = bool(bundle.interrupts)
-        has_failed_tests = any(item.execution_status == "failed" or item.test_status == "fail" for item in bundle.items)
-        has_blocked_work = any(item.execution_status == "blocked" or item.test_status == "blocked" for item in bundle.items)
+        has_failed_verification = any(item.verification_status == "fail" for item in bundle.items)
+        has_blocked_work = any(item.execution_status == "blocked" or item.verification_status == "blocked" for item in bundle.items)
         has_debug_findings = any(effect.get("effect_type") == "debug_finding" for effect in bundle.effects)
         has_failed_check_effects = any(
             effect.get("effect_type") == "optional_check_command"
@@ -443,7 +442,11 @@ class PlannerEngine(ModelBackedEngine):
         )
         mock_next_action = (
             "continue"
-            if can_continue_from_interrupts or has_failed_tests or has_debug_findings or has_failed_check_effects or has_failed_runtime_actions
+            if can_continue_from_interrupts
+            or has_failed_verification
+            or has_debug_findings
+            or has_failed_check_effects
+            or has_failed_runtime_actions
             else "ask_human"
             if has_interrupts or has_blocked_work or has_blocked_check_effects or has_blocked_runtime_actions
             else "finish"
@@ -461,14 +464,14 @@ class PlannerEngine(ModelBackedEngine):
             if has_blocked_runtime_actions
             else "Executor requested Planner intervention."
             if has_interrupts
-            else "Tests failed; Planner will replan inside the existing RunContract."
-            if has_failed_tests
+            else "Execution verification failed; Planner will replan inside the existing RunContract."
+            if has_failed_verification
             else "Work is blocked and requires Planner or user judgment."
             if has_blocked_work
             else (
                 "Planner human response recorded; AgentGraph resume completed."
                 if planner_human_response
-                else "Mock AgentGraph execution and test artifacts are complete."
+                else "Mock AgentGraph execution artifacts are complete."
             )
         )
         return self._invoke_or_mock(
@@ -494,7 +497,7 @@ class PlannerEngine(ModelBackedEngine):
                 else "low",
                 "requires_human_confirmation": mock_next_action == "ask_human",
                 "reason": mock_reason,
-                "next_round_goal": "Fix debug finding evidence and rerun checks." if has_debug_findings else "Fix failed check evidence and rerun checks." if has_failed_check_effects else "Replan around failed runtime action evidence." if has_failed_runtime_actions else "Fix failing test evidence and rerun checks." if has_failed_tests else "Resolve the blocked work item." if mock_next_action == "continue" else "",
+                "next_round_goal": "Fix debug finding evidence and rerun checks." if has_debug_findings else "Fix failed check evidence and rerun checks." if has_failed_check_effects else "Replan around failed runtime action evidence." if has_failed_runtime_actions else "Fix failed execution verification and rerun checks." if has_failed_verification else "Resolve the blocked work item." if mock_next_action == "continue" else "",
                 "remaining_auto_rounds": 2 if mock_next_action == "continue" else 0,
                 "human_message": "Planner needs user input to resolve the blocked work item."
                 if mock_next_action == "ask_human"
@@ -508,114 +511,6 @@ class PlannerEngine(ModelBackedEngine):
             action_gateway=action_gateway,
             run_id=run_id,
             failure_status_code="planner_decision_schema_failed",
-        )
-
-
-class TesterEngine(ModelBackedEngine):
-    id = "tester-engine"
-
-    def run_test(
-        self,
-        *,
-        agent_workflow: "AgentWorkflowSpec",
-        item: "WorkItem",
-        execution_artifact: dict[str, Any],
-        upstream_artifacts: list[dict[str, Any]] | None = None,
-        tester_agent_id: str,
-        runtime_settings: Any | None = None,
-        model_factory: ModelFactory = create_chat_model,
-        budget_broker: BudgetBroker | None = None,
-        action_gateway: ActionGateway | None = None,
-        run_id: str | None = None,
-        emit: EmitEvent | None = None,
-    ) -> "TestRecord":
-        from coder_workbench.agent_graph.prompts import build_tester_prompt
-        from coder_workbench.agent_graph.schema import TestRecord
-
-        tester = _agent(agent_workflow, tester_agent_id)
-        upstream = list(upstream_artifacts or [])
-        evidence_refs = _artifact_refs([execution_artifact, *upstream])
-        mock_status = _aggregate_test_status(execution_artifact, upstream)
-        mock_summary = (
-            "Mock AgentGraph tester aggregated upstream evidence."
-            if upstream
-            else "Mock AgentGraph tester found no blocking issue."
-        )
-        payload = self._invoke_or_mock(
-            artifact_type="test_result",
-            agent_id=tester.id,
-            prompt=build_tester_prompt(
-                tester=tester,
-                item=item,
-                execution_result=execution_artifact,
-                upstream_artifacts=upstream,
-            ),
-            mock_payload={
-                "artifact_type": "test_result",
-                "round": int(execution_artifact.get("round") or 1),
-                "status": mock_status,
-                "summary": mock_summary,
-                "evidence": evidence_refs,
-                "issues": [],
-                "remaining_work": _aggregate_remaining_work(execution_artifact, upstream),
-                "confidence": "medium",
-                "check_commands": [],
-                "check_outputs_ref": None,
-            },
-            emit=emit,
-            agent_workflow=agent_workflow,
-            runtime_settings=runtime_settings,
-            model_factory=model_factory,
-            budget_broker=budget_broker,
-            action_gateway=action_gateway,
-            run_id=run_id,
-            fallback_payload=_blocked_test_payload(item, tester_agent_id, int(execution_artifact.get("round") or 1)),
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-        )
-        round_number = int(execution_artifact.get("round") or payload.get("round") or 1)
-        test_result_ref = _artifact_ref("test_result", item.work_item_id, tester_agent_id)
-        payload = _with_forced_fields(
-            payload,
-            {
-                "artifact_id": test_result_ref,
-                "artifact_type": "test_result",
-                "round": round_number,
-                "work_item_id": item.work_item_id,
-                "merge_index": item.merge_index,
-                "tester_agent_id": tester_agent_id,
-            },
-        )
-        from coder_workbench.agent_harness.self_check import TesterSelfChecker, harness_self_check_enabled
-
-        if harness_self_check_enabled():
-            checked = TesterSelfChecker().check(
-                payload,
-                item=item,
-                tester_agent_id=tester_agent_id,
-                evidence_refs=evidence_refs,
-                round_number=round_number,
-                emit=emit,
-            )
-            artifact = checked.artifact
-        else:
-            artifact = self._validate_payload(
-                payload,
-                artifact_type="test_result",
-                agent_id=tester.id,
-                emit=emit,
-                fallback_payload=_blocked_test_payload(item, tester_agent_id, round_number),
-                work_item_id=item.work_item_id,
-                merge_index=item.merge_index,
-            )
-        return TestRecord(
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-            tester_agent_id=tester_agent_id,
-            status=artifact["status"],
-            test_summary=artifact["summary"],
-            test_result_ref=test_result_ref,
-            artifact_payload=artifact,
         )
 
 
@@ -664,51 +559,6 @@ def _with_forced_fields(payload: dict[str, Any], forced: dict[str, Any]) -> dict
     return merged
 
 
-def _artifact_ref(artifact_type: str, *parts: Any) -> str:
-    from coder_workbench.agent_graph.artifacts import graph_artifact_id
-
-    return graph_artifact_id(artifact_type, *parts)
-
-
-def _artifact_refs(artifacts: list[dict[str, Any]]) -> list[str]:
-    refs: list[str] = []
-    for artifact in artifacts:
-        artifact_id = str(
-            artifact.get("artifact_id")
-            or artifact.get("execution_result_ref")
-            or artifact.get("test_result_ref")
-            or ""
-        )
-        if artifact_id:
-            refs.append(artifact_id)
-    return refs
-
-
-def _aggregate_test_status(execution_artifact: dict[str, Any], upstream_artifacts: list[dict[str, Any]]) -> str:
-    statuses = [str(execution_artifact.get("status") or "")]
-    statuses.extend(str(artifact.get("status") or "") for artifact in upstream_artifacts)
-    if any(status == "blocked" for status in statuses):
-        return "blocked"
-    if any(status in {"failed", "fail"} for status in statuses):
-        return "fail"
-    return "pass"
-
-
-def _aggregate_remaining_work(execution_artifact: dict[str, Any], upstream_artifacts: list[dict[str, Any]]) -> list[str]:
-    remaining: list[str] = []
-    for artifact in [execution_artifact, *upstream_artifacts]:
-        status = str(artifact.get("status") or "")
-        if status not in {"blocked", "failed", "fail"}:
-            continue
-        summary = str(artifact.get("summary") or artifact.get("execution_summary") or "")
-        remaining.append(summary or f"{artifact.get('artifact_type', 'artifact')} did not pass")
-    return remaining
-
-
-def _is_tester(agent: AgentWorkflowAgent) -> bool:
-    return agent.role == "tester" or any("test" in capability for capability in agent.capabilities)
-
-
 def _mock_planner_order_payload(
     agent_workflow: "AgentWorkflowSpec",
     request: str,
@@ -716,13 +566,11 @@ def _mock_planner_order_payload(
     round_number: int = 1,
     repo_intelligence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    testers = [agent for agent in agent_workflow.agents if _is_tester(agent)]
     executors = [
         agent
         for agent in agent_workflow.agents
-        if agent.id != agent_workflow.primary_planner_id and not _is_tester(agent)
+        if agent.id != agent_workflow.primary_planner_id
     ]
-    tester_ids = [agent.id for agent in testers]
     repo_hint = _repo_intelligence_hint(repo_intelligence)
     return {
         "artifact_type": "planner_order",
@@ -736,25 +584,10 @@ def _mock_planner_order_payload(
                     "assignee_agent_id": agent.id,
                     "task_summary": f"Mock task for {agent.name or agent.id}. {repo_hint}".strip(),
                     "depends_on": [],
-                    "tester_agent_ids": tester_ids,
                 }
                 for index, agent in enumerate(executors, start=1)
             ],
         },
-    }
-
-
-def _blocked_test_payload(item: "WorkItem", tester_agent_id: str, round_number: int) -> dict[str, Any]:
-    return {
-        "artifact_type": "test_result",
-        "round": round_number,
-        "work_item_id": item.work_item_id,
-        "merge_index": item.merge_index,
-        "tester_agent_id": tester_agent_id,
-        "status": "blocked",
-        "summary": "Tester output did not match test_result schema after one repair.",
-        "remaining_work": ["schema_validation_failed"],
-        "confidence": "low",
     }
 
 def _safe_id(value: str) -> str:

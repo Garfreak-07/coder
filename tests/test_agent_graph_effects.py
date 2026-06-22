@@ -10,7 +10,7 @@ from coder_workbench.actions import ActionResult
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.agent_graph.effects import apply_hidden_effects
 from coder_workbench.agent_graph.runner import AgentGraphRunner
-from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, PlannerInputBundle, PlannerOrder, TestRecord, WorkItem
+from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, PlannerInputBundle, PlannerOrder, WorkItem
 from coder_workbench.core import default_planner_led_agent_workflow
 from coder_workbench.server.storage import RunStore
 
@@ -355,7 +355,6 @@ class EffectSourceExecutor:
                             "assignee_agent_id": "executor",
                             "task_summary": "Run effect source work.",
                             "depends_on": [],
-                            "tester_agent_ids": ["tester"],
                         }
                     ]
                 },
@@ -378,7 +377,31 @@ class EffectSourceExecutor:
             "status": "completed",
             "summary": "Execution produced validated effect inputs.",
             "proposed_changes": self.proposed_changes,
-            "requested_actions": self.requested_actions,
+            "requested_actions": [
+                *self.requested_actions,
+                *[{"action_type": "run_command_sandbox", "command": command} for command in self.check_commands],
+            ],
+            "outputs": ["execution_result_executor-work"],
+            "verification": {
+                "status": "pass",
+                "checks_run": [
+                    {
+                        "check_id": "static",
+                        "kind": "static",
+                        "command": None,
+                        "status": "pass",
+                        "summary": "Execution result contains effect requests.",
+                        "output_ref": None,
+                        "evidence_refs": ["execution_result_executor-work"],
+                    }
+                ],
+                "evidence_refs": ["execution_result_executor-work"],
+                "confidence": "medium",
+                "remaining_work": [],
+                "no_check_rationale": None,
+                "repair_attempted": False,
+                "repair_summary": None,
+            },
         }
         return ExecutionRecord(
             work_item_id=item.work_item_id,
@@ -387,34 +410,6 @@ class EffectSourceExecutor:
             status="completed",
             execution_summary=artifact["summary"],
             execution_result_ref="execution_result_executor-work",
-            artifact_payload=artifact,
-        )
-
-    def create_test_result(
-        self,
-        *,
-        item: WorkItem,
-        execution_artifact: dict[str, Any],
-        tester_agent_id: str,
-        emit=None,
-    ) -> TestRecord:
-        artifact = {
-            "artifact_type": "test_result",
-            "round": int(execution_artifact.get("round") or 1),
-            "work_item_id": item.work_item_id,
-            "merge_index": item.merge_index,
-            "tester_agent_id": tester_agent_id,
-            "status": "pass",
-            "summary": "Tester produced validated check commands.",
-            "check_commands": self.check_commands,
-        }
-        return TestRecord(
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-            tester_agent_id=tester_agent_id,
-            status="pass",
-            test_summary=artifact["summary"],
-            test_result_ref="test_result_executor-work_tester",
             artifact_payload=artifact,
         )
 

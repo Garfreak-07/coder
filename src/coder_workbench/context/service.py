@@ -51,6 +51,10 @@ class ContextService:
         context_budget: ContextBudget | None = None,
         enable_context_compaction: bool | None = None,
     ) -> AgentContextBuildResult:
+        if role not in {"planner", "executor"}:
+            raise ValueError(f"unsupported context role: {role}")
+        if artifact_type == "test_result":
+            raise ValueError("test_result artifacts are no longer supported")
         route = ExtensionRouter(skill_index).route_skills(
             user_request=user_request,
             work_item=item,

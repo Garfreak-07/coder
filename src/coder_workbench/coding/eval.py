@@ -42,7 +42,6 @@ def build_run_coding_eval(data: dict[str, Any], events: list[Any] | None = None)
         return CodingEvaluationReportArtifact().model_dump(mode="json")
 
     execution_cache = graph_run_cache.get("execution_cache") if isinstance(graph_run_cache.get("execution_cache"), dict) else {}
-    test_cache = graph_run_cache.get("test_cache") if isinstance(graph_run_cache.get("test_cache"), dict) else {}
     hidden_effects = graph_run_cache.get("hidden_effects") if isinstance(graph_run_cache.get("hidden_effects"), list) else []
     token_ledger = data.get("token_ledger") if isinstance(data.get("token_ledger"), list) else []
     rounds = data.get("rounds") if isinstance(data.get("rounds"), list) else []
@@ -77,8 +76,8 @@ def build_run_coding_eval(data: dict[str, Any], events: list[Any] | None = None)
     runtime_action_effects = [effect for effect in hidden_effects if effect.get("effect_type") == "runtime_action"]
     blocked_runtime_actions = sum(1 for effect in runtime_action_effects if effect.get("status") == "blocked")
     failed_runtime_actions = sum(1 for effect in runtime_action_effects if effect.get("status") == "failed")
-    tests = [record for records in test_cache.values() if isinstance(records, list) for record in records if isinstance(record, dict)]
-    test_pass_count = sum(1 for record in tests if record.get("status") == "pass")
+    verification_statuses = [_verification_status(record) for record in execution_cache.values() if isinstance(record, dict)]
+    verification_pass_count = sum(1 for status in verification_statuses if status in {"pass", "skipped"})
     interrupts = graph_run_cache.get("interrupts") if isinstance(graph_run_cache.get("interrupts"), list) else []
     human_prompts = [event for event in (events or []) if getattr(event, "type", "") == "planner.human_prompt"]
     estimated_tokens = 0
@@ -99,10 +98,10 @@ def build_run_coding_eval(data: dict[str, Any], events: list[Any] | None = None)
     )
     debug_finding_count = max(len(debug_findings), len(debug_finding_effects))
     report = CodingEvaluationReportArtifact(
-        task_pass_rate=1.0 if _run_succeeded(execution_cache, tests) and effect_gate_passed else 0.0,
+        task_pass_rate=1.0 if _run_succeeded(execution_cache) and effect_gate_passed else 0.0,
         patch_created_rate=patch_created / total_items,
         patch_apply_rate=(sandbox_apply_passed / len(sandbox_apply_effects)) if sandbox_apply_effects else (1.0 if patch_created else 0.0),
-        tests_pass_rate=(test_pass_count / len(tests)) if tests else (1.0 if not check_effects else checks_passed / max(1, len(check_effects))),
+        tests_pass_rate=(verification_pass_count / len(verification_statuses)) if verification_statuses else (1.0 if not check_effects else checks_passed / max(1, len(check_effects))),
         forbidden_change_rate=0.0,
         planner_rounds=len(rounds) or int(graph_run_cache.get("round") or 0),
         worker_interrupt_rate=len(interrupts) / total_items,
@@ -130,9 +129,15 @@ def build_run_coding_eval(data: dict[str, Any], events: list[Any] | None = None)
     return report.model_dump(mode="json")
 
 
-def _run_succeeded(execution_cache: dict[str, Any], tests: list[dict[str, Any]]) -> bool:
-    if any(record.get("status") in {"blocked", "failed"} for record in execution_cache.values() if isinstance(record, dict)):
+def _run_succeeded(execution_cache: dict[str, Any]) -> bool:
+    if any(record.get("status") == "blocked" for record in execution_cache.values() if isinstance(record, dict)):
         return False
-    if any(record.get("status") in {"fail", "blocked"} for record in tests):
+    if any(_verification_status(record) in {"fail", "blocked"} for record in execution_cache.values() if isinstance(record, dict)):
         return False
     return True
+
+
+def _verification_status(record: dict[str, Any]) -> str:
+    artifact = record.get("artifact_payload") if isinstance(record.get("artifact_payload"), dict) else {}
+    verification = artifact.get("verification") if isinstance(artifact.get("verification"), dict) else {}
+    return str(verification.get("status") or "")

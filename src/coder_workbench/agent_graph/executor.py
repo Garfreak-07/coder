@@ -9,7 +9,6 @@ from coder_workbench.agent_graph.schema import (
     ExecutionRecord,
     PlannerInputBundle,
     PlannerOrder,
-    TestRecord,
     WorkItem,
 )
 from coder_workbench.budget import BudgetBroker
@@ -44,17 +43,6 @@ class AgentGraphExecutorProtocol(Protocol):
         envelope: AgentTaskEnvelope,
         emit: Any | None = None,
     ) -> ExecutionRecord:
-        ...
-
-    def create_test_result(
-        self,
-        *,
-        item: WorkItem,
-        execution_artifact: dict[str, Any],
-        upstream_artifacts: list[dict[str, Any]] | None = None,
-        tester_agent_id: str,
-        emit: Any | None = None,
-    ) -> TestRecord:
         ...
 
     def create_planner_decision(
@@ -126,28 +114,6 @@ class AgentGraphExecutor:
             item=item,
             envelope=envelope,
             model=self._chat_model(),
-            emit=emit,
-        )
-
-    def create_test_result(
-        self,
-        *,
-        item: WorkItem,
-        execution_artifact: dict[str, Any],
-        upstream_artifacts: list[dict[str, Any]] | None = None,
-        tester_agent_id: str,
-        emit: Any | None = None,
-    ) -> TestRecord:
-        return self.agent_run.engine_registry.tester().run_test(
-            agent_workflow=self.agent_workflow,
-            item=item,
-            execution_artifact=execution_artifact,
-            upstream_artifacts=upstream_artifacts,
-            tester_agent_id=tester_agent_id,
-            runtime_settings=self.runtime_settings,
-            model_factory=self.model_factory,
-            budget_broker=self.budget_broker,
-            run_id=self.run_id,
             emit=emit,
         )
 

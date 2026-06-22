@@ -8,7 +8,7 @@ from coder_workbench.agent_graph.wave_executor import WaveExecutor
 
 
 class WaveExecutorTests(unittest.TestCase):
-    def test_wave_executor_converts_worker_exception_to_failed_outcome(self) -> None:
+    def test_wave_executor_converts_worker_exception_to_blocked_outcome(self) -> None:
         def boom(context):
             raise RuntimeError("boom")
 
@@ -23,7 +23,7 @@ class WaveExecutorTests(unittest.TestCase):
         outcomes = WaveExecutor(boom).run_wave(wave, [{"item": item, "envelope": {}}])
 
         self.assertEqual(len(outcomes), 1)
-        self.assertEqual(outcomes[0].execution.status, "failed")
+        self.assertEqual(outcomes[0].execution.status, "blocked")
         self.assertIn("boom", outcomes[0].execution.execution_summary)
 
 

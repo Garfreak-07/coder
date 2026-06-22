@@ -19,7 +19,7 @@ class ArtifactRepairPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(outcome.status, "ok")
-        self.assertEqual(outcome.stage, "raw_parse")
+        self.assertEqual(outcome.stage, "deterministic_schema_patch")
         self.assertEqual(outcome.artifact["summary"], "Done.")
 
     def test_missing_safe_fields_are_deterministically_filled(self) -> None:

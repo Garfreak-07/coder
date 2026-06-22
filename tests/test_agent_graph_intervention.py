@@ -11,7 +11,6 @@ from coder_workbench.agent_graph.schema import (
     ExecutionRecord,
     PlannerInputBundle,
     PlannerOrder,
-    TestRecord,
     WorkItem,
 )
 from coder_workbench.core import default_planner_led_agent_workflow
@@ -245,16 +244,6 @@ class InterventionExecutor:
             artifact_payload=artifact,
         )
 
-    def create_test_result(
-        self,
-        *,
-        item: WorkItem,
-        execution_artifact: dict[str, Any],
-        tester_agent_id: str,
-        emit=None,
-    ) -> TestRecord:
-        raise AssertionError("testers are not used in these plans")
-
     def create_planner_decision(
         self,
         *,
@@ -344,9 +333,6 @@ class MultiRoundExecutor:
             execution_result_ref=f"execution_result_{envelope.round}_{item.work_item_id}",
             artifact_payload=artifact,
         )
-
-    def create_test_result(self, **kwargs) -> TestRecord:
-        raise AssertionError("testers are not used in this plan")
 
     def create_planner_decision(
         self,
@@ -520,7 +506,6 @@ def _work_item(work_item_id: str, merge_index: int, *, depends_on: list[str] | N
         "assignee_agent_id": "executor",
         "task_summary": f"Run {work_item_id}.",
         "depends_on": depends_on or [],
-        "tester_agent_ids": [],
     }
 
 

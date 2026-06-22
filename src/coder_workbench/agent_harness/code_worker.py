@@ -5,6 +5,8 @@ from typing import Any
 from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.repair import parse_json_object
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, WorkItem
+from coder_workbench.agent_harness.execution_loop import ExecutionLoop
+from coder_workbench.agent_harness.execution_memory import ExecutionRunMemory
 from coder_workbench.agent_harness.repair import ArtifactRepairService
 from coder_workbench.agent_harness.self_check import ExecutorSelfChecker, harness_self_check_enabled
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
@@ -28,18 +30,32 @@ class CodeWorkerHarness(AgentHarness):
         emit: Any | None = None,
         prompt: str | None = None,
     ) -> ExecutionRecord:
-        payload = self._payload_from_model_or_mock(
-            item=item,
-            envelope=envelope,
-            coding_context_packet=coding_context_packet,
-            emit=emit,
-            prompt=prompt,
-        )
+        loop_envelope = envelope
+        if coding_context_packet is not None and not envelope.coding_context_packet:
+            loop_envelope = envelope.model_copy(update={"coding_context_packet": coding_context_packet})
+        try:
+            payload = ExecutionLoop(
+                execute_payload=lambda: self._payload_from_model_or_mock(
+                    item=item,
+                    envelope=loop_envelope,
+                    coding_context_packet=coding_context_packet,
+                    emit=emit,
+                    prompt=prompt,
+                )
+            ).run(
+                item=item,
+                envelope=loop_envelope,
+                model=self.model,
+                execution_memory=ExecutionRunMemory(),
+                emit=emit,
+            )
+        except ArtifactValidationError:
+            payload = _blocked_payload(item, loop_envelope.round, "Executor output failed schema validation after one repair.")
         if self.enable_self_check:
             checked = ExecutorSelfChecker().check(
                 payload,
                 item=item,
-                envelope=envelope,
+                envelope=loop_envelope,
                 model=self.model,
                 emit=emit,
             )
@@ -53,20 +69,7 @@ class CodeWorkerHarness(AgentHarness):
                 execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
                 artifact_payload=artifact,
             )
-        payload = _with_forced_fields(
-            payload,
-            {
-                "artifact_type": "execution_result",
-                "round": envelope.round,
-                "work_item_id": item.work_item_id,
-                "merge_index": item.merge_index,
-                "agent_id": item.assignee_agent_id,
-            },
-        )
-        try:
-            artifact = validate_artifact(payload, expected_type="execution_result")
-        except ArtifactValidationError:
-            artifact = _blocked_payload(item, envelope.round, "Executor output failed schema validation after one repair.")
+        artifact = validate_artifact(payload, expected_type="execution_result")
         return ExecutionRecord(
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
@@ -87,8 +90,6 @@ class CodeWorkerHarness(AgentHarness):
         prompt: str | None,
     ) -> dict[str, Any]:
         if not self.model:
-            if coding_context_packet is not None and not coding_context_packet.get("included_files") and item.task_summary:
-                return _blocked_payload(item, envelope.round, "Coding context was insufficient for this work item.")
             return {
                 "artifact_type": "execution_result",
                 "round": envelope.round,
@@ -99,11 +100,11 @@ class CodeWorkerHarness(AgentHarness):
                 "created_files": [],
                 "deleted_files": [],
                 "patch_refs": [],
-                "outputs": envelope.upstream_refs,
+                "outputs": envelope.upstream_refs or [f"execution:{item.work_item_id}:dry-run"],
                 "unexpected_issues": [],
                 "out_of_contract": False,
                 "needs_planner_decision": False,
-                "tester_notes": ["No real file mutation was performed in mock mode."],
+                "no_op_rationale": "No real file mutation was performed in mock mode.",
             }
         _emit(
             emit,
@@ -118,20 +119,16 @@ class CodeWorkerHarness(AgentHarness):
         content = str(getattr(response, "content", response))
         payload = parse_json_object(content)
         if payload is not None:
-            try:
-                artifact = validate_artifact(payload, expected_type="execution_result")
-                _emit(
-                    emit,
-                    "agent_graph.agent_call.completed",
-                    "AgentGraph model call completed",
-                    agent_id=item.assignee_agent_id,
-                    artifact_type="execution_result",
-                    work_item_id=item.work_item_id,
-                    merge_index=item.merge_index,
-                )
-                return artifact
-            except ArtifactValidationError as exc:
-                _emit_schema_failed(emit, item, exc.errors)
+            _emit(
+                emit,
+                "agent_graph.agent_call.completed",
+                "AgentGraph model call completed",
+                agent_id=item.assignee_agent_id,
+                artifact_type="execution_result",
+                work_item_id=item.work_item_id,
+                merge_index=item.merge_index,
+            )
+            return payload
         else:
             _emit_schema_failed(emit, item, [{"loc": ["response"], "msg": "model output was not a JSON object"}])
         repaired = ArtifactRepairService().repair_once(
@@ -172,6 +169,7 @@ def _executor_prompt(item: WorkItem, envelope: AgentTaskEnvelope, coding_context
         [
             "Return JSON only with artifact_type='execution_result'.",
             "Do not ask the human. Use proposed_changes for file edits.",
+            "Include verification with status pass, fail, blocked, or skipped.",
             f"Work item: {item.model_dump(mode='json')}",
             f"Agent task envelope: {envelope.model_dump(mode='json')}",
             f"Coding context packet: {coding_context_packet or {}}",
@@ -199,6 +197,16 @@ def _blocked_payload(item: WorkItem, round_number: int, summary: str) -> dict[st
         ),
         "candidate_options": [],
         "continue_without_human_possible": not schema_blocker,
+        "verification": {
+            "status": "blocked",
+            "checks_run": [],
+            "evidence_refs": [],
+            "confidence": "low",
+            "remaining_work": [summary],
+            "no_check_rationale": None,
+            "repair_attempted": False,
+            "repair_summary": None,
+        },
     }
 
 

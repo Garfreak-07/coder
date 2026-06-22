@@ -60,27 +60,6 @@ def validate_planner_order(agent_workflow: AgentWorkflowSpec, planner_order: Pla
                 )
             )
 
-        reachable_from_assignee = _reachable_agent_ids(agent_workflow, item.assignee_agent_id)
-        for tester_id in item.tester_agent_ids:
-            if tester_id not in agent_by_id:
-                issues.append(
-                    _issue(
-                        "planner_order_tester_not_found",
-                        f'PlannerOrder references unknown tester "{tester_id}".',
-                        "work_item",
-                        item.work_item_id,
-                    )
-                )
-            elif tester_id not in reachable_from_assignee:
-                issues.append(
-                    _issue(
-                        "planner_order_tester_not_connected",
-                        f'Tester "{tester_id}" is not reachable from assignee "{item.assignee_agent_id}".',
-                        "work_item",
-                        item.work_item_id,
-                    )
-                )
-
         for upstream_id in item.depends_on:
             if upstream_id not in work_item_ids:
                 issues.append(

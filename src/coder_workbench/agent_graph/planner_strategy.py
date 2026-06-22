@@ -67,8 +67,6 @@ class SimplePlannerStrategy:
         executors = _executor_agents(context.agent_workflow)
         if self.single_executor:
             executors = executors[:1]
-        testers = _tester_agents(context.agent_workflow)
-        tester_ids = [agent.id for agent in testers]
         repo_hint = _repo_hint(context.repo_intelligence)
         work_items = [
             {
@@ -77,7 +75,6 @@ class SimplePlannerStrategy:
                 "assignee_agent_id": agent.id,
                 "task_summary": f"Local planner task for {agent.name or agent.id}. {repo_hint}".strip(),
                 "depends_on": [],
-                "tester_agent_ids": tester_ids,
             }
             for index, agent in enumerate(executors, start=1)
         ]
@@ -129,8 +126,8 @@ def _local_decision(
     planner_human_response: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     has_interrupts = bool(bundle.interrupts)
-    has_failed_tests = any(item.execution_status == "failed" or item.test_status == "fail" for item in bundle.items)
-    has_blocked_work = any(item.execution_status == "blocked" or item.test_status == "blocked" for item in bundle.items)
+    has_failed_verification = any(item.verification_status == "fail" for item in bundle.items)
+    has_blocked_work = any(item.execution_status == "blocked" or item.verification_status == "blocked" for item in bundle.items)
     has_debug_findings = any(effect.get("effect_type") == "debug_finding" for effect in bundle.effects)
     has_failed_check_effects = any(
         effect.get("effect_type") == "optional_check_command"
@@ -156,7 +153,11 @@ def _local_decision(
     )
     next_action = (
         "continue"
-        if can_continue_from_interrupts or has_failed_tests or has_debug_findings or has_failed_check_effects or has_failed_runtime_actions
+        if can_continue_from_interrupts
+        or has_failed_verification
+        or has_debug_findings
+        or has_failed_check_effects
+        or has_failed_runtime_actions
         else "ask_human"
         if has_interrupts or has_blocked_work or has_blocked_check_effects or has_blocked_runtime_actions
         else "finish"
@@ -172,8 +173,8 @@ def _local_decision(
         if has_failed_runtime_actions
         else "Runtime action requires approval before it can continue."
         if has_blocked_runtime_actions
-        else "Tests failed; local PlannerStrategy will replan inside the existing RunContract."
-        if has_failed_tests
+        else "Execution verification failed; local PlannerStrategy will replan inside the existing RunContract."
+        if has_failed_verification
         else "Executor requested Planner intervention."
         if has_interrupts
         else "Work is blocked and requires Planner or user judgment."
@@ -181,7 +182,7 @@ def _local_decision(
         else (
             "Planner human response recorded; local PlannerStrategy resume completed."
             if planner_human_response
-            else "Local PlannerStrategy execution and test artifacts are complete."
+            else "Local PlannerStrategy execution artifacts are complete."
         )
     )
     payload = {
@@ -206,8 +207,8 @@ def _local_decision(
             if has_failed_check_effects
             else "Replan around failed runtime action evidence."
             if has_failed_runtime_actions
-            else "Fix failing test evidence and rerun checks."
-            if has_failed_tests
+            else "Fix failed execution verification and rerun checks."
+            if has_failed_verification
             else "Resolve the blocked work item."
             if next_action == "continue"
             else ""
@@ -226,19 +227,8 @@ def _executor_agents(agent_workflow: AgentWorkflowSpec) -> list[AgentWorkflowAge
     return [
         agent
         for agent in agent_workflow.agents
-        if agent.id != agent_workflow.primary_planner_id and not _is_tester(agent)
+        if agent.id != agent_workflow.primary_planner_id
     ]
-
-
-def _tester_agents(agent_workflow: AgentWorkflowSpec) -> list[AgentWorkflowAgent]:
-    return [agent for agent in agent_workflow.agents if _is_tester(agent)]
-
-
-def _is_tester(agent: AgentWorkflowAgent) -> bool:
-    return agent.role == "tester" or any(
-        capability in agent.capabilities
-        for capability in {"model_review", "optional_check_command", "return_test_result"}
-    )
 
 
 def _repo_hint(repo_intelligence: dict[str, Any] | None) -> str:

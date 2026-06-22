@@ -5,12 +5,12 @@ import unittest
 from typing import Any
 
 from coder_workbench.agent_graph.runner import AgentGraphRunner
-from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, PlannerInputBundle, PlannerOrder, TestRecord, WorkItem
+from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, PlannerInputBundle, PlannerOrder, WorkItem
 from coder_workbench.core import default_planner_led_agent_workflow
 
 
 class AgentGraphCodingHarnessTests(unittest.TestCase):
-    def test_failed_test_result_creates_debug_finding_effect(self) -> None:
+    def test_failed_execution_verification_creates_debug_finding_effect(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = AgentGraphRunner(
                 default_planner_led_agent_workflow(),
@@ -40,7 +40,6 @@ class FailedTestExecutor:
                             "assignee_agent_id": "executor",
                             "task_summary": "Create failing evidence.",
                             "depends_on": [],
-                            "tester_agent_ids": ["tester"],
                         }
                     ]
                 },
@@ -54,45 +53,41 @@ class FailedTestExecutor:
             "work_item_id": item.work_item_id,
             "merge_index": item.merge_index,
             "agent_id": item.assignee_agent_id,
-            "status": "completed",
-            "summary": "Execution completed.",
+            "status": "blocked",
+            "summary": "AssertionError: expected valid user.",
+            "unexpected_issues": ["verification_failed"],
+            "remaining_work": ["Fix failing assertion."],
+            "needs_planner_decision": True,
+            "blocker_type": "verification_failed",
+            "continue_without_human_possible": True,
+            "verification": {
+                "status": "fail",
+                "checks_run": [
+                    {
+                        "check_id": "unit",
+                        "kind": "command",
+                        "command": "python -m unittest discover -s tests",
+                        "status": "fail",
+                        "summary": "AssertionError: expected valid user.",
+                        "output_ref": "check_output_round_1",
+                        "evidence_refs": ["check_output_round_1"],
+                    }
+                ],
+                "evidence_refs": ["check_output_round_1"],
+                "confidence": "high",
+                "remaining_work": ["Fix failing assertion."],
+                "no_check_rationale": None,
+                "repair_attempted": True,
+                "repair_summary": "Verification failed after repair.",
+            },
         }
         return ExecutionRecord(
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
             agent_id=item.assignee_agent_id,
-            status="completed",
+            status="blocked",
             execution_summary=artifact["summary"],
             execution_result_ref="execution_result_executor-work",
-            artifact_payload=artifact,
-        )
-
-    def create_test_result(
-        self,
-        *,
-        item: WorkItem,
-        execution_artifact: dict[str, Any],
-        tester_agent_id: str,
-        emit=None,
-    ) -> TestRecord:
-        artifact = {
-            "artifact_type": "test_result",
-            "round": 1,
-            "work_item_id": item.work_item_id,
-            "merge_index": item.merge_index,
-            "tester_agent_id": tester_agent_id,
-            "status": "fail",
-            "summary": "AssertionError: expected valid user.",
-            "check_commands": ["python -m unittest discover -s tests"],
-            "confidence": "high",
-        }
-        return TestRecord(
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-            tester_agent_id=tester_agent_id,
-            status="fail",
-            test_summary=artifact["summary"],
-            test_result_ref="test_result_executor-work_tester",
             artifact_payload=artifact,
         )
 

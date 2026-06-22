@@ -12,7 +12,6 @@ RoundStatus = Literal[
     "decision",
     "completed",
     "blocked",
-    "failed",
 ]
 
 

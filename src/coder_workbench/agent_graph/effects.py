@@ -334,13 +334,14 @@ def _handle_patch_previews(
 
 def _requested_check_commands_from_artifacts(cache: GraphRunCache) -> list[dict[str, Any]]:
     commands: list[dict[str, Any]] = []
-    for records in cache.test_cache.values():
-        for record in records:
-            artifact = record.artifact_payload or {}
-            for command in _requested_check_commands(artifact.get("check_commands")):
-                command.setdefault("work_item_id", artifact.get("work_item_id") or record.work_item_id)
-                command.setdefault("tester_agent_id", artifact.get("tester_agent_id") or record.tester_agent_id)
-                commands.append(command)
+    for record in cache.execution_cache.values():
+        artifact = record.artifact_payload or {}
+        for command in _requested_check_commands(artifact.get("requested_actions")):
+            command.setdefault("work_item_id", artifact.get("work_item_id") or record.work_item_id)
+            commands.append(command)
+        for command in _requested_check_commands(artifact.get("check_commands")):
+            command.setdefault("work_item_id", artifact.get("work_item_id") or record.work_item_id)
+            commands.append(command)
     return commands
 
 

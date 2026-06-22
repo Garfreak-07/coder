@@ -182,7 +182,6 @@ def fingerprint_planner_order(order: PlannerOrder) -> str:
             "assignee_agent_id": item.assignee_agent_id,
             "task_summary": item.task_summary,
             "depends_on": item.depends_on,
-            "tester_agent_ids": item.tester_agent_ids,
         }
         for item in order.plan_graph.work_items
     ]

@@ -6,7 +6,7 @@ from coder_workbench.agent_harness.artifact_repair_pipeline import ArtifactRepai
 
 
 class ArtifactRepairService:
-    """Centralized one-shot artifact repair for Planner/Executor/Tester engines."""
+    """Centralized one-shot artifact repair for Planner and Executor engines."""
 
     def repair_once(
         self,

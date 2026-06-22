@@ -275,7 +275,6 @@ def _work_item() -> WorkItem:
         assignee_agent_id="executor",
         task_summary="Do work.",
         depends_on=[],
-        tester_agent_ids=[],
     )
 
 

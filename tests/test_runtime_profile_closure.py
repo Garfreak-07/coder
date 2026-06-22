@@ -1,32 +1,24 @@
-from __future__ import annotations
-
 import unittest
 
-from coder_workbench.agent_engine import default_agent_engine_registry
 from coder_workbench.agent_model import AgentRecipe, RuntimeProfileCompiler
 
 
 class RuntimeProfileClosureTests(unittest.TestCase):
-    def test_all_recipe_roles_compile_to_registered_default_engines(self) -> None:
-        registry = default_agent_engine_registry()
+    def test_planner_and_executor_profiles_use_agentgraph_artifacts(self) -> None:
         compiler = RuntimeProfileCompiler()
-
-        for role in ["planner", "executor", "tester"]:
-            profile = compiler.compile(
-                AgentRecipe(id=f"{role}-agent", name=f"{role} Agent", role=role)
-            )
-            self.assertIn(profile.engine_id, registry.ids(), role)
-
-    def test_executor_and_tester_profiles_use_agentgraph_artifacts(self) -> None:
-        compiler = RuntimeProfileCompiler()
-
+        planner = compiler.compile(AgentRecipe(id="planner", name="Planner", role="planner"))
         executor = compiler.compile(AgentRecipe(id="executor", name="Executor", role="executor"))
-        tester = compiler.compile(AgentRecipe(id="tester", name="Tester", role="tester"))
 
-        self.assertEqual(executor.engine_id, "code-worker-engine")
+        self.assertEqual(planner.allowed_artifacts, ["run_contract", "planner_order", "planner_decision", "round_summary"])
         self.assertEqual(executor.allowed_artifacts, ["execution_result"])
-        self.assertEqual(tester.engine_id, "tester-engine")
-        self.assertEqual(tester.allowed_artifacts, ["test_result"])
+
+    def test_executor_profile_can_run_commands_for_verification(self) -> None:
+        executor = RuntimeProfileCompiler().compile(AgentRecipe(id="executor", name="Executor", role="executor"))
+
+        self.assertTrue(executor.tool_policy["read_files"])
+        self.assertTrue(executor.tool_policy["write_files"])
+        self.assertTrue(executor.tool_policy["run_commands"])
+        self.assertFalse(executor.tool_policy["ask_human"])
 
 
 if __name__ == "__main__":

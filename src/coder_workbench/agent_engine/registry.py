@@ -6,7 +6,6 @@ from .runtime import (
     AgentEngine,
     CodeWorkerEngine,
     PlannerEngine,
-    TesterEngine,
 )
 
 
@@ -19,7 +18,6 @@ class AgentEngineRegistry:
                 or [
                     PlannerEngine(),
                     CodeWorkerEngine(),
-                    TesterEngine(),
                 ]
             )
         }
@@ -35,9 +33,6 @@ class AgentEngineRegistry:
 
     def planner(self) -> PlannerEngine:
         return self.get(PlannerEngine.id)  # type: ignore[return-value]
-
-    def tester(self) -> TesterEngine:
-        return self.get(TesterEngine.id)  # type: ignore[return-value]
 
 
 def default_agent_engine_registry() -> AgentEngineRegistry:

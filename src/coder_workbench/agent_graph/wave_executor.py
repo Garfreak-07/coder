@@ -65,10 +65,10 @@ class WaveExecutor:
             "wave_index": getattr(wave, "wave_index", None),
             "attempts": {},
             "completed": 0,
-            "failed": 0,
             "blocked": 0,
             "cancelled": 0,
             "timed_out": 0,
+            "retried": 0,
         }
         with ThreadPoolExecutor(max_workers=max(1, len(wave.items))) as pool:
             futures = {
@@ -81,7 +81,11 @@ class WaveExecutor:
                     outcome, attempts = future.result(timeout=max(0.001, float(self.runtime_policy.timeout_seconds)))
                 except TimeoutError:
                     future.cancel()
-                    outcome = _blocked_outcome(item, f"Work item timed out after {self.runtime_policy.timeout_seconds} seconds.", "work_item_timeout")
+                    outcome = _blocked_outcome(
+                        item,
+                        f"Work item timed out after {self.runtime_policy.timeout_seconds} seconds.",
+                        "work_item_timeout",
+                    )
                     attempts = [
                         WorkItemAttempt(
                             attempt=1,
@@ -101,7 +105,7 @@ class WaveExecutor:
                     if self.runtime_policy.allow_partial_result and isinstance(partial, WorkItemOutcome):
                         outcome = partial
                     else:
-                        outcome = _failed_outcome(item, f"Work item failed: {exc}", error_code)
+                        outcome = _blocked_outcome(item, f"Work item blocked by runtime exception: {exc}", error_code)
                     attempts = [
                         WorkItemAttempt(
                             attempt=1,
@@ -113,17 +117,16 @@ class WaveExecutor:
                             artifact_ref=outcome.execution.execution_result_ref,
                         )
                     ]
-                    _emit(self.emit, "agent_task.attempt.failed", outcome.execution.execution_summary, work_item_id=item.work_item_id)
+                    _emit(self.emit, "agent_task.attempt.blocked", outcome.execution.execution_summary, work_item_id=item.work_item_id)
                 outcomes.append(outcome)
                 diagnostics["attempts"][item.work_item_id] = [asdict(attempt) for attempt in attempts]
+                diagnostics["retried"] += max(0, len(attempts) - 1)
                 if _is_cancelled(outcome):
                     diagnostics["cancelled"] += 1
                 elif outcome.execution.status == "completed":
                     diagnostics["completed"] += 1
-                elif outcome.execution.status == "blocked":
-                    diagnostics["blocked"] += 1
                 else:
-                    diagnostics["failed"] += 1
+                    diagnostics["blocked"] += 1
         self.last_diagnostics = diagnostics
         _emit(self.emit, "agent_graph.wave.diagnostics", "Wave diagnostics recorded", diagnostics=diagnostics)
         return outcomes
@@ -164,9 +167,9 @@ class WaveExecutor:
                 if self.runtime_policy.allow_partial_result and exc.partial_outcome is not None:
                     outcome = exc.partial_outcome
                 else:
-                    outcome = _failed_outcome(item, f"Work item failed: {exc}", exc.error_code)
+                    outcome = _blocked_outcome(item, f"Work item blocked: {exc}", exc.error_code)
             except Exception as exc:
-                outcome = _failed_outcome(item, f"Work item failed: {exc}", "work_item_exception")
+                outcome = _blocked_outcome(item, f"Work item blocked by runtime exception: {exc}", "work_item_exception")
 
             error_code = _outcome_error_code(outcome)
             attempts.append(
@@ -191,8 +194,8 @@ class WaveExecutor:
                 return outcome, attempts
             _emit(
                 self.emit,
-                "agent_task.attempt.failed",
-                f"Work item attempt {attempt_number} did not complete",
+                "agent_task.attempt.blocked",
+                f"Work item attempt {attempt_number} blocked",
                 work_item_id=item.work_item_id,
                 attempt=attempt_number,
                 status=outcome.execution.status,
@@ -209,33 +212,7 @@ class WaveExecutor:
                 )
                 continue
             return outcome, attempts
-        return _failed_outcome(item, "Work item failed after retries.", "work_item_retries_exhausted"), attempts
-
-
-def _failed_outcome(item: Any, summary: str, error_code: str) -> WorkItemOutcome:
-    return WorkItemOutcome(
-        work_item_id=item.work_item_id,
-        merge_index=item.merge_index,
-        execution=ExecutionRecord(
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-            agent_id=item.assignee_agent_id,
-            status="failed",
-            execution_summary=summary,
-            execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
-            artifact_payload={
-                "artifact_type": "execution_result",
-                "round": 1,
-                "work_item_id": item.work_item_id,
-                "merge_index": item.merge_index,
-                "agent_id": item.assignee_agent_id,
-                "status": "failed",
-                "summary": summary,
-                "unexpected_issues": [error_code],
-            },
-        ),
-        tests=[],
-    )
+        return _blocked_outcome(item, "Work item blocked after retry exhaustion.", "work_item_retries_exhausted"), attempts
 
 
 def _blocked_outcome(item: Any, summary: str, error_code: str) -> WorkItemOutcome:
@@ -258,12 +235,22 @@ def _blocked_outcome(item: Any, summary: str, error_code: str) -> WorkItemOutcom
                 "status": "blocked",
                 "summary": summary,
                 "unexpected_issues": [error_code],
+                "remaining_work": [summary],
                 "needs_planner_decision": True,
                 "blocker_type": "technical_blocker",
                 "continue_without_human_possible": True,
+                "verification": {
+                    "status": "blocked",
+                    "checks_run": [],
+                    "evidence_refs": [],
+                    "confidence": "low",
+                    "remaining_work": [summary],
+                    "no_check_rationale": None,
+                    "repair_attempted": False,
+                    "repair_summary": None,
+                },
             },
         ),
-        tests=[],
     )
 
 

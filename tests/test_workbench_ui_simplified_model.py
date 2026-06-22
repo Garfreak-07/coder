@@ -32,19 +32,19 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
 
         self.assertIn('name: "Planner"', source)
         self.assertIn('name: "Executor"', source)
-        self.assertIn('name: "Tester"', source)
         self.assertIn('role_card: "executor"', source)
-        self.assertIn('role_card: "tester"', source)
         self.assertNotIn("Planner Agent", source)
         self.assertNotIn("Executor Agent", source)
         self.assertNotIn("Tester Agent", source)
+        self.assertNotIn('name: "Tester"', source)
+        self.assertNotIn('role_card: "tester"', source)
 
-    def test_canvas_role_labels_are_only_planner_executor_tester(self) -> None:
+    def test_canvas_role_labels_are_only_planner_executor(self) -> None:
         source = (FRONTEND / "workflowGraph.ts").read_text(encoding="utf-8")
 
         self.assertIn('planner: "Planner"', source)
         self.assertIn('executor: "Executor"', source)
-        self.assertIn('tester: "Tester"', source)
+        self.assertNotIn('tester: "Tester"', source)
         self.assertNotIn("can ask user", source)
 
     def test_removed_workbench_components_are_not_referenced(self) -> None:
@@ -114,6 +114,7 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
             "Only Planner can ask the user",
             "Executors return execution results",
             "Testers return evidence",
+            "Executor and Tester",
             "Planner reviews every round",
         ]
         offenders: list[str] = []
@@ -152,7 +153,7 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
         self.assertIn(".agent-workflow-node", styles)
         self.assertIn(".agent-role-planner", styles)
         self.assertIn(".agent-role-executor", styles)
-        self.assertIn(".agent-role-tester", styles)
+        self.assertNotIn(".agent-role-tester", styles)
         self.assertIn(".workflow-minimap svg", styles)
 
     def test_workflow_selector_uses_saved_agent_workflows(self) -> None:

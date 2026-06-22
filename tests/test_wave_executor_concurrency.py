@@ -79,7 +79,6 @@ def _completed(item: WorkItem) -> WorkItemOutcome:
             execution_summary="done",
             execution_result_ref=f"execution_result_{item.work_item_id}",
         ),
-        tests=[],
     )
 
 
@@ -94,9 +93,22 @@ def _blocked(item: WorkItem, summary: str, error_code: str) -> WorkItemOutcome:
             status="blocked",
             execution_summary=summary,
             execution_result_ref=f"execution_result_{item.work_item_id}",
-            artifact_payload={"unexpected_issues": [error_code], "status": "blocked", "summary": summary},
+            artifact_payload={
+                "artifact_type": "execution_result",
+                "status": "blocked",
+                "summary": summary,
+                "unexpected_issues": [error_code],
+                "blocker_type": "technical_blocker",
+                "needs_planner_decision": True,
+                "verification": {
+                    "status": "blocked",
+                    "checks_run": [],
+                    "evidence_refs": [],
+                    "confidence": "low",
+                    "remaining_work": [summary],
+                },
+            },
         ),
-        tests=[],
     )
 
 

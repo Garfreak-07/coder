@@ -19,7 +19,7 @@ class AgentArchetypeTests(unittest.TestCase):
     def test_role_card_catalog_contains_ordinary_user_choices(self) -> None:
         labels = {card["label"] for card in role_card_catalog()}
 
-        self.assertEqual(labels, {"Executor", "Tester"})
+        self.assertEqual(labels, {"Executor"})
 
     def test_role_card_payload_compiles_default_role_and_capabilities(self) -> None:
         payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
@@ -36,7 +36,10 @@ class AgentArchetypeTests(unittest.TestCase):
 
         self.assertEqual(validation.status, "pass")
         self.assertEqual(spec.agents[1].role, "executor")
-        self.assertEqual(spec.agents[1].capabilities, ["follow_planner_order", "modify_files", "return_execution_result"])
+        self.assertEqual(
+            spec.agents[1].capabilities,
+            ["follow_planner_order", "modify_files", "optional_check_command", "return_execution_result"],
+        )
 
     def test_runtime_profile_compiles_runtime_managed_internals(self) -> None:
         payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
@@ -60,7 +63,7 @@ class AgentArchetypeApiTests(unittest.TestCase):
             role_cards = client.get("/api/v2/agent-role-cards")
 
             self.assertEqual(role_cards.status_code, 200)
-            self.assertEqual(len(role_cards.json()["role_cards"]), 2)
+            self.assertEqual(len(role_cards.json()["role_cards"]), 1)
 
             payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
             payload["agents"][1]["role_card"] = "executor"

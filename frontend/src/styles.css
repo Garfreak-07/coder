@@ -1096,11 +1096,6 @@ label {
   border-color: #60a5fa;
 }
 
-.agent-role-tester {
-  background: #164538;
-  border-color: #34d399;
-}
-
 .agent-loop-edge path {
   stroke-dasharray: 6 4;
 }

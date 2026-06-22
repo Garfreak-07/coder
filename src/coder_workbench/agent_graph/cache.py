@@ -11,7 +11,6 @@ from coder_workbench.agent_graph.schema import (
     PlanCache,
     PlannerInputInterrupt,
     PlannerOrder,
-    TestRecord,
     WorkItem,
 )
 
@@ -24,7 +23,6 @@ class GraphRunCache(BaseModel):
     plan_cache: PlanCache | None = None
     agent_tasks: dict[str, AgentTaskEnvelope] = Field(default_factory=dict)
     execution_cache: dict[str, ExecutionRecord] = Field(default_factory=dict)
-    test_cache: dict[str, list[TestRecord]] = Field(default_factory=dict)
     skill_index: dict[str, Any] | None = None
     skill_routes: dict[str, dict[str, Any]] = Field(default_factory=dict)
     context_packets_v2: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -103,10 +101,6 @@ class GraphRunCache(BaseModel):
         self._set_work_item_status(record.work_item_id, record.status)
         return record
 
-    def record_test(self, record: TestRecord) -> TestRecord:
-        self.test_cache.setdefault(record.work_item_id, []).append(record)
-        return record
-
     def record_hidden_effect(self, record: dict[str, Any], output: dict[str, Any] | None = None) -> dict[str, Any]:
         self.hidden_effects.append(record)
         output_ref = record.get("output_ref") or record.get("patch_ref")
@@ -127,9 +121,6 @@ class GraphRunCache(BaseModel):
         execution = self.execution_cache.get(work_item_id)
         if execution:
             refs.append(execution.execution_result_ref)
-        for test in self.test_cache.get(work_item_id, []):
-            if test.test_result_ref:
-                refs.append(test.test_result_ref)
         return refs
 
     def as_runtime_payload(self) -> dict[str, Any]:

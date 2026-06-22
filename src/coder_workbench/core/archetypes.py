@@ -10,8 +10,8 @@ if TYPE_CHECKING:
     from coder_workbench.core.agent_workflow import AgentWorkflowAgent, AgentWorkflowSpec
 
 
-RoleCardId = Literal["executor", "tester"]
-AgentArchetype = Literal["planner", "executor", "tester"]
+RoleCardId = Literal["executor"]
+AgentArchetype = Literal["planner", "executor"]
 
 
 class RoleCardSpec(BaseModel):
@@ -51,17 +51,13 @@ ROLE_CARDS = [
         archetype="executor",
         role="executor",
         engine_id="code-worker-engine",
-        default_capabilities=["follow_planner_order", "modify_files", "return_execution_result"],
-        description="Perform implementation or execution work assigned by Planner.",
-    ),
-    RoleCardSpec(
-        id="tester",
-        label="Tester",
-        archetype="tester",
-        role="tester",
-        engine_id="tester-engine",
-        default_capabilities=["model_review", "return_test_result"],
-        description="Review execution evidence and return test_result facts.",
+        default_capabilities=[
+            "follow_planner_order",
+            "modify_files",
+            "optional_check_command",
+            "return_execution_result",
+        ],
+        description="Perform bounded execution work assigned by Planner and return verification evidence.",
     ),
 ]
 
@@ -89,7 +85,9 @@ def agent_payload_from_role_card(data: dict[str, object]) -> dict[str, object]:
         migrated["role"] = card.role
     capabilities = migrated.get("capabilities")
     if not isinstance(capabilities, list) or not capabilities:
-        migrated["capabilities"] = list(card.default_capabilities if card is not None else default_capabilities_for_role(str(migrated.get("role") or "")))
+        migrated["capabilities"] = list(
+            card.default_capabilities if card is not None else default_capabilities_for_role(str(migrated.get("role") or ""))
+        )
     return migrated
 
 
@@ -104,10 +102,13 @@ def default_capabilities_for_role(role: str) -> list[str]:
             "make_next_decision",
             "round_summarize",
         ]
-    if role == "tester":
-        return ["model_review", "return_test_result"]
     if role == "executor":
-        return ["follow_planner_order", "modify_files", "return_execution_result"]
+        return [
+            "follow_planner_order",
+            "modify_files",
+            "optional_check_command",
+            "return_execution_result",
+        ]
     return []
 
 
@@ -147,8 +148,6 @@ def _archetype_for_agent(agent: "AgentWorkflowAgent", authority: str) -> str:
         return role_card_for_id(agent.role_card).archetype
     if authority == "planner":
         return "planner"
-    if authority == "tester":
-        return "tester"
     return "executor"
 
 
@@ -158,15 +157,12 @@ def _engine_id_for_agent(agent: "AgentWorkflowAgent", archetype: str) -> str:
     return {
         "planner": "planner-engine",
         "executor": "code-worker-engine",
-        "tester": "tester-engine",
     }[archetype]
 
 
 def _context_policy(archetype: str) -> dict[str, object]:
     if archetype == "planner":
         return {"skill_load_mode": "index_only", "memory": "workflow_summary", "max_skill_tokens": 0}
-    if archetype == "tester":
-        return {"skill_load_mode": "selected_summary", "memory": "none", "max_skill_tokens": 800}
     return {"skill_load_mode": "on_demand", "memory": "direct_refs_only", "max_skill_tokens": 1600}
 
 
@@ -180,8 +176,7 @@ def _memory_policy(authority: str) -> dict[str, object]:
 def _token_budget(archetype: str) -> dict[str, object]:
     budgets = {
         "planner": 12000,
-        "executor": 8000,
-        "tester": 6000,
+        "executor": 9000,
     }
     return {"max_input_tokens": budgets.get(archetype, 8000), "managed_by_runtime": True}
 
@@ -189,8 +184,9 @@ def _token_budget(archetype: str) -> dict[str, object]:
 def _internal_loops(authority: str) -> dict[str, object]:
     return {
         "schema_repair_attempts": 1,
-        "self_check": authority in {"executor", "tester"},
+        "self_check": authority == "executor",
         "planner_repair": authority == "planner",
+        "verification_repair_attempts": 1 if authority == "executor" else 0,
     }
 
 
@@ -205,8 +201,6 @@ def _tool_policy(agent: "AgentWorkflowAgent", authority: AgentAuthorityProfile) 
 
 
 def _evaluation_profile(archetype: str) -> dict[str, object]:
-    if archetype == "tester":
-        return {"artifact_type": "test_result", "metrics": ["evidence_ref_rate", "confidence_calibration"]}
     if archetype == "planner":
         return {"artifact_type": "planner_order", "metrics": ["plan_valid_rate", "wrong_skill_selection_rate"]}
-    return {"artifact_type": "execution_result", "metrics": ["schema_valid_rate", "blocked_rate"]}
+    return {"artifact_type": "execution_result", "metrics": ["schema_valid_rate", "blocked_rate", "verification_evidence_rate"]}

@@ -4,7 +4,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
   id: "default-planner-led",
   version: "0.4",
   name: "Planner-led Agent Workflow",
-  description: "Planner decides. Executor proposes changes by order. Tester returns evidence. Runtime hides graph details.",
+  description: "Planner decides. Executor executes, verifies, and returns execution evidence. Runtime hides graph details.",
   primary_planner_id: "planner",
   agents: [
     {
@@ -22,29 +22,18 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
       role_card: "executor",
       model_tier: "standard",
       can_talk_to_human: false,
-      capabilities: ["modify_files", "follow_planner_order", "return_execution_result"]
-    },
-    {
-      id: "tester",
-      name: "Tester",
-      role: "tester",
-      role_card: "tester",
-      model_tier: "standard",
-      can_talk_to_human: false,
-      capabilities: ["model_review", "optional_check_command", "return_test_result"]
+      capabilities: ["follow_planner_order", "modify_files", "optional_check_command", "return_execution_result"]
     }
   ],
   edges: [
     { from: "planner", to: "executor" },
-    { from: "executor", to: "tester" },
-    { from: "tester", to: "planner", loop: true }
+    { from: "executor", to: "planner", loop: true }
   ],
   loop_policy: { max_auto_rounds: 3, user_can_change: true },
   ui: {
     layout: {
       planner: { x: 60, y: 120 },
-      executor: { x: 360, y: 120 },
-      tester: { x: 660, y: 120 }
+      executor: { x: 360, y: 120 }
     }
   }
 };

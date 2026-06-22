@@ -2,14 +2,12 @@
 export type AgentModelTier = "best" | "standard" | "economy";
 export type AgentWorkflowRole =
   | "planner"
-  | "executor"
-  | "tester";
+  | "executor";
 export type AgentCapability = string;
 export type HandoffType =
   | "run_contract"
   | "planner_order"
   | "execution_result"
-  | "test_result"
   | "planner_decision"
   | "round_summary";
 

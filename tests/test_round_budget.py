@@ -25,7 +25,6 @@ class RoundBudgetTests(unittest.TestCase):
                             "assignee_agent_id": "executor",
                             "task_summary": "Do work.",
                             "depends_on": [],
-                            "tester_agent_ids": [],
                         }
                     ]
                 },

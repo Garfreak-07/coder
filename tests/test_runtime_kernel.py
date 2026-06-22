@@ -19,7 +19,6 @@ def _planner_order(goal: str = "Do work.") -> PlannerOrder:
                         "assignee_agent_id": "executor",
                         "task_summary": "Implement the change.",
                         "depends_on": [],
-                        "tester_agent_ids": ["tester"],
                     }
                 ]
             },

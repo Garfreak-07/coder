@@ -4,14 +4,12 @@ import type { AgentWorkflowAgent, AgentWorkflowEdge, AgentWorkflowSpec } from ".
 
 const agentPositions: Record<string, { x: number; y: number }> = {
   planner: { x: 60, y: 105 },
-  executor: { x: 365, y: 105 },
-  tester: { x: 670, y: 105 }
+  executor: { x: 365, y: 105 }
 };
 
 const roleLabels: Record<string, string> = {
   planner: "Planner",
-  executor: "Executor",
-  tester: "Tester"
+  executor: "Executor"
 };
 
 export function cloneAgentWorkflow(workflow: AgentWorkflowSpec): AgentWorkflowSpec {

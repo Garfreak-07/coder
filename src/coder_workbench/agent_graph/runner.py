@@ -30,7 +30,6 @@ from coder_workbench.agent_graph.schema import (
     PlannerInputBundle,
     PlannerOrder,
     PlanRunSummary,
-    TestRecord,
     WorkItemOutcome,
 )
 from coder_workbench.agent_graph.validation import assert_valid_planner_order
@@ -316,6 +315,7 @@ class AgentGraphRunner:
                 round_request = data["planner_decision"].get("next_round_goal") or request
                 start_round = previous_bundle.round + 1
 
+            consecutive_blocked_rounds = _int_value(data.get("consecutive_blocked_rounds"), 0)
             for round_number in range(start_round, max_rounds + 1):
                 outcome = self._run_round(
                     round_number=round_number,
@@ -341,6 +341,28 @@ class AgentGraphRunner:
                     tool_calls=len(outcome.planner_input_bundle.effects),
                     estimated_tokens=max(0, estimated_tokens_used - controller.estimated_tokens),
                 )
+                round_has_blocked = any(
+                    item.execution_status == "blocked"
+                    for item in outcome.planner_input_bundle.items
+                )
+                consecutive_blocked_rounds = consecutive_blocked_rounds + 1 if round_has_blocked else 0
+                data["consecutive_blocked_rounds"] = consecutive_blocked_rounds
+                if consecutive_blocked_rounds >= 2:
+                    prompt = _consecutive_blocked_summary(outcome)
+                    data["planner_human_prompt"] = prompt
+                    emit(
+                        "agent_graph.run.blocked",
+                        "Agent graph stopped after consecutive blocked rounds",
+                        code="consecutive_blocked_rounds",
+                        round=round_number,
+                        consecutive_blocked_rounds=consecutive_blocked_rounds,
+                    )
+                    status = "blocked"
+                    status_reason = prompt
+                    status_code = "consecutive_blocked_rounds"
+                    blocked_node_id = self.agent_workflow.primary_planner_id
+                    result_resume_checkpoint = {"data": data}
+                    break
                 controller_decision = controller.evaluate_planner_decision(
                     outcome.planner_decision,
                     round_number=round_number,
@@ -533,23 +555,48 @@ class AgentGraphRunner:
         )
         while scheduler.has_pending():
             stop_after_current_wave = False
-            for blocked in scheduler.block_items_with_failed_upstreams():
+            for blocked in scheduler.block_items_with_blocked_upstreams():
                 item = blocked.work_item
                 scheduler.mark_blocked(item.work_item_id)
+                summary = f"Blocked by upstream work item(s): {', '.join(blocked.blocked_by)}."
                 execution = cache.record_execution(
                     ExecutionRecord(
                         work_item_id=item.work_item_id,
                         merge_index=item.merge_index,
                         agent_id=item.assignee_agent_id,
                         status="blocked",
-                        execution_summary=f"Blocked by failed upstream work item(s): {', '.join(blocked.blocked_by)}.",
+                        execution_summary=summary,
                         execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
+                        artifact_payload={
+                            "artifact_type": "execution_result",
+                            "round": cache.round,
+                            "work_item_id": item.work_item_id,
+                            "merge_index": item.merge_index,
+                            "agent_id": item.assignee_agent_id,
+                            "status": "blocked",
+                            "summary": summary,
+                            "unexpected_issues": ["upstream_blocked"],
+                            "remaining_work": [summary],
+                            "needs_planner_decision": True,
+                            "blocker_type": "dependency_missing",
+                            "continue_without_human_possible": True,
+                            "verification": {
+                                "status": "blocked",
+                                "checks_run": [],
+                                "evidence_refs": [],
+                                "confidence": "low",
+                                "remaining_work": [summary],
+                                "no_check_rationale": None,
+                                "repair_attempted": False,
+                                "repair_summary": None,
+                            },
+                        },
                     )
                 )
                 self._record_execution_artifact(recorder, cache.round, execution)
                 emit(
                     "agent_task.blocked",
-                    f"Task {item.work_item_id} blocked by upstream failure",
+                    f"Task {item.work_item_id} blocked by upstream work",
                     round=round_number,
                     work_item_id=item.work_item_id,
                     blocked_by=blocked.blocked_by,
@@ -682,24 +729,13 @@ class AgentGraphRunner:
                     scheduler.mark_blocked(outcome.work_item_id)
                 else:
                     emit(
-                        "agent_task.failed",
-                        f"Task {outcome.work_item_id} failed",
+                        "agent_task.blocked",
+                        f"Task {outcome.work_item_id} blocked",
                         round=cache.round,
                         work_item_id=outcome.work_item_id,
                         execution_result_ref=execution.execution_result_ref,
                     )
-                    scheduler.mark_failed(outcome.work_item_id)
-                for test in outcome.tests:
-                    test_record = cache.record_test(test)
-                    self._record_test_artifact(recorder, cache.round, test_record)
-                    emit(
-                        "test.local.completed",
-                        f"Local test for {outcome.work_item_id} completed",
-                        round=cache.round,
-                        work_item_id=outcome.work_item_id,
-                        tester_agent_id=test_record.tester_agent_id,
-                        test_result_ref=test_record.test_result_ref,
-                    )
+                    scheduler.mark_blocked(outcome.work_item_id)
             emit(
                 "agent_graph.wave.completed",
                 f"Agent graph wave {wave.wave_index} completed",
@@ -710,11 +746,8 @@ class AgentGraphRunner:
                     for outcome in outcomes
                     if outcome.execution.status == "completed"
                 ],
-                failed_work_item_ids=[
-                    outcome.work_item_id for outcome in outcomes if outcome.execution.status == "failed"
-                ],
                 blocked_work_item_ids=[
-                    outcome.work_item_id for outcome in outcomes if outcome.execution.status == "blocked"
+                    outcome.work_item_id for outcome in outcomes if outcome.execution.status != "completed"
                 ],
             )
             run_control.checkpoint(
@@ -1132,42 +1165,10 @@ class AgentGraphRunner:
         item = context["item"]
         envelope = context["envelope"]
         execution = self.agent_run.run_execution(item=item, envelope=envelope)
-        tests = []
-        if execution.status == "completed":
-            execution_artifact = dict(
-                execution.artifact_payload
-                or {
-                    "artifact_type": execution.artifact_type,
-                    "round": envelope.round,
-                    "work_item_id": execution.work_item_id,
-                    "merge_index": execution.merge_index,
-                    "agent_id": execution.agent_id,
-                    "status": execution.status,
-                    "summary": execution.execution_summary,
-                }
-            )
-            if not execution_artifact.get("artifact_id"):
-                execution_artifact["artifact_id"] = execution.execution_result_ref
-            tests = []
-            for tester_agent_id in item.tester_agent_ids:
-                upstream_artifacts = [
-                    test.artifact_payload
-                    for test in tests
-                    if isinstance(test.artifact_payload, dict)
-                ]
-                tests.append(
-                    self.agent_run.run_test(
-                        item=item,
-                        execution_artifact=execution_artifact,
-                        upstream_artifacts=upstream_artifacts,
-                        tester_agent_id=tester_agent_id,
-                    )
-                )
         return WorkItemOutcome(
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
             execution=execution,
-            tests=tests,
         )
 
     def _record_execution_artifact(
@@ -1176,6 +1177,8 @@ class AgentGraphRunner:
         round_number: int,
         execution: ExecutionRecord,
     ) -> dict[str, Any]:
+        from coder_workbench.agent_harness.execution_verification import ensure_execution_verification
+
         artifact_type = execution.artifact_type
         payload = execution.artifact_payload or {
             "artifact_type": artifact_type,
@@ -1185,33 +1188,20 @@ class AgentGraphRunner:
             "agent_id": execution.agent_id,
             "status": execution.status,
             "summary": execution.execution_summary,
+            "outputs": [execution.execution_result_ref] if execution.status == "completed" else [],
+            "unexpected_issues": [] if execution.status == "completed" else ["execution_record_missing_payload"],
+            "remaining_work": [] if execution.status == "completed" else [execution.execution_summary],
+            "blocker_type": None if execution.status == "completed" else "technical_blocker",
+            "continue_without_human_possible": None if execution.status == "completed" else True,
+            "verification": _fallback_verification(execution),
         }
+        if artifact_type == "execution_result":
+            payload = ensure_execution_verification(payload)
         artifact_type = str(payload.get("artifact_type") or artifact_type)
         return recorder.record(
             execution.execution_result_ref,
             payload,
             expected_type=artifact_type,
-        )
-
-    def _record_test_artifact(
-        self,
-        recorder: AgentGraphArtifactRecorder,
-        round_number: int,
-        test: TestRecord,
-    ) -> dict[str, Any]:
-        payload = test.artifact_payload or {
-            "artifact_type": "test_result",
-            "round": round_number,
-            "work_item_id": test.work_item_id,
-            "merge_index": test.merge_index,
-            "tester_agent_id": test.tester_agent_id,
-            "status": test.status,
-            "summary": test.test_summary,
-        }
-        return recorder.record(
-            test.test_result_ref or graph_artifact_id("test_result", test.work_item_id, test.tester_agent_id),
-            payload,
-            expected_type="test_result",
         )
 
     def _record_debug_findings(
@@ -1222,24 +1212,23 @@ class AgentGraphRunner:
         emit: Any,
     ) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
-        for records in cache.test_cache.values():
-            for test in records:
-                if test.status != "fail":
+        for execution in cache.execution_cache.values():
+            artifact = execution.artifact_payload or {}
+            verification = artifact.get("verification") if isinstance(artifact.get("verification"), dict) else {}
+            checks = verification.get("checks_run") if isinstance(verification.get("checks_run"), list) else []
+            for check in checks:
+                if not isinstance(check, dict) or check.get("status") not in {"fail", "blocked"}:
                     continue
-                artifact = test.artifact_payload or {}
-                commands = artifact.get("check_commands") if isinstance(artifact.get("check_commands"), list) else []
-                first_command = commands[0] if commands else {}
-                command = first_command.get("command") if isinstance(first_command, dict) else first_command
                 finding = build_debug_finding(
                     {
                         "artifact_type": "check_result",
-                        "command": str(command or ""),
-                        "status": "fail",
-                        "summary": test.test_summary,
-                        "output": test.test_summary,
-                        "output_ref": test.test_result_ref or "",
+                        "command": str(check.get("command") or ""),
+                        "status": str(check.get("status") or "fail"),
+                        "summary": str(check.get("summary") or execution.execution_summary),
+                        "output": str(check.get("summary") or execution.execution_summary),
+                        "output_ref": str(check.get("output_ref") or execution.execution_result_ref),
                     },
-                    work_item_id=test.work_item_id,
+                    work_item_id=execution.work_item_id,
                     repo_root=repo_root,
                 )
                 findings.append(self._record_debug_finding(cache, recorder, finding.model_dump(mode="json"), emit))
@@ -1463,6 +1452,30 @@ def _hidden_effect_artifact_payload(effect: dict[str, Any], output: dict[str, An
     }
 
 
+def _fallback_verification(execution: ExecutionRecord) -> dict[str, Any]:
+    if execution.status == "completed":
+        return {
+            "status": "skipped",
+            "checks_run": [],
+            "evidence_refs": [execution.execution_result_ref],
+            "confidence": "medium",
+            "remaining_work": [],
+            "no_check_rationale": "ExecutionRecord did not include an artifact payload with explicit verification.",
+            "repair_attempted": False,
+            "repair_summary": None,
+        }
+    return {
+        "status": "blocked",
+        "checks_run": [],
+        "evidence_refs": [execution.execution_result_ref],
+        "confidence": "low",
+        "remaining_work": [execution.execution_summary],
+        "no_check_rationale": None,
+        "repair_attempted": False,
+        "repair_summary": None,
+    }
+
+
 def _merge_replay_cache_payload(
     data: dict[str, Any],
     replay_effects: list[dict[str, Any]],
@@ -1508,22 +1521,6 @@ class _ExecutorAdapter:
             payload["emit"] = kwargs["emit"]
         return self.executor.create_execution_result(**payload)
 
-    def run_test(self, **kwargs: Any) -> TestRecord:
-        payload = {
-            "item": kwargs["item"],
-            "execution_artifact": kwargs["execution_artifact"],
-            "tester_agent_id": kwargs["tester_agent_id"],
-        }
-        if kwargs.get("upstream_artifacts") is not None:
-            payload["upstream_artifacts"] = kwargs["upstream_artifacts"]
-        if kwargs.get("emit") is not None:
-            payload["emit"] = kwargs["emit"]
-        try:
-            return self.executor.create_test_result(**payload)
-        except TypeError:
-            payload.pop("upstream_artifacts", None)
-            return self.executor.create_test_result(**payload)
-
     def run_planner_decision(self, **kwargs: Any) -> dict[str, Any]:
         payload = {
             "bundle": kwargs["bundle"],
@@ -1552,6 +1549,24 @@ def _max_auto_rounds_from_workflow_or_data(agent_workflow: AgentWorkflowSpec, da
         return 3
 
 
+def _consecutive_blocked_summary(outcome: RoundOutcome) -> str:
+    blocked_items = [
+        item
+        for item in outcome.planner_input_bundle.items
+        if item.execution_status == "blocked"
+    ]
+    if not blocked_items:
+        return "Planner received blocked execution results for two consecutive workflow rounds."
+    details = "; ".join(
+        f"{item.work_item_id}: {item.execution_summary or item.verification_summary or 'blocked'}"
+        for item in blocked_items
+    )
+    return (
+        "Planner received blocked execution results for two consecutive workflow rounds. "
+        f"Blocked WorkItems: {details}"
+    )
+
+
 def _run_guard_from_data(data: dict[str, Any], *, max_rounds: int) -> RunGuard:
     guard_data = data.get("run_guard")
     values = dict(guard_data) if isinstance(guard_data, dict) else {}
@@ -1577,7 +1592,6 @@ def _round_preflight_model_calls(planner_order: PlannerOrder, *, runtime_setting
         return 0
     work_items = list(planner_order.plan_graph.work_items)
     calls = len(work_items)
-    calls += sum(len(item.tester_agent_ids) for item in work_items)
     if not _replay_planner_decision_available(data):
         calls += 1
     return calls

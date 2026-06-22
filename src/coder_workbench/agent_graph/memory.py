@@ -44,7 +44,7 @@ class PlannerMemoryStore:
     ) -> WorkflowMemory:
         memory = self.load_workflow_memory(workflow_id)
         for item in bundle.items:
-            if item.execution_status == "completed" and item.test_status in {"pass", "not_requested"}:
+            if item.execution_status == "completed" and item.verification_status in {"pass", "skipped"}:
                 memory.successful_assignments.append(
                     {
                         "round": bundle.round,

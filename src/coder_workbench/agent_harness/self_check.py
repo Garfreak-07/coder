@@ -60,7 +60,7 @@ class ExecutorSelfChecker:
                 merge_index=item.merge_index,
                 round_number=envelope.round,
                 emit=emit,
-                schema_notes="Return a valid execution_result JSON object.",
+                schema_notes="Return a valid execution_result JSON object with verification.",
             ),
         )
         if outcome.artifact is None:
@@ -69,60 +69,6 @@ class ExecutorSelfChecker:
         issues.extend(_executor_artifact_issues(outcome.artifact))
         if issues:
             artifact = _blocked_execution(item, envelope, "; ".join(issues))
-            return SelfCheckResult(status="blocked", artifact=artifact, issues=issues)
-        return SelfCheckResult(status="ok", artifact=outcome.artifact, issues=[])
-
-
-class TesterSelfChecker:
-    def __init__(self, repair_pipeline: ArtifactRepairPipeline | None = None) -> None:
-        self.repair_pipeline = repair_pipeline or ArtifactRepairPipeline()
-
-    def check(
-        self,
-        payload: dict[str, Any],
-        *,
-        item: WorkItem,
-        tester_agent_id: str,
-        evidence_refs: list[str],
-        round_number: int,
-        model: Any | None = None,
-        emit: Any | None = None,
-    ) -> SelfCheckResult:
-        issues = _tester_consistency_issues(payload, item=item, tester_agent_id=tester_agent_id)
-        if issues:
-            artifact = _blocked_test(item, tester_agent_id, round_number, "; ".join(issues))
-            return SelfCheckResult(status="blocked", artifact=artifact, issues=issues)
-        patched = dict(payload)
-        patched.update(
-            {
-                "artifact_type": "test_result",
-                "round": round_number,
-                "work_item_id": item.work_item_id,
-                "merge_index": item.merge_index,
-                "tester_agent_id": tester_agent_id,
-            }
-        )
-        outcome = self.repair_pipeline.repair(
-            expected_type="test_result",
-            invalid_output=str(payload),
-            parsed_payload=patched,
-            model=model,
-            context=RepairContext(
-                agent_id=tester_agent_id,
-                work_item_id=item.work_item_id,
-                merge_index=item.merge_index,
-                round_number=round_number,
-                tester_agent_id=tester_agent_id,
-                emit=emit,
-                schema_notes="Return a valid test_result JSON object.",
-            ),
-        )
-        if outcome.artifact is None:
-            artifact = _blocked_test(item, tester_agent_id, round_number, "Tester self-check could not produce a valid artifact.")
-            return SelfCheckResult(status="blocked", artifact=artifact, issues=["self_check_failed"])
-        issues.extend(_tester_artifact_issues(outcome.artifact, evidence_refs=evidence_refs))
-        if issues:
-            artifact = _blocked_test(item, tester_agent_id, round_number, "; ".join(issues))
             return SelfCheckResult(status="blocked", artifact=artifact, issues=issues)
         return SelfCheckResult(status="ok", artifact=outcome.artifact, issues=[])
 
@@ -149,45 +95,27 @@ def _executor_consistency_issues(payload: dict[str, Any], *, item: WorkItem, env
 def _executor_artifact_issues(artifact: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     status = artifact.get("status")
-    if status in {"blocked", "failed"} and not artifact.get("unexpected_issues"):
-        issues.append("blocked or failed execution_result must include unexpected_issues")
+    verification = artifact.get("verification") if isinstance(artifact.get("verification"), dict) else {}
+    verification_status = verification.get("status")
+    if status not in {"completed", "blocked"}:
+        issues.append("execution_result status must be completed or blocked")
+    if status == "completed" and not _has_completion_signal(artifact):
+        issues.append("completed execution_result must include evidence or no_op_rationale")
+    if status == "blocked":
+        if not artifact.get("blocker_type"):
+            issues.append("blocked execution_result must include blocker_type")
+        if not _has_blocked_diagnostic(artifact):
+            issues.append("blocked execution_result must include decision-useful diagnostics")
+    if verification_status in {"fail", "blocked"} and status != "blocked":
+        issues.append("verification fail/blocked requires execution_result status blocked")
+    if verification_status == "skipped" and not verification.get("no_check_rationale") and not verification.get("evidence_refs"):
+        issues.append("verification skipped requires no_check_rationale or evidence_refs")
     if artifact.get("proposed_changes") and not isinstance(artifact.get("patch_refs"), list):
         issues.append("execution_result patch_refs must be a list when proposed_changes are present")
     try:
         validate_artifact(artifact, expected_type="execution_result")
     except ArtifactValidationError as exc:
         issues.append(f"execution_result schema invalid: {exc}")
-    return issues
-
-
-def _tester_consistency_issues(payload: dict[str, Any], *, item: WorkItem, tester_agent_id: str) -> list[str]:
-    issues: list[str] = []
-    if payload.get("work_item_id") not in {None, "", item.work_item_id}:
-        issues.append("test_result work_item_id does not match assigned WorkItem")
-    if payload.get("merge_index") not in {None, item.merge_index}:
-        issues.append("test_result merge_index does not match assigned WorkItem")
-    if payload.get("tester_agent_id") not in {None, "", tester_agent_id}:
-        issues.append("test_result tester_agent_id does not match assigned tester")
-    if payload.get("human_message") or payload.get("ask_human"):
-        issues.append("tester artifact must not include a human prompt")
-    return issues
-
-
-def _tester_artifact_issues(artifact: dict[str, Any], *, evidence_refs: list[str]) -> list[str]:
-    issues: list[str] = []
-    status = artifact.get("status")
-    if status not in {"pass", "fail", "blocked"}:
-        issues.append("test_result status must be pass, fail, or blocked")
-    if status in {"fail", "blocked"} and not artifact.get("remaining_work"):
-        issues.append("failed or blocked test_result must include remaining_work")
-    if evidence_refs and not artifact.get("evidence"):
-        issues.append("test_result must reference upstream evidence")
-    if not artifact.get("confidence"):
-        issues.append("test_result confidence is required")
-    try:
-        validate_artifact(artifact, expected_type="test_result")
-    except ArtifactValidationError as exc:
-        issues.append(f"test_result schema invalid: {exc}")
     return issues
 
 
@@ -202,26 +130,56 @@ def _blocked_execution(item: WorkItem, envelope: AgentTaskEnvelope, summary: str
             "status": "blocked",
             "summary": summary,
             "unexpected_issues": ["self_check_failed"],
+            "remaining_work": [summary],
             "needs_planner_decision": True,
             "blocker_type": "schema_validation_failed",
             "continue_without_human_possible": False,
+            "verification": {
+                "status": "blocked",
+                "checks_run": [],
+                "evidence_refs": [],
+                "confidence": "low",
+                "remaining_work": [summary],
+                "no_check_rationale": None,
+                "repair_attempted": False,
+                "repair_summary": None,
+            },
         },
         expected_type="execution_result",
     )
 
 
-def _blocked_test(item: WorkItem, tester_agent_id: str, round_number: int, summary: str) -> dict[str, Any]:
-    return validate_artifact(
-        {
-            "artifact_type": "test_result",
-            "round": round_number,
-            "work_item_id": item.work_item_id,
-            "merge_index": item.merge_index,
-            "tester_agent_id": tester_agent_id,
-            "status": "blocked",
-            "summary": summary,
-            "remaining_work": [summary],
-            "confidence": "low",
-        },
-        expected_type="test_result",
+def _has_completion_signal(artifact: dict[str, Any]) -> bool:
+    verification = artifact.get("verification") if isinstance(artifact.get("verification"), dict) else {}
+    return any(
+        [
+            artifact.get("changed_files"),
+            artifact.get("created_files"),
+            artifact.get("deleted_files"),
+            artifact.get("patch_refs"),
+            artifact.get("outputs"),
+            artifact.get("evidence_refs"),
+            artifact.get("no_op_rationale"),
+            verification.get("checks_run"),
+            verification.get("evidence_refs"),
+            verification.get("no_check_rationale") if verification.get("status") == "skipped" else None,
+        ]
+    )
+
+
+def _has_blocked_diagnostic(artifact: dict[str, Any]) -> bool:
+    verification = artifact.get("verification") if isinstance(artifact.get("verification"), dict) else {}
+    return any(
+        [
+            artifact.get("unexpected_issues"),
+            artifact.get("attempted_actions"),
+            artifact.get("evidence_refs"),
+            artifact.get("remaining_work"),
+            verification.get("remaining_work"),
+            verification.get("evidence_refs"),
+            verification.get("checks_run"),
+            artifact.get("planner_question"),
+            artifact.get("candidate_options"),
+            artifact.get("planner_options"),
+        ]
     )

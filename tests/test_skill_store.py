@@ -437,7 +437,7 @@ def _manifest(**overrides: object) -> dict[str, object]:
         "skill_type": "procedure",
         "risk_level": "low",
         "publisher": "coder-official",
-        "allowed_authorities": ["planner", "executor", "tester"],
+        "allowed_authorities": ["planner", "executor"],
         "requires": ["search_query"],
         "produces": ["source_collection", "execution_result"],
         "connectors": ["github_readonly"],

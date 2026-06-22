@@ -17,8 +17,8 @@ class ContextCompactionTests(unittest.TestCase):
         packet = {
             "artifact_type": "execution_result",
             "work_item_id": "work-1",
-            "status": "failed",
-            "summary": "Command failed.",
+            "status": "blocked",
+            "summary": "Command blocked.",
             "command_output": "error line\n" * 1000,
         }
 
@@ -40,8 +40,8 @@ class ContextCompactionTests(unittest.TestCase):
             "work_item_id": "work-1",
             "round": 2,
             "status": "blocked",
-            "failure_reason": "tests failed",
-            "evidence_refs": ["test_result_work-1_tester"],
+            "failure_reason": "verification failed",
+            "evidence_refs": ["execution_result_work-1"],
             "output": "x" * 5000,
         }
 
@@ -54,8 +54,8 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertEqual(result.packet["work_item_id"], "work-1")
         self.assertEqual(result.packet["round"], 2)
         self.assertEqual(result.packet["status"], "blocked")
-        self.assertEqual(result.packet["failure_reason"], "tests failed")
-        self.assertEqual(result.packet["evidence_refs"], ["test_result_work-1_tester"])
+        self.assertEqual(result.packet["failure_reason"], "verification failed")
+        self.assertEqual(result.packet["evidence_refs"], ["execution_result_work-1"])
 
     def test_action_gateway_build_context_applies_context_compaction(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -70,7 +70,6 @@ class ContextCompactionTests(unittest.TestCase):
                 assignee_agent_id="executor",
                 task_summary="Inspect src/large.py.",
                 depends_on=[],
-                tester_agent_ids=[],
             )
 
             result = ActionGateway().run(

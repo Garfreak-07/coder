@@ -374,6 +374,20 @@ function ArtifactPreview({
   if (artifactType === "execution_result") {
     const changedFiles = stringList(artifact.changed_files);
     const unexpected = stringList(artifact.unexpected_issues);
+    const verification = objectValue(artifact.verification);
+    const checks = objectList(verification?.checks_run).map((check) => {
+      const summary = String(check.summary ?? "").trim();
+      const prefix = `${String(check.kind ?? "check")}: ${String(check.status ?? "unknown")}`;
+      return summary ? `${prefix} - ${summary}` : prefix;
+    });
+    const evidence = uniqueStrings([
+      ...stringList(artifact.evidence_refs),
+      ...stringList(verification?.evidence_refs)
+    ]);
+    const remaining = uniqueStrings([
+      ...stringList(artifact.remaining_work),
+      ...stringList(verification?.remaining_work)
+    ]);
     return (
       <div className="artifact-specific">
         <div className="muted">{String(artifact.summary ?? "")}</div>
@@ -381,30 +395,15 @@ function ArtifactPreview({
           items={[
             ["Round", String(artifact.round ?? "unknown")],
             ["Status", String(artifact.status ?? "unknown")],
+            ["Verification", String(verification?.status ?? "unknown")],
+            ["Confidence", String(verification?.confidence ?? "unknown")],
             ["Changed files", changedFiles.join(", ") || "none"],
+            ["Blocker", String(artifact.blocker_type ?? "none")],
             ["Needs Planner", String(artifact.needs_planner_decision ?? false)]
           ]}
         />
         {unexpected.length > 0 && <InlineList title="Unexpected issues" values={unexpected} />}
-      </div>
-    );
-  }
-  if (artifactType === "test_result") {
-    const evidence = stringList(artifact.evidence);
-    const remaining = stringList(artifact.remaining_work);
-    const issues = objectList(artifact.issues).map((issue) => String(issue.title ?? JSON.stringify(issue)));
-    return (
-      <div className="artifact-specific">
-        <div className="muted">{String(artifact.summary ?? "")}</div>
-        <KeyValueList
-          items={[
-            ["Round", String(artifact.round ?? "unknown")],
-            ["Status", String(artifact.status ?? "unknown")],
-            ["Issues", String(issues.length || artifact.issues || 0)],
-            ["Confidence", String(artifact.confidence ?? "unknown")]
-          ]}
-        />
-        {issues.length > 0 && <InlineList title="Issues" values={issues} />}
+        {checks.length > 0 && <InlineList title="Verification checks" values={checks} />}
         {remaining.length > 0 && <InlineList title="Remaining work" values={remaining} />}
         {evidence.length > 0 && <InlineList title="Evidence" values={evidence} />}
       </div>
@@ -436,7 +435,9 @@ function ArtifactPreview({
             ["Round", String(artifact.round ?? "unknown")],
             ["Planner", String(artifact.planner_order_summary ?? "")],
             ["Execution", String(artifact.execution_summary ?? "")],
-            ["Test", String(artifact.test_summary ?? "")],
+            ["Plan status", String(artifact.plan_status ?? "unknown")],
+            ["Completed", String(artifact.completed_count ?? 0)],
+            ["Blocked", String(artifact.blocked_count ?? 0)],
             ["Decision", String(artifact.planner_decision_summary ?? artifact.decision_summary ?? "")]
           ]}
         />
@@ -563,6 +564,10 @@ export function objectList(value: unknown): Record<string, unknown>[] {
     const object = objectValue(item);
     return object ? [object] : [];
   });
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 export async function hydrateBlobRefs(value: unknown, runId: string): Promise<unknown> {

@@ -1,5 +1,5 @@
 from .registry import AgentEngineRegistry, default_agent_engine_registry
-from .runtime import AgentEngine, CodeWorkerEngine, PlannerEngine, TesterEngine
+from .runtime import AgentEngine, CodeWorkerEngine, PlannerEngine
 from .schema import AgentEngineSpec, HarnessBlock, HarnessGraph
 from .validator import HarnessValidationIssue, HarnessValidationResult, HarnessValidator
 
@@ -14,6 +14,5 @@ __all__ = [
     "HarnessValidationResult",
     "HarnessValidator",
     "PlannerEngine",
-    "TesterEngine",
     "default_agent_engine_registry",
 ]

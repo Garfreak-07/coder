@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-WorkItemStatus = Literal["pending", "running", "completed", "blocked", "failed"]
-ExecutionStatus = Literal["completed", "blocked", "failed"]
-TestStatus = Literal["pass", "fail", "blocked", "not_requested"]
-PlanStatus = Literal["pending", "running", "completed", "partial_failed", "blocked", "failed", "interrupted"]
+WorkItemStatus = Literal["pending", "running", "completed", "blocked"]
+ExecutionStatus = Literal["completed", "blocked"]
+VerificationStatus = Literal["pass", "fail", "blocked", "skipped", "not_started"]
+PlanStatus = Literal["pending", "running", "completed", "blocked", "interrupted"]
 
 
 class MergeIndexedModel(BaseModel):
@@ -39,7 +38,6 @@ class WorkItem(MergeIndexedModel):
     assignee_agent_id: str
     task_summary: str
     depends_on: list[str] = Field(default_factory=list)
-    tester_agent_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_non_empty_fields(self) -> "WorkItem":
@@ -98,19 +96,9 @@ class ExecutionRecord(MergeIndexedModel):
     artifact_payload: dict[str, Any] | None = None
 
 
-class TestRecord(MergeIndexedModel):
-    work_item_id: str
-    tester_agent_id: str
-    status: TestStatus
-    test_summary: str
-    test_result_ref: str | None = None
-    artifact_payload: dict[str, Any] | None = None
-
-
 class WorkItemOutcome(MergeIndexedModel):
     work_item_id: str
     execution: ExecutionRecord
-    tests: list[TestRecord] = Field(default_factory=list)
 
 
 class PlanCache(BaseModel):
@@ -126,8 +114,8 @@ class PlannerInputBundleItem(MergeIndexedModel):
     task_summary: str
     execution_status: ExecutionStatus | Literal["not_started"]
     execution_summary: str
-    test_status: TestStatus
-    test_summary: str
+    verification_status: VerificationStatus = "not_started"
+    verification_summary: str = ""
     refs: list[str] = Field(default_factory=list)
 
 
@@ -173,7 +161,6 @@ class PlanRunSummary(BaseModel):
     planner_order_ref: str
     plan_status: PlanStatus
     completed_count: int = 0
-    failed_count: int = 0
     blocked_count: int = 0
     ordered_state: list[RoundSummaryItem] = Field(default_factory=list)
     remaining_work: list[str] = Field(default_factory=list)

@@ -20,7 +20,6 @@ def item(
         assignee_agent_id=f"{work_item_id}-agent",
         task_summary=f"Task {work_item_id}",
         depends_on=depends_on or [],
-        tester_agent_ids=[],
     )
 
 
@@ -82,11 +81,11 @@ class AgentGraphSchedulerTests(unittest.TestCase):
         self.assertEqual(empty_wave.items, [])
         self.assertEqual(scheduler.next_wave().wave_index, 1)
 
-    def test_failed_upstream_blocks_downstream(self) -> None:
+    def test_blocked_upstream_blocks_downstream(self) -> None:
         scheduler = AgentGraphScheduler([item("a", 1), item("b", 2, ["a"])])
 
-        scheduler.mark_failed("a")
-        blocked = scheduler.block_items_with_failed_upstreams()
+        scheduler.mark_blocked("a")
+        blocked = scheduler.block_items_with_blocked_upstreams()
 
         self.assertEqual([record.work_item.work_item_id for record in blocked], ["b"])
         self.assertEqual(blocked[0].blocked_by, ["a"])
@@ -107,7 +106,6 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                         "assignee_agent_id": "executor",
                         "task_summary": "Run first.",
                         "depends_on": [],
-                        "tester_agent_ids": ["tester"],
                     },
                     {
                         "work_item_id": "second",
@@ -115,7 +113,6 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                         "assignee_agent_id": "executor",
                         "task_summary": "Run second.",
                         "depends_on": ["first"],
-                        "tester_agent_ids": ["tester"],
                     },
                     {
                         "work_item_id": "third",
@@ -123,7 +120,6 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                         "assignee_agent_id": "executor",
                         "task_summary": "Run third.",
                         "depends_on": [],
-                        "tester_agent_ids": [],
                     },
                 ]
             },
@@ -156,7 +152,7 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
         second_task = result.data["graph_run_cache"]["agent_tasks"]["second"]
         self.assertEqual(
             second_task["upstream_refs"],
-            ["execution_result_first", "test_result_first_tester"],
+            ["execution_result_first"],
         )
 
     def test_runner_emits_waves_and_resource_deferred_events(self) -> None:
@@ -172,7 +168,6 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                         "assignee_agent_id": "executor",
                         "task_summary": "Run A.",
                         "depends_on": [],
-                        "tester_agent_ids": [],
                     },
                     {
                         "work_item_id": "b",
@@ -180,7 +175,6 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                         "assignee_agent_id": "executor",
                         "task_summary": "Run B.",
                         "depends_on": [],
-                        "tester_agent_ids": [],
                     },
                     {
                         "work_item_id": "c",
@@ -188,7 +182,6 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                         "assignee_agent_id": "executor",
                         "task_summary": "Run C.",
                         "depends_on": [],
-                        "tester_agent_ids": [],
                     },
                 ]
             },
@@ -222,7 +215,6 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                         "assignee_agent_id": "executor",
                         "task_summary": "Merge first.",
                         "depends_on": [],
-                        "tester_agent_ids": [],
                     },
                     {
                         "work_item_id": "a-work",
@@ -230,7 +222,6 @@ class AgentGraphRunnerSchedulerTests(unittest.TestCase):
                         "assignee_agent_id": "executor",
                         "task_summary": "Merge second.",
                         "depends_on": [],
-                        "tester_agent_ids": [],
                     },
                 ]
             },

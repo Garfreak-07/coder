@@ -110,7 +110,7 @@ export function App() {
     [agentWorkflow.agents, agentWorkflow.primary_planner_id]
   );
   const availableRoleCards = useMemo(
-    () => roleCards.filter((roleCard) => roleCard.id === "executor" || roleCard.id === "tester"),
+    () => roleCards.filter((roleCard) => roleCard.id === "executor"),
     [roleCards]
   );
   const connectionFromValue = useMemo(
@@ -909,7 +909,7 @@ function resolveAgentSelectValue(workflow: AgentWorkflowSpec, preferredId: strin
 }
 
 function nextAgentDisplayName(workflow: AgentWorkflowSpec, role: string): string {
-  const base = role === "tester" ? "Tester" : "Executor";
+  const base = role === "executor" ? "Executor" : "Agent";
   const count = workflow.agents.filter((agent) => agent.role === role).length;
   return count === 0 ? base : `${base} ${count + 1}`;
 }
@@ -921,7 +921,6 @@ function agentDisplayName(workflow: AgentWorkflowSpec, agentId: string): string 
 const evidenceArtifactTypes = new Set([
   "planner_order",
   "execution_result",
-  "test_result",
   "planner_decision",
   "round_summary",
   "patch_preview",

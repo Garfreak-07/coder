@@ -14,7 +14,6 @@ HandoffType = Literal[
     "run_contract",
     "planner_order",
     "execution_result",
-    "test_result",
     "planner_decision",
     "round_summary",
 ]
@@ -23,13 +22,11 @@ ValidationLevel = Literal["error", "warning"]
 VALID_AGENT_ROLES = {
     "planner",
     "executor",
-    "tester",
 }
 VALID_MODEL_TIERS = {"best", "standard", "economy"}
 ARTIFACT_PRIORITY = [
     "planner_order",
     "execution_result",
-    "test_result",
     "run_contract",
     "planner_decision",
     "round_summary",
@@ -464,7 +461,7 @@ def validate_agent_workflow(spec: AgentWorkflowSpec) -> AgentWorkflowValidationR
             issues.append(
                 _issue(
                     "missing_meaningful_agent",
-                    "Primary Planner must reach at least one executor or tester Agent.",
+                    "Primary Planner must reach at least one Executor Agent.",
                     "workflow",
                 )
             )
@@ -482,7 +479,7 @@ def validate_agent_workflow(spec: AgentWorkflowSpec) -> AgentWorkflowValidationR
         issues.append(
             _issue(
                 "agent_cycle_without_planner",
-                "Executor/tester subgraphs cannot form cycles that bypass the primary Planner.",
+                "Executor subgraphs cannot form cycles that bypass the primary Planner.",
                 "workflow",
                 "->".join(executor_cycle),
             )
@@ -539,7 +536,7 @@ def default_planner_led_agent_workflow() -> AgentWorkflowSpec:
             "id": "default-planner-led",
             "version": "0.4",
             "name": "Planner-led Agent Workflow",
-            "description": "Planner decides. Executor proposes changes by order. Tester returns evidence. Runtime hides graph details.",
+            "description": "Planner decides. Executor executes, verifies, and returns execution evidence. Runtime hides graph details.",
             "primary_planner_id": "planner",
             "agents": [
                 {
@@ -567,34 +564,20 @@ def default_planner_led_agent_workflow() -> AgentWorkflowSpec:
                     "capabilities": [
                         "follow_planner_order",
                         "modify_files",
-                        "return_execution_result",
-                    ],
-                },
-                {
-                    "id": "tester",
-                    "name": "Tester Agent",
-                    "role": "tester",
-                    "role_card": "tester",
-                    "model_tier": "standard",
-                    "can_talk_to_human": False,
-                    "capabilities": [
-                        "model_review",
                         "optional_check_command",
-                        "return_test_result",
+                        "return_execution_result",
                     ],
                 },
             ],
             "edges": [
                 {"from": "planner", "to": "executor"},
-                {"from": "executor", "to": "tester"},
-                {"from": "tester", "to": "planner", "loop": True},
+                {"from": "executor", "to": "planner", "loop": True},
             ],
             "loop_policy": {"max_auto_rounds": 3, "user_can_change": True},
             "ui": {
                 "layout": {
                     "planner": {"x": 60, "y": 120},
                     "executor": {"x": 360, "y": 120},
-                    "tester": {"x": 660, "y": 120},
                 }
             },
         }
@@ -803,7 +786,7 @@ _CAPABILITIES = [
         label="Judge completion",
         description="Planner decides whether the task is complete from evidence.",
         allowed_roles=["planner"],
-        requires=["test_result"],
+        requires=["execution_result"],
         produces=["planner_decision"],
         can_talk_to_human=True,
     ),
@@ -812,7 +795,7 @@ _CAPABILITIES = [
         label="Judge risk",
         description="Planner makes subjective risk decisions from evidence.",
         allowed_roles=["planner"],
-        requires=["test_result"],
+        requires=["execution_result"],
         produces=["planner_decision"],
         can_talk_to_human=True,
     ),
@@ -821,7 +804,7 @@ _CAPABILITIES = [
         label="Make next decision",
         description="Planner chooses continue, finish, ask_human, or stop.",
         allowed_roles=["planner"],
-        requires=["test_result"],
+        requires=["execution_result"],
         produces=["planner_decision"],
         can_talk_to_human=True,
     ),
@@ -830,7 +813,7 @@ _CAPABILITIES = [
         label="Summarize round",
         description="Planner compresses the round for carry-forward context.",
         allowed_roles=["planner"],
-        requires=["planner_order", "execution_result", "test_result", "planner_decision"],
+        requires=["planner_order", "execution_result", "planner_decision"],
         produces=["round_summary"],
     ),
     CapabilitySpec(
@@ -861,33 +844,18 @@ _CAPABILITIES = [
     CapabilitySpec(
         id="return_execution_result",
         label="Return execution result",
-        description="Agent reports facts as ExecutionResult, not decisions.",
+        description="Agent reports execution and verification facts as ExecutionResult, not decisions.",
         allowed_roles=["executor"],
         produces=["execution_result"],
     ),
     CapabilitySpec(
-        id="model_review",
-        label="Model review",
-        description="Tester inspects ExecutionResult and returns evidence.",
-        allowed_roles=["tester"],
-        requires=["execution_result"],
-        produces=["test_result"],
-    ),
-    CapabilitySpec(
         id="optional_check_command",
         label="Optional check command",
-        description="Tester may attach command evidence when the runtime enables it.",
-        allowed_roles=["tester"],
-        requires=["execution_result"],
-        produces=["test_result"],
+        description="Executor may run allowed check commands and store evidence inside execution_result.verification.",
+        allowed_roles=["executor"],
+        requires=["planner_order"],
+        produces=["execution_result"],
         permissions=CapabilityPermissions(read_files=True, run_commands=True),
         runtime_effects=["check_command"],
-    ),
-    CapabilitySpec(
-        id="return_test_result",
-        label="Return test result",
-        description="Agent returns evidence as TestResult, not next actions.",
-        allowed_roles=["tester"],
-        produces=["test_result"],
     ),
 ]

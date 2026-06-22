@@ -18,7 +18,7 @@ PRESERVED_KEYS = {
     "merge_index",
     "status",
     "execution_status",
-    "test_status",
+    "verification_status",
     "failure_reason",
     "blocker_reason",
     "reason",
@@ -27,7 +27,6 @@ PRESERVED_KEYS = {
     "patch_refs",
     "planner_order_ref",
     "execution_result_ref",
-    "test_result_ref",
 }
 
 

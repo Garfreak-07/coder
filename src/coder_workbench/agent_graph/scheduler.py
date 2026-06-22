@@ -73,29 +73,29 @@ class AgentGraphScheduler:
             for item in self.work_items
             if self.status_by_id.get(item.work_item_id) == "pending"
             and item.work_item_id not in ready_ids
-            and not self.failed_upstreams(item)
+            and not self.blocked_upstreams(item)
         ]
 
     def resource_deferred_items(self) -> list[WorkItem]:
         return self.ready_all()[self.max_concurrency :]
 
-    def block_items_with_failed_upstreams(self) -> list[BlockedWorkItem]:
+    def block_items_with_blocked_upstreams(self) -> list[BlockedWorkItem]:
         blocked: list[BlockedWorkItem] = []
         for item in self.work_items:
             if self.status_by_id.get(item.work_item_id) != "pending":
                 continue
-            failed = self.failed_upstreams(item)
-            if not failed:
+            blocked_upstreams = self.blocked_upstreams(item)
+            if not blocked_upstreams:
                 continue
             self.status_by_id[item.work_item_id] = "blocked"
-            blocked.append(BlockedWorkItem(work_item=item, blocked_by=failed))
+            blocked.append(BlockedWorkItem(work_item=item, blocked_by=blocked_upstreams))
         return blocked
 
-    def failed_upstreams(self, item: WorkItem) -> list[str]:
+    def blocked_upstreams(self, item: WorkItem) -> list[str]:
         return [
             upstream_id
             for upstream_id in item.depends_on
-            if self.status_by_id.get(upstream_id) in {"blocked", "failed"}
+            if self.status_by_id.get(upstream_id) == "blocked"
         ]
 
     def mark_running(self, work_item_id: str) -> None:
@@ -103,9 +103,6 @@ class AgentGraphScheduler:
 
     def mark_completed(self, work_item_id: str) -> None:
         self._set_status(work_item_id, "completed")
-
-    def mark_failed(self, work_item_id: str) -> None:
-        self._set_status(work_item_id, "failed")
 
     def mark_blocked(self, work_item_id: str) -> None:
         self._set_status(work_item_id, "blocked")

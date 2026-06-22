@@ -7,19 +7,19 @@ Coder keeps the ordinary product path small:
 ```text
 User request
 -> Planner
--> Executor
--> Tester
+-> Execution Engine
 -> Planner decision
 ```
 
 The Planner owns global decisions and is the only agent that can ask the user.
-Executors perform bounded implementation work. Testers return evidence. The
-runtime passes structured artifacts instead of transcript-sized context.
+The Execution Engine performs bounded implementation work, runs allowed checks,
+and returns structured verification evidence. The runtime passes structured
+artifacts instead of transcript-sized context.
 
 ## Runtime Hardening
 
 The AgentGraph runtime now includes a hardened execution layer while preserving
-the same Planner -> Executor -> Tester -> Planner authority model:
+the Planner -> Execution Engine -> Planner authority model:
 
 - `ActionGateway` can route low-level tool effects through an internal
   `ToolExecutionService` with ordered results, conservative concurrency,
@@ -27,11 +27,14 @@ the same Planner -> Executor -> Tester -> Planner authority model:
   budgeting.
 - Context construction supports artifact-aware compaction with recoverable
   external refs for oversized snippets, artifacts, and tool outputs.
-- Executor and Tester harnesses support bounded self-checks and multi-stage
-  artifact repair. Invalid model output becomes a Planner-visible blocked
-  artifact instead of an unstructured runtime crash.
+- The executor harness supports bounded self-checks, verification checks, and
+  multi-stage artifact repair. Invalid model output becomes a Planner-visible
+  blocked artifact instead of an unstructured runtime crash.
 - `WaveExecutor` records per-work-item attempts, timeout/cancel evidence,
-  conservative retry diagnostics, partial results, and wave-level summaries.
+  conservative retry diagnostics, completed/blocked outcomes, and wave-level
+  summaries.
+- Consecutive blocked rounds are promoted to a blocked run result so the Planner
+  does not loop indefinitely on the same unresolved execution blocker.
 - Live AgentGraph runs expose pause, resume, cancel, and heartbeat control for
   long/background execution.
 
@@ -53,8 +56,8 @@ editing:
   in the same composer, and inspect run status, evidence, patches, checks, and
   event logs.
 - `Agent Workflow`: load saved Agent workflows, load the default workflow, edit
-  the basic Planner -> Executor -> Tester shape, save, save as a new copy,
-  import, and export.
+  the basic Planner -> Executor loop, save, save as a new copy, import, and
+  export.
 - `Extensions`: manage installed plugins and skills.
 - `Runs`: inspect live and stored AgentGraph runs.
 - `Settings`: configure the local model provider.
@@ -68,7 +71,7 @@ legacy runtime previews.
 ```text
 src/coder_workbench/
   actions/           ActionSpec and ActionGateway for controlled effects
-  agent_engine/      Planner, code-worker, and tester engine boundary
+  agent_engine/      Planner and execution engine boundary
   agent_graph/       Planner-led graph runner, scheduling, cache, merge logic
   agent_harness/     Harness loops and JSON artifact repair implementation
   budget/            BudgetBroker reservations and round preflight
@@ -132,7 +135,7 @@ http://127.0.0.1:8876
 
 ```powershell
 .\.venv\Scripts\coder.exe --repo . `
-  --workflow examples\workflows\coding-workbench.json `
+  --agent-workflow examples\workflows\coding-workbench.json `
   --request "Inspect this project and propose the next safe step"
 ```
 
@@ -183,7 +186,9 @@ npm.cmd run build
 
 - Keep the ordinary product path Planner-led and AgentGraph-only.
 - User interaction must remain `User <-> Planner`.
-- Executor and Tester agents must not ask the user directly.
+- Executors must not ask the user directly.
+- Executor results must include `execution_result.verification` with pass,
+  skipped, failed, or blocked evidence for the Planner to judge.
 - Product live Agent workflows must run through AgentGraph.
 - New context, patch, command, repair, validation, plugin, and MCP behavior
   should enter through `ActionGateway`.

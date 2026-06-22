@@ -19,7 +19,7 @@ from coder_workbench.agent_graph.agent_run import AgentRun
 from coder_workbench.agent_graph.effects import apply_hidden_effects
 from coder_workbench.agent_graph.executor import AgentGraphExecutor, AgentGraphExecutorError
 from coder_workbench.agent_graph.runner import AgentGraphRunner
-from coder_workbench.agent_graph.schema import ExecutionRecord, TestRecord
+from coder_workbench.agent_graph.schema import ExecutionRecord
 from coder_workbench.agent_model import AgentRecipe, RuntimeProfileCompiler, TokenBudget
 from coder_workbench.budget import BudgetBroker, BudgetLimit
 from coder_workbench.core import AgentWorkflowSpec, default_planner_led_agent_workflow, validate_agent_workflow_payload
@@ -110,7 +110,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         originals = {
             "planner_order": AgentRun.run_planner_order,
             "execution": AgentRun.run_execution,
-            "test": AgentRun.run_test,
             "planner_decision": AgentRun.run_planner_decision,
         }
 
@@ -125,7 +124,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             with (
                 patch.object(AgentRun, "run_planner_order", track("planner_order", originals["planner_order"])),
                 patch.object(AgentRun, "run_execution", track("execution", originals["execution"])),
-                patch.object(AgentRun, "run_test", track("test", originals["test"])),
                 patch.object(AgentRun, "run_planner_decision", track("planner_decision", originals["planner_decision"])),
             ):
                 result = AgentGraphRunner(default_planner_led_agent_workflow()).run("Use every product AgentRun path.", tmp)
@@ -166,22 +164,28 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                     "proposed_changes": [
                         {"path": "src/example.py", "action": "update", "content": "value = 2\n"}
                     ],
-                },
-            )
-        )
-        cache.record_test(
-            TestRecord(
-                work_item_id="executor-work",
-                merge_index=1,
-                tester_agent_id="tester",
-                status="pass",
-                test_summary="Run command.",
-                test_result_ref="test_result_executor-work_tester",
-                artifact_payload={
-                    "artifact_type": "test_result",
-                    "status": "pass",
-                    "summary": "Run command.",
-                    "check_commands": [{"command": "python -m unittest", "cwd": "."}],
+                    "requested_actions": [{"action_type": "run_command_sandbox", "command": "python -m unittest", "cwd": "."}],
+                    "outputs": ["execution_result_executor-work"],
+                    "verification": {
+                        "status": "pass",
+                        "checks_run": [
+                            {
+                                "check_id": "static",
+                                "kind": "static",
+                                "command": None,
+                                "status": "pass",
+                                "summary": "Effect inputs were produced.",
+                                "output_ref": None,
+                                "evidence_refs": ["execution_result_executor-work"],
+                            }
+                        ],
+                        "evidence_refs": ["execution_result_executor-work"],
+                        "confidence": "medium",
+                        "remaining_work": [],
+                        "no_check_rationale": None,
+                        "repair_attempted": False,
+                        "repair_summary": None,
+                    },
                 },
             )
         )
@@ -254,7 +258,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                     '{"artifact_type":"planner_order","round":1,"round_goal":"Stay inside budget.",'
                     '"plan_graph":{"work_items":[{"work_item_id":"budget-work","merge_index":1,'
                     '"assignee_agent_id":"executor","task_summary":"Implement within budget.",'
-                    '"depends_on":[],"tester_agent_ids":["tester"]}]}}'
+                    '"depends_on":[]}]}}'
                 )
             ]
         )
@@ -477,26 +481,18 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 )
             }
         )
-        tester_writes_files = valid_worker.model_copy(
-            update={
-                "id": "tester-engine",
-                "engine_type": "tester",
-                "harness_graph": HarnessGraph(
-                    nodes=[
-                        HarnessBlock(id="context", type="context_builder"),
-                        HarnessBlock(id="apply", type="patch_preview", config={"operation": "patch_apply", "requires_preview": True}),
-                        HarnessBlock(id="validate", type="artifact_validator"),
-                        HarnessBlock(id="out", type="output_artifact"),
-                    ]
-                ),
-            }
-        )
-
         validator = HarnessValidator()
 
         self.assertTrue(validator.validate(valid_worker).valid)
         self.assertIn("non_planner_ask_human", {issue.code for issue in validator.validate(worker_asks_human).issues})
-        self.assertIn("tester_cannot_write_files", {issue.code for issue in validator.validate(tester_writes_files).issues})
+        with self.assertRaises(Exception):
+            AgentEngineSpec.model_validate(
+                {
+                    **valid_worker.model_dump(mode="python"),
+                    "id": "legacy-engine",
+                    "engine_type": "tester",
+                }
+            )
 
     def test_repair_logic_is_centralized_outside_executor_classes(self) -> None:
         executor_source = inspect.getsource(AgentGraphExecutor)
@@ -507,7 +503,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("ArtifactRepairService", runtime_source)
         self.assertNotIn("build_planner_order_prompt", executor_source)
         self.assertNotIn("build_planner_decision_prompt", executor_source)
-        self.assertNotIn("build_tester_prompt", executor_source)
 
     def test_extensions_api_splits_plugins_and_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

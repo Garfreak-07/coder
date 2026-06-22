@@ -56,15 +56,12 @@ def _engine_id(role: str) -> str:
     return {
         "planner": "planner-engine",
         "executor": "code-worker-engine",
-        "tester": "tester-engine",
     }.get(role, "code-worker-engine")
 
 
 def _context_profile(role: str) -> str:
     if role == "planner":
         return "planner-index-only"
-    if role == "tester":
-        return "tester-evidence"
     return "coding-executor"
 
 
@@ -74,7 +71,6 @@ def _token_budget(role: str, *, planner_preferences: dict[str, Any] | None) -> T
     budgets = {
         "planner": planner_budget,
         "executor": 9000,
-        "tester": 6000,
     }
     return TokenBudget(max_input_tokens=budgets.get(role, 8000))
 
@@ -82,8 +78,6 @@ def _token_budget(role: str, *, planner_preferences: dict[str, Any] | None) -> T
 def _allowed_artifacts(role: str) -> list[str]:
     if role == "planner":
         return ["run_contract", "planner_order", "planner_decision", "round_summary"]
-    if role == "tester":
-        return ["test_result"]
     return ["execution_result"]
 
 
@@ -93,7 +87,7 @@ def _plugin_policy(role: str, preferred_extension_ids: list[str], run_contract: 
         "preferred_extension_ids": preferred_extension_ids,
         "external_effects_require_preview": True,
         "run_contract_required": bool(run_contract),
-        "can_execute_plugins": role != "planner",
+        "can_execute_plugins": role == "executor",
     }
 
 
@@ -122,8 +116,8 @@ def _repair_policy(role: str) -> dict[str, Any]:
 
 def _tool_policy(role: str) -> dict[str, Any]:
     return {
-        "read_files": role in {"executor", "tester"},
+        "read_files": role == "executor",
         "write_files": role == "executor",
-        "run_commands": role == "tester",
+        "run_commands": role == "executor",
         "ask_human": role == "planner",
     }

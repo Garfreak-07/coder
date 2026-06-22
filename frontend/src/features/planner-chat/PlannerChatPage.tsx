@@ -66,7 +66,7 @@ export function PlannerChatPage({
         {!submittedRequest && !activeRunId ? (
           <div className="chat-empty">
             <h2>What should the Planner work on?</h2>
-            <p>Send a request and the Planner will coordinate Executor and Tester agents.</p>
+            <p>Send a request and the Planner will coordinate the Executor.</p>
           </div>
         ) : (
           <>

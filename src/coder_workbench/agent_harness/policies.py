@@ -30,19 +30,7 @@ def code_worker_policy() -> HarnessPolicy:
         max_steps=8,
         can_ask_human=False,
         can_modify_files=True,
-        can_run_commands=False,
+        can_run_commands=True,
         can_write_memory=False,
         allowed_artifacts=["execution_result"],
     )
-
-
-def tester_policy() -> HarnessPolicy:
-    return HarnessPolicy(
-        max_steps=6,
-        can_ask_human=False,
-        can_modify_files=False,
-        can_run_commands=True,
-        can_write_memory=False,
-        allowed_artifacts=["test_result", "check_result", "debug_finding"],
-    )
-

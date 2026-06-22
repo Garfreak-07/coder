@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from coder_workbench.core.agent_workflow import AgentWorkflowAgent
 
 
-Authority = Literal["planner", "executor", "tester"]
+Authority = Literal["planner", "executor"]
 
 
 class AgentAuthorityProfile(BaseModel):
@@ -36,30 +36,19 @@ EXECUTOR_PROFILE = AgentAuthorityProfile(
     authority="executor",
     can_trigger_interrupt=True,
     can_modify_files=True,
-    allowed_artifact_types=["execution_result"],
-)
-
-TESTER_PROFILE = AgentAuthorityProfile(
-    authority="tester",
     can_run_commands=True,
-    allowed_artifact_types=["test_result"],
+    allowed_artifact_types=["execution_result"],
 )
 
 AUTHORITY_PROFILES = {
     "planner": PLANNER_PROFILE,
     "executor": EXECUTOR_PROFILE,
-    "tester": TESTER_PROFILE,
 }
 
 
 def authority_profile_for_agent(agent: "AgentWorkflowAgent", *, primary_planner_id: str) -> AgentAuthorityProfile:
     if agent.id == primary_planner_id:
         return PLANNER_PROFILE
-    if agent.role == "tester" or any(
-        capability in agent.capabilities
-        for capability in {"model_review", "optional_check_command", "return_test_result"}
-    ):
-        return TESTER_PROFILE
     return EXECUTOR_PROFILE
 
 

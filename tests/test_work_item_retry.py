@@ -16,7 +16,7 @@ class WorkItemRetryTests(unittest.TestCase):
             nonlocal calls
             calls += 1
             if calls == 1:
-                return _failed(item, "transient_model_error")
+                return _blocked(item, "transient_model_error")
             return _completed(item)
 
         outcomes = WaveExecutor(
@@ -35,7 +35,7 @@ class WorkItemRetryTests(unittest.TestCase):
         def build(context):
             nonlocal calls
             calls += 1
-            return _failed(item, "permission_denied")
+            return _blocked(item, "permission_denied")
 
         outcomes = WaveExecutor(
             build,
@@ -44,7 +44,7 @@ class WorkItemRetryTests(unittest.TestCase):
         ).run_wave(_wave(item), [{"item": item, "envelope": {}}])
 
         self.assertEqual(calls, 1)
-        self.assertEqual(outcomes[0].execution.status, "failed")
+        self.assertEqual(outcomes[0].execution.status, "blocked")
 
 
 def _item() -> WorkItem:
@@ -60,7 +60,7 @@ def _wave(item: WorkItem) -> ReadyWave:
     return ReadyWave(wave_index=1, ready_work_item_ids=[item.work_item_id], items=[item])
 
 
-def _failed(item: WorkItem, error_code: str) -> WorkItemOutcome:
+def _blocked(item: WorkItem, error_code: str) -> WorkItemOutcome:
     return WorkItemOutcome(
         work_item_id=item.work_item_id,
         merge_index=item.merge_index,
@@ -68,17 +68,25 @@ def _failed(item: WorkItem, error_code: str) -> WorkItemOutcome:
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
             agent_id=item.assignee_agent_id,
-            status="failed",
+            status="blocked",
             execution_summary=error_code,
             execution_result_ref=f"execution_result_{item.work_item_id}",
             artifact_payload={
                 "artifact_type": "execution_result",
-                "status": "failed",
+                "status": "blocked",
                 "summary": error_code,
                 "unexpected_issues": [error_code],
+                "blocker_type": "transient_error_exhausted" if error_code == "transient_model_error" else "technical_blocker",
+                "needs_planner_decision": True,
+                "verification": {
+                    "status": "blocked",
+                    "checks_run": [],
+                    "evidence_refs": [],
+                    "confidence": "low",
+                    "remaining_work": [error_code],
+                },
             },
         ),
-        tests=[],
     )
 
 
@@ -94,7 +102,6 @@ def _completed(item: WorkItem) -> WorkItemOutcome:
             execution_summary="done",
             execution_result_ref=f"execution_result_{item.work_item_id}",
         ),
-        tests=[],
     )
 
 

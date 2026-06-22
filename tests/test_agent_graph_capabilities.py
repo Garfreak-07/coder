@@ -26,8 +26,8 @@ class AgentGraphCapabilityBoundaryTests(unittest.TestCase):
         self.assertIn("planner_decision", profiles["planner"].allowed_artifact_types)
         self.assertEqual(profiles["executor"].authority, "executor")
         self.assertTrue(profiles["executor"].can_trigger_interrupt)
-        self.assertEqual(profiles["tester"].authority, "tester")
-        self.assertIn("test_result", profiles["tester"].allowed_artifact_types)
+        self.assertIn("execution_result", profiles["executor"].allowed_artifact_types)
+        self.assertTrue(profiles["executor"].can_run_commands)
 
     def test_authority_validation_rejects_wrong_artifact_owner(self) -> None:
         payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
@@ -55,12 +55,12 @@ class AgentGraphCapabilityBoundaryTests(unittest.TestCase):
     def test_skill_modules_define_agent_boundaries(self) -> None:
         planner_modules = {module.id for module in skill_modules_for_authority("planner")}
         executor_modules = {module.id for module in skill_modules_for_authority("executor")}
-        tester_modules = {module.id for module in skill_modules_for_authority("tester")}
 
         self.assertIn("replanning", planner_modules)
         self.assertIn("human_escalation", planner_modules)
         self.assertIn("blocker_reporting", executor_modules)
-        self.assertIn("confidence_calibration", tester_modules)
+        self.assertIn("execution_verification", executor_modules)
+        self.assertIn("confidence_calibration", executor_modules)
 
 
 if __name__ == "__main__":

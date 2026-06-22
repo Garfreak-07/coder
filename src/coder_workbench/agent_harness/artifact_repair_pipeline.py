@@ -18,7 +18,6 @@ class RepairContext:
     work_item_id: str | None = None
     merge_index: int | None = None
     round_number: int = 1
-    tester_agent_id: str | None = None
     schema_notes: str = ""
     emit: Any | None = None
 
@@ -159,26 +158,17 @@ def _deterministic_schema_patch(
             patched["merge_index"] = context.merge_index
         if context.agent_id and not patched.get("agent_id"):
             patched["agent_id"] = context.agent_id
-        patched.setdefault("status", "blocked")
+        if patched.get("status") not in {"completed", "blocked"}:
+            patched["status"] = "blocked"
         patched.setdefault("summary", "Executor output was repaired into a blocked artifact.")
-        if patched.get("status") in {"blocked", "failed"} and not patched.get("unexpected_issues"):
+        if not isinstance(patched.get("verification"), dict):
+            patched["verification"] = _default_execution_verification(patched)
+        if patched.get("status") == "blocked" and not patched.get("unexpected_issues"):
             patched["unexpected_issues"] = ["artifact_repair_required"]
         if patched.get("status") == "blocked":
             patched.setdefault("needs_planner_decision", True)
             patched.setdefault("blocker_type", "schema_validation_failed")
             patched.setdefault("continue_without_human_possible", False)
-    elif expected_type == "test_result":
-        if context.work_item_id and not patched.get("work_item_id"):
-            patched["work_item_id"] = context.work_item_id
-        if context.merge_index is not None and not patched.get("merge_index"):
-            patched["merge_index"] = context.merge_index
-        if context.tester_agent_id and not patched.get("tester_agent_id"):
-            patched["tester_agent_id"] = context.tester_agent_id
-        patched.setdefault("status", "blocked")
-        patched.setdefault("summary", "Tester output was repaired into a blocked artifact.")
-        patched.setdefault("confidence", "low")
-        if patched.get("status") in {"fail", "blocked"} and not patched.get("remaining_work"):
-            patched["remaining_work"] = ["artifact_repair_required"]
     return patched
 
 
@@ -197,20 +187,64 @@ def _fallback_artifact(expected_type: str, context: RepairContext) -> dict[str, 
             "blocker_type": "schema_validation_failed",
             "planner_question": "Executor output failed schema validation. Should Planner retry, reassign, or ask the user?",
             "continue_without_human_possible": False,
-        }
-    if expected_type == "test_result":
-        return {
-            "artifact_type": "test_result",
-            "round": context.round_number,
-            "work_item_id": context.work_item_id,
-            "merge_index": context.merge_index,
-            "tester_agent_id": context.tester_agent_id or context.agent_id,
-            "status": "blocked",
-            "summary": "Tester output did not match test_result schema after repair.",
-            "remaining_work": ["artifact_repair_failed"],
-            "confidence": "low",
+            "verification": {
+                "status": "blocked",
+                "checks_run": [],
+                "evidence_refs": [],
+                "confidence": "low",
+                "remaining_work": ["artifact_repair_failed"],
+                "no_check_rationale": None,
+                "repair_attempted": True,
+                "repair_summary": "Artifact repair failed.",
+            },
         }
     return {"artifact_type": expected_type}
+
+
+def _default_execution_verification(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("status") == "completed":
+        if any(payload.get(key) for key in ("changed_files", "created_files", "deleted_files", "patch_refs", "outputs", "evidence_refs", "no_op_rationale")):
+            return {
+                "status": "pass",
+                "checks_run": [
+                    {
+                        "check_id": "schema-repair-static-evidence",
+                        "kind": "static",
+                        "command": None,
+                        "status": "pass",
+                        "summary": "Repaired execution_result includes completion evidence.",
+                        "output_ref": None,
+                        "evidence_refs": list(payload.get("evidence_refs") or payload.get("outputs") or payload.get("patch_refs") or []),
+                    }
+                ],
+                "evidence_refs": list(payload.get("evidence_refs") or payload.get("outputs") or payload.get("patch_refs") or []),
+                "confidence": "medium",
+                "remaining_work": [],
+                "no_check_rationale": None,
+                "repair_attempted": True,
+                "repair_summary": "Artifact repair added verification evidence.",
+            }
+        payload.setdefault("no_op_rationale", "Artifact repair treated this as a no-op execution.")
+        return {
+            "status": "skipped",
+            "checks_run": [],
+            "evidence_refs": [],
+            "confidence": "low",
+            "remaining_work": [],
+            "no_check_rationale": "Artifact repair treated this as a no-op execution.",
+            "repair_attempted": True,
+            "repair_summary": "Artifact repair added skipped verification.",
+        }
+    return {
+        "status": "blocked",
+        "checks_run": [],
+        "evidence_refs": [],
+        "confidence": "low",
+        "remaining_work": list(payload.get("remaining_work") or payload.get("unexpected_issues") or ["artifact_repair_required"]),
+        "no_check_rationale": None,
+        "repair_attempted": True,
+        "repair_summary": "Artifact repair defaulted missing verification to blocked.",
+    }
 
 
 def _validate(payload: dict[str, Any], *, expected_type: str) -> RepairOutcome:

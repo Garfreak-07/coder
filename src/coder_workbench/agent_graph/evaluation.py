@@ -90,7 +90,7 @@ def build_skill_evaluation_reports(
             status = _execution_status(execution_cache, str(work_item_id))
             if status == "completed":
                 stats["success"] += 1
-            elif status in {"blocked", "failed"}:
+            elif status == "blocked":
                 stats["failure"] += 1
     for entry in token_ledger:
         if not isinstance(entry, dict):
@@ -165,17 +165,6 @@ def _call_counts(
             agent_id = str(record.get("agent_id") or "")
             if agent_id and agent_id not in counts:
                 counts[agent_id] = 1
-    test_cache = graph_run_cache.get("test_cache") if isinstance(graph_run_cache, dict) else {}
-    if isinstance(test_cache, dict):
-        for records in test_cache.values():
-            if not isinstance(records, list):
-                continue
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-                agent_id = str(record.get("tester_agent_id") or "")
-                if agent_id:
-                    counts[agent_id] = counts.get(agent_id, 0) + 1
     planner_calls = sum(
         1
         for event in events

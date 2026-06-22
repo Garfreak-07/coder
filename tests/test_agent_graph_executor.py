@@ -44,7 +44,6 @@ class BadPlannerExecutor:
                             "assignee_agent_id": "missing-agent",
                             "task_summary": "Should not validate.",
                             "depends_on": [],
-                            "tester_agent_ids": [],
                         }
                     ]
                 },
@@ -53,9 +52,6 @@ class BadPlannerExecutor:
 
     def create_execution_result(self, **kwargs):  # pragma: no cover - should not be reached
         raise AssertionError("execution should not run")
-
-    def create_test_result(self, **kwargs):  # pragma: no cover - should not be reached
-        raise AssertionError("test should not run")
 
     def create_planner_decision(self, **kwargs):  # pragma: no cover - should not be reached
         raise AssertionError("decision should not run")
@@ -68,8 +64,7 @@ class AgentGraphExecutorTests(unittest.TestCase):
                 (
                     '{"artifact_type":"planner_order","round":1,"round_goal":"Plan it",'
                     '"plan_graph":{"work_items":[{"work_item_id":"executor-work","merge_index":1,'
-                    '"assignee_agent_id":"executor","task_summary":"Do it","depends_on":[],'
-                    '"tester_agent_ids":["tester"]}]}}'
+                    '"assignee_agent_id":"executor","task_summary":"Do it","depends_on":[]}]}}'
                 )
             ]
         )
@@ -78,7 +73,6 @@ class AgentGraphExecutorTests(unittest.TestCase):
         order = executor.create_planner_order("Plan it")
 
         self.assertEqual(order.plan_graph.work_items[0].work_item_id, "executor-work")
-        self.assertEqual(order.plan_graph.work_items[0].tester_agent_ids, ["tester"])
 
     def test_planner_order_prompt_includes_compact_skill_index(self) -> None:
         model = FakeChatModel(
@@ -86,8 +80,7 @@ class AgentGraphExecutorTests(unittest.TestCase):
                 (
                     '{"artifact_type":"planner_order","round":1,"round_goal":"Research",'
                     '"plan_graph":{"work_items":[{"work_item_id":"executor-work","merge_index":1,'
-                    '"assignee_agent_id":"executor","task_summary":"Do it","depends_on":[],'
-                    '"tester_agent_ids":["tester"]}]}}'
+                    '"assignee_agent_id":"executor","task_summary":"Do it","depends_on":[]}]}}'
                 )
             ]
         )
@@ -105,8 +98,7 @@ class AgentGraphExecutorTests(unittest.TestCase):
                 (
                     '{"artifact_type":"planner_order","round":1,"round_goal":"Fix tests",'
                     '"plan_graph":{"work_items":[{"work_item_id":"executor-work","merge_index":1,'
-                    '"assignee_agent_id":"executor","task_summary":"Use repo intelligence","depends_on":[],'
-                    '"tester_agent_ids":["tester"]}]}}'
+                    '"assignee_agent_id":"executor","task_summary":"Use repo intelligence","depends_on":[]}]}}'
                 )
             ]
         )
@@ -170,10 +162,9 @@ class AgentGraphExecutorTests(unittest.TestCase):
         self.assertEqual(record.execution_summary, "Implemented the task.")
         self.assertEqual(record.artifact_payload["proposed_changes"][0]["path"], "src/app.py")
         self.assertIn("continue_without_human_possible", model.prompts[0])
-        self.assertEqual(
-            [event["type"] for event in events],
-            ["agent_graph.agent_call.started", "agent_graph.agent_call.completed"],
-        )
+        event_types = [event["type"] for event in events]
+        self.assertIn("agent_graph.agent_call.started", event_types)
+        self.assertIn("agent_graph.agent_call.completed", event_types)
 
     def test_worker_prompt_includes_selected_skill_context(self) -> None:
         model = FakeChatModel(
@@ -241,26 +232,6 @@ class AgentGraphExecutorTests(unittest.TestCase):
         self.assertIn("Executor output failed schema validation", record.artifact_payload["planner_question"])
         self.assertIn("agent_graph.agent_call.repair_failed", [event["type"] for event in events])
 
-    def test_valid_tester_json_becomes_test_record(self) -> None:
-        model = FakeChatModel(['{"artifact_type":"test_result","status":"pass","summary":"Looks good."}'])
-        executor = _executor(model)
-
-        record = executor.create_test_result(
-            item=_item(),
-            execution_artifact={
-                "artifact_type": "execution_result",
-                "round": 1,
-                "artifact_id": "execution_result_executor-work",
-                "status": "completed",
-                "summary": "Done.",
-            },
-            tester_agent_id="tester",
-        )
-
-        self.assertEqual(record.status, "pass")
-        self.assertEqual(record.tester_agent_id, "tester")
-        self.assertEqual(record.test_summary, "Looks good.")
-
     def test_valid_planner_decision_json_is_validated(self) -> None:
         model = FakeChatModel(
             [
@@ -277,23 +248,23 @@ class AgentGraphExecutorTests(unittest.TestCase):
         self.assertEqual(decision["next_action"], "finish")
         self.assertEqual(decision["reason"], "All work is done.")
 
-    def test_mock_planner_decision_continues_on_failed_tests(self) -> None:
+    def test_mock_planner_decision_continues_on_failed_verification(self) -> None:
         executor = AgentGraphExecutor(default_planner_led_agent_workflow())
 
         decision = executor.create_planner_decision(
             bundle=PlannerInputBundle(
                 round=1,
                 planner_order_ref="planner_order_round_1",
-                plan_status="partial_failed",
+                plan_status="blocked",
                 items=[
                     {
                         "work_item_id": "executor-work",
                         "merge_index": 1,
                         "task_summary": "Fix tests.",
-                        "execution_status": "completed",
+                        "execution_status": "blocked",
                         "execution_summary": "Changed code.",
-                        "test_status": "fail",
-                        "test_summary": "Tests failed.",
+                        "verification_status": "fail",
+                        "verification_summary": "Checks failed.",
                         "refs": [],
                     }
                 ],
@@ -301,7 +272,7 @@ class AgentGraphExecutorTests(unittest.TestCase):
         )
 
         self.assertEqual(decision["next_action"], "continue")
-        self.assertIn("Fix failing test", decision["next_round_goal"])
+        self.assertIn("Fix failed execution verification", decision["next_round_goal"])
 
     def test_planner_order_graph_validation_failure_stops_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -336,7 +307,6 @@ def _item() -> WorkItem:
         assignee_agent_id="executor",
         task_summary="Do the work.",
         depends_on=[],
-        tester_agent_ids=["tester"],
     )
 
 

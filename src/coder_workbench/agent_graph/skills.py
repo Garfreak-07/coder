@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 
-SkillAuthority = Literal["planner", "executor", "tester"]
+SkillAuthority = Literal["planner", "executor"]
 
 
 class AgentSkillModule(BaseModel):
@@ -78,6 +78,11 @@ SKILL_MODULES = [
         description="Return proposed file changes as execution facts.",
     ),
     AgentSkillModule(
+        id="execution_verification",
+        authority="executor",
+        description="Verify execution with allowed checks or static evidence.",
+    ),
+    AgentSkillModule(
         id="blocker_reporting",
         authority="executor",
         description="Report blocked execution with the Planner intervention protocol.",
@@ -85,27 +90,12 @@ SKILL_MODULES = [
     AgentSkillModule(
         id="execution_result_output",
         authority="executor",
-        description="Return execution_result artifacts only.",
-    ),
-    AgentSkillModule(
-        id="evidence_review",
-        authority="tester",
-        description="Review execution evidence without deciding global next steps.",
-    ),
-    AgentSkillModule(
-        id="check_command_proposal",
-        authority="tester",
-        description="Attach optional command evidence when runtime policy allows it.",
-    ),
-    AgentSkillModule(
-        id="test_result_output",
-        authority="tester",
-        description="Return test_result artifacts only.",
+        description="Return execution_result artifacts only, including verification.",
     ),
     AgentSkillModule(
         id="confidence_calibration",
-        authority="tester",
-        description="Calibrate confidence from observed evidence.",
+        authority="executor",
+        description="Calibrate verification confidence from observed evidence.",
     ),
 ]
 

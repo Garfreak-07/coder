@@ -114,7 +114,6 @@ def _planner_order() -> PlannerOrder:
                         "assignee_agent_id": "executor",
                         "task_summary": "Implement.",
                         "depends_on": [],
-                        "tester_agent_ids": ["tester"],
                     }
                 ]
             },

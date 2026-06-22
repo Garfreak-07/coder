@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from coder_workbench.core import AgentWorkflowAgent
 
 
-AgentRecipeRole = Literal["planner", "executor", "tester"]
+AgentRecipeRole = Literal["planner", "executor"]
 
 
 class AgentRecipe(BaseModel):
@@ -36,6 +36,4 @@ def recipe_from_workflow_agent(agent: "AgentWorkflowAgent", *, primary_planner_i
 def _recipe_role(agent: "AgentWorkflowAgent", *, primary_planner_id: str) -> AgentRecipeRole:
     if agent.id == primary_planner_id or agent.role == "planner":
         return "planner"
-    if agent.role_card == "tester" or agent.role == "tester":
-        return "tester"
     return "executor"

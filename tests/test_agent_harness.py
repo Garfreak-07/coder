@@ -71,7 +71,6 @@ def _item() -> WorkItem:
         merge_index=1,
         assignee_agent_id="executor",
         task_summary="Fix src/app.py.",
-        tester_agent_ids=["tester"],
     )
 
 

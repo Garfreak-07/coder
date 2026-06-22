@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.agent_graph.schema import (
     PlanRunSummary,
@@ -7,7 +9,6 @@ from coder_workbench.agent_graph.schema import (
     PlannerInputBundle,
     PlannerInputBundleItem,
     RoundSummaryItem,
-    TestRecord,
 )
 
 
@@ -24,8 +25,8 @@ def build_planner_input_bundle(cache: GraphRunCache) -> PlannerInputBundle:
             execution_summary=cache.execution_cache[item.work_item_id].execution_summary
             if item.work_item_id in cache.execution_cache
             else "",
-            test_status=_merged_test_status(cache.test_cache.get(item.work_item_id, []), item.tester_agent_ids),
-            test_summary=_merged_test_summary(cache.test_cache.get(item.work_item_id, []), item.tester_agent_ids),
+            verification_status=_verification_status(cache.execution_cache.get(item.work_item_id)),
+            verification_summary=_verification_summary(cache.execution_cache.get(item.work_item_id)),
             refs=cache.refs_for_work_item(item.work_item_id),
         )
         for item in cache.work_items()
@@ -58,7 +59,6 @@ def build_round_summary(cache: GraphRunCache) -> PlanRunSummary:
         planner_order_ref=planner_order_ref,
         plan_status=bundle.plan_status,
         completed_count=sum(1 for item in ordered_state if item.status == "completed"),
-        failed_count=sum(1 for item in ordered_state if item.status in {"failed_execution", "failed_test"}),
         blocked_count=sum(1 for item in ordered_state if item.status == "blocked"),
         ordered_state=ordered_state,
         remaining_work=_remaining_work(bundle, ordered_state),
@@ -70,7 +70,7 @@ def _remaining_work(bundle: PlannerInputBundle, ordered_state: list[RoundSummary
     remaining = [
         item.summary
         for item in ordered_state
-        if item.status in {"failed_execution", "failed_test", "blocked"}
+        if item.status == "blocked"
     ]
     if bundle.plan_status == "interrupted":
         for interrupt in bundle.interrupts:
@@ -86,9 +86,7 @@ def _plan_status(items: list[PlannerInputBundleItem], cache: GraphRunCache) -> P
         return "interrupted"
     if not items:
         return "completed"
-    if any(item.execution_status == "failed" or item.test_status == "fail" for item in items):
-        return "partial_failed"
-    if any(item.execution_status == "blocked" or item.test_status == "blocked" for item in items):
+    if any(item.execution_status == "blocked" or item.verification_status in {"fail", "blocked"} for item in items):
         return "blocked"
     if all(item.execution_status == "completed" for item in items):
         return "completed"
@@ -96,35 +94,40 @@ def _plan_status(items: list[PlannerInputBundleItem], cache: GraphRunCache) -> P
 
 
 def _round_item_status(item: PlannerInputBundleItem) -> str:
-    if item.execution_status == "blocked" or item.test_status == "blocked":
+    if item.execution_status == "blocked" or item.verification_status in {"fail", "blocked"}:
         return "blocked"
-    if item.execution_status == "failed":
-        return "failed_execution"
-    if item.test_status == "fail":
-        return "failed_test"
     if item.execution_status == "completed":
         return "completed"
     return "pending"
 
 
 def _round_item_summary(item: PlannerInputBundleItem) -> str:
-    parts = [part for part in [item.execution_summary, item.test_summary] if part]
+    parts = [part for part in [item.execution_summary, item.verification_summary] if part]
     return " ".join(parts) if parts else item.task_summary
 
 
-def _merged_test_status(records: list[TestRecord], tester_agent_ids: list[str]) -> str:
-    if not tester_agent_ids:
-        return "not_requested"
-    if any(record.status == "fail" for record in records):
-        return "fail"
-    if any(record.status == "blocked" for record in records):
-        return "blocked"
-    return "pass" if records else "not_requested"
+def _verification_status(record: Any | None) -> str:
+    artifact = getattr(record, "artifact_payload", None) if record is not None else None
+    if not isinstance(artifact, dict):
+        return "not_started"
+    verification = artifact.get("verification")
+    if not isinstance(verification, dict):
+        return "not_started"
+    return str(verification.get("status") or "not_started")
 
 
-def _merged_test_summary(records: list[TestRecord], tester_agent_ids: list[str]) -> str:
-    if not tester_agent_ids:
+def _verification_summary(record: Any | None) -> str:
+    artifact = getattr(record, "artifact_payload", None) if record is not None else None
+    if not isinstance(artifact, dict):
         return ""
-    if not records:
-        return "Test was requested but no TestRecord was written."
-    return " ".join(record.test_summary for record in records)
+    verification = artifact.get("verification")
+    if not isinstance(verification, dict):
+        return ""
+    checks = verification.get("checks_run")
+    if isinstance(checks, list) and checks:
+        summaries = [str(check.get("summary") or "") for check in checks if isinstance(check, dict)]
+        return " ".join(summary for summary in summaries if summary)
+    remaining = verification.get("remaining_work")
+    if isinstance(remaining, list) and remaining:
+        return " ".join(str(item) for item in remaining if str(item).strip())
+    return str(verification.get("no_check_rationale") or "")
