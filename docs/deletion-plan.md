@@ -15,7 +15,7 @@ removed only after product references are gone and tests protect the boundary.
 7. Move or delete legacy modules once no product tests or endpoints depend on
    them.
 
-## Current v0.9.6 Boundary
+## Current v0.9.7 Boundary
 
 `compile_agent_workflow_legacy_preview()` is the explicit compiler for advanced
 preview and migration/debug only. `compile_agent_workflow()` remains a
@@ -25,13 +25,21 @@ Product live Agent runs use:
 
 ```text
 AgentWorkflowSpec
+-> PlannerOrder.plan_graph
 -> RunController
+-> RunGuard
+-> BudgetBroker round preflight
+-> GraphRunCache
 -> AgentGraphRunner
--> AgentRun
--> AgentEngineRegistry
 -> ActionGateway
--> ToolCapability-enforced plugin / MCP / repo intelligence action boundary
+-> ContextService
+-> AgentRun
+-> PlannerStrategy
+-> AgentEngineRegistry
+-> Engines
+-> PlannerInputBundle
 -> PlannerDecision
+-> RunController
 ```
 
 They must not compile into `WorkflowSpec`, run through `WorkflowRunner`, or
@@ -68,7 +76,7 @@ The next deletion pass should migrate tests that still intentionally exercise
 legacy artifacts, then remove legacy artifact production from non-preview
 paths.
 
-## v0.9.6 Boundary Rules
+## v0.9.7 Boundary Rules
 
 - Ordinary user workflows remain AgentGraph-first.
 - `RunController` replaces inline PlannerDecision loop handling.
@@ -80,6 +88,11 @@ paths.
   direct `load_skill` is not a product runtime action.
 - Plugin and MCP execution must read registry `ToolCapability` before runtime
   dispatch; unknown or approval-gated operations must not execute silently.
+- Unknown worker-requested runtime actions must create failed `runtime_action`
+  artifacts, not disappear from Planner-visible effects.
+- Blocked plugin/MCP runtime actions must preserve `approval_key`, policy,
+  original `ActionSpec`, and `work_item_id`; approved replay must use
+  `ActionGateway` without rerunning worker model output generation.
 - `AgentRun` and `AgentEngineRegistry` own product Agent execution;
   `AgentGraphExecutor` is a compatibility adapter only.
 - Coding auto-loop effects keep patch preview, sandbox apply, check result,

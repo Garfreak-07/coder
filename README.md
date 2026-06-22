@@ -6,24 +6,24 @@ Coder is built around an AgentGraph runtime where Planner owns global decisions,
 Code Worker performs bounded implementation work, Tester returns evidence, and
 the runtime passes compact structured artifacts instead of transcripts.
 
-The current architecture target is v0.9.6 capability-enforced runtime effects:
+The current architecture target is v0.9.7 v1.0 convergence plan / contract freeze:
 
 ```text
 Ordinary Agent workflow UI
--> AgentRecipe / RuntimeProfileCompiler
--> RuntimeProfileCache
+-> AgentWorkflowSpec
+-> PlannerOrder.plan_graph
 -> RunController / RunGuard
--> AgentGraphRunner / AgentGraphScheduler / WaveExecutor
+-> BudgetBroker round preflight
+-> GraphRunCache
 -> ActionGateway
--> ToolCapability-enforced plugin / MCP / repo intelligence action boundary
--> BudgetBroker round preflight + reservations
 -> ContextService
 -> AgentRun
 -> PlannerStrategy
 -> AgentEngineRegistry
 -> PlannerEngine / CodeWorkerEngine / TesterEngine / FinalReviewEngine / SynthesizerEngine
--> patch_preview / sandbox_apply / check_result / runtime_action / DebugFinding refs
--> TraceSpan, partitioned stores, structured artifacts, PlannerDecision
+-> PlannerInputBundle
+-> PlannerDecision
+-> RunController
 ```
 
 Only Planner can ask the user. Non-Planner Agents return artifacts, blockers, or
@@ -67,15 +67,14 @@ AgentWorkflowSpec
 -> BudgetBroker round preflight
 -> GraphRunCache
 -> ActionGateway
--> AgentTaskEnvelope
 -> ContextService
--> BudgetBroker reservations
 -> AgentRun
--> AgentEngine
--> execution_result / test_result
+-> PlannerStrategy
+-> AgentEngineRegistry
+-> Engines
 -> PlannerInputBundle
 -> PlannerDecision
--> RunController next-round decision
+-> RunController
 ```
 
 `WorkflowSpec` and `WorkflowRunner` are legacy compatibility paths for old saved
@@ -124,8 +123,9 @@ retained only for old `WorkflowSpec` flows.
   intelligence, and artifact repair/validation actions. Declared `ActionSpec`
   types must either be implemented by `ActionGateway` or absent from
   `ACTION_TYPES`. Plugin and MCP actions merge caller risk with registry
-  `ToolCapability`; approval-gated or unknown operations are blocked before
-  execution unless explicitly approved.
+  `ToolCapability`; approval-gated or unknown operations are blocked or failed
+  before execution unless explicitly approved. Worker-requested runtime actions
+  are recorded as `runtime_action` effects and are never silently dropped.
 - `RuntimeProfileCompiler` converts ordinary Agent roles into internal engine,
   context, token, artifact, plugin, skill, memory, repair, and tool policies.
   Research and draft Agent roles use the knowledge-worker `SynthesizerEngine`
@@ -287,7 +287,10 @@ Focused architecture boundary tests:
   with structured artifact refs carried in `PlannerInputBundle.effects`.
 - Worker artifacts may request low-level runtime actions through
   `requested_actions`; plugin, MCP, and repo-index outputs are recorded as
-  `runtime_action` effects with `tool_result_ref` / `output_ref`.
+  `runtime_action` effects with `tool_result_ref` / `output_ref`. Blocked
+  plugin/MCP actions preserve `approval_key`, policy, original `ActionSpec`, and
+  `work_item_id`; approved replay goes through `ActionGateway` without rerunning
+  the worker model.
 - Extensions are globally installed and routed per work item.
 - Ordinary UI should not expose runtime JSON, harness graphs, context policies,
   token budgets, or manual capability checklists.
@@ -302,6 +305,9 @@ Architecture notes:
 - [docs/agent-engines.md](docs/agent-engines.md)
 - [docs/coding-kernel.md](docs/coding-kernel.md)
 - [docs/deletion-plan.md](docs/deletion-plan.md)
+- [docs/release-1.0-plan.md](docs/release-1.0-plan.md)
+- [docs/runtime-action-contract.md](docs/runtime-action-contract.md)
+- [docs/1.0-acceptance-tests.md](docs/1.0-acceptance-tests.md)
 
 ## Secrets
 
