@@ -121,6 +121,7 @@ class AgentRun:
         *,
         item: WorkItem,
         execution_artifact: dict[str, Any],
+        upstream_artifacts: list[dict[str, Any]] | None = None,
         tester_agent_id: str,
         emit: Any | None = None,
     ) -> Any:
@@ -128,6 +129,7 @@ class AgentRun:
             agent_workflow=self.agent_workflow,
             item=item,
             execution_artifact=execution_artifact,
+            upstream_artifacts=upstream_artifacts,
             tester_agent_id=tester_agent_id,
             runtime_settings=self.runtime_settings,
             model_factory=self.model_factory,

@@ -37,6 +37,7 @@ export interface RoleCardSpec {
   label: string;
   archetype: string;
   role: AgentWorkflowRole;
+  engine_id: string;
   default_capabilities: AgentCapability[];
   description: string;
 }

@@ -520,6 +520,7 @@ class TesterEngine(ModelBackedEngine):
         agent_workflow: "AgentWorkflowSpec",
         item: "WorkItem",
         execution_artifact: dict[str, Any],
+        upstream_artifacts: list[dict[str, Any]] | None = None,
         tester_agent_id: str,
         runtime_settings: Any | None = None,
         model_factory: ModelFactory = create_chat_model,
@@ -532,18 +533,31 @@ class TesterEngine(ModelBackedEngine):
         from coder_workbench.agent_graph.schema import TestRecord
 
         tester = _agent(agent_workflow, tester_agent_id)
+        upstream = list(upstream_artifacts or [])
+        evidence_refs = _artifact_refs([execution_artifact, *upstream])
+        mock_status = _aggregate_test_status(execution_artifact, upstream)
+        mock_summary = (
+            "Mock AgentGraph tester aggregated upstream evidence."
+            if upstream
+            else "Mock AgentGraph tester found no blocking issue."
+        )
         payload = self._invoke_or_mock(
             artifact_type="test_result",
             agent_id=tester.id,
-            prompt=build_tester_prompt(tester=tester, item=item, execution_result=execution_artifact),
+            prompt=build_tester_prompt(
+                tester=tester,
+                item=item,
+                execution_result=execution_artifact,
+                upstream_artifacts=upstream,
+            ),
             mock_payload={
                 "artifact_type": "test_result",
                 "round": int(execution_artifact.get("round") or 1),
-                "status": "pass",
-                "summary": "Mock AgentGraph tester found no blocking issue.",
-                "evidence": [str(execution_artifact.get("artifact_id") or "")],
+                "status": mock_status,
+                "summary": mock_summary,
+                "evidence": evidence_refs,
                 "issues": [],
-                "remaining_work": [],
+                "remaining_work": _aggregate_remaining_work(execution_artifact, upstream),
                 "confidence": "medium",
                 "check_commands": [],
                 "check_outputs_ref": None,
@@ -560,9 +574,11 @@ class TesterEngine(ModelBackedEngine):
             merge_index=item.merge_index,
         )
         round_number = int(execution_artifact.get("round") or payload.get("round") or 1)
+        test_result_ref = _artifact_ref("test_result", item.work_item_id, tester_agent_id)
         payload = _with_forced_fields(
             payload,
             {
+                "artifact_id": test_result_ref,
                 "artifact_type": "test_result",
                 "round": round_number,
                 "work_item_id": item.work_item_id,
@@ -585,7 +601,7 @@ class TesterEngine(ModelBackedEngine):
             tester_agent_id=tester_agent_id,
             status=artifact["status"],
             test_summary=artifact["summary"],
-            test_result_ref=_artifact_ref("test_result", item.work_item_id, tester_agent_id),
+            test_result_ref=test_result_ref,
             artifact_payload=artifact,
         )
 
@@ -639,6 +655,41 @@ def _artifact_ref(artifact_type: str, *parts: Any) -> str:
     from coder_workbench.agent_graph.artifacts import graph_artifact_id
 
     return graph_artifact_id(artifact_type, *parts)
+
+
+def _artifact_refs(artifacts: list[dict[str, Any]]) -> list[str]:
+    refs: list[str] = []
+    for artifact in artifacts:
+        artifact_id = str(
+            artifact.get("artifact_id")
+            or artifact.get("execution_result_ref")
+            or artifact.get("test_result_ref")
+            or ""
+        )
+        if artifact_id:
+            refs.append(artifact_id)
+    return refs
+
+
+def _aggregate_test_status(execution_artifact: dict[str, Any], upstream_artifacts: list[dict[str, Any]]) -> str:
+    statuses = [str(execution_artifact.get("status") or "")]
+    statuses.extend(str(artifact.get("status") or "") for artifact in upstream_artifacts)
+    if any(status == "blocked" for status in statuses):
+        return "blocked"
+    if any(status in {"failed", "fail"} for status in statuses):
+        return "fail"
+    return "pass"
+
+
+def _aggregate_remaining_work(execution_artifact: dict[str, Any], upstream_artifacts: list[dict[str, Any]]) -> list[str]:
+    remaining: list[str] = []
+    for artifact in [execution_artifact, *upstream_artifacts]:
+        status = str(artifact.get("status") or "")
+        if status not in {"blocked", "failed", "fail"}:
+            continue
+        summary = str(artifact.get("summary") or artifact.get("execution_summary") or "")
+        remaining.append(summary or f"{artifact.get('artifact_type', 'artifact')} did not pass")
+    return remaining
 
 
 def _is_tester(agent: AgentWorkflowAgent) -> bool:

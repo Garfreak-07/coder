@@ -554,6 +554,7 @@ def default_planner_led_agent_workflow() -> AgentWorkflowSpec:
                     "id": "executor",
                     "name": "Executor Agent",
                     "role": "executor",
+                    "role_card": "executor",
                     "model_tier": "standard",
                     "can_talk_to_human": False,
                     "capabilities": [
@@ -566,6 +567,7 @@ def default_planner_led_agent_workflow() -> AgentWorkflowSpec:
                     "id": "tester",
                     "name": "Tester Agent",
                     "role": "tester",
+                    "role_card": "tester",
                     "model_tier": "standard",
                     "can_talk_to_human": False,
                     "capabilities": [

@@ -21,6 +21,7 @@ class RoleCardSpec(BaseModel):
     label: str
     archetype: AgentArchetype
     role: str
+    engine_id: str
     default_capabilities: list[str]
     description: str
 
@@ -32,6 +33,7 @@ class AgentRuntimeProfile(BaseModel):
     agent_name: str
     role_card: str | None = None
     agent_archetype: str
+    engine_id: str
     authority: AgentAuthorityProfile
     allowed_artifacts: list[str] = Field(default_factory=list)
     context_policy: dict[str, object] = Field(default_factory=dict)
@@ -48,6 +50,7 @@ ROLE_CARDS = [
         label="Executor",
         archetype="executor",
         role="executor",
+        engine_id="code-worker-engine",
         default_capabilities=["follow_planner_order", "modify_files", "return_execution_result"],
         description="Perform implementation or execution work assigned by Planner.",
     ),
@@ -56,6 +59,7 @@ ROLE_CARDS = [
         label="Tester",
         archetype="tester",
         role="tester",
+        engine_id="tester-engine",
         default_capabilities=["model_review", "return_test_result"],
         description="Review execution evidence and return test_result facts.",
     ),
@@ -119,6 +123,7 @@ def compile_agent_runtime_profile(
         agent_name=agent.name,
         role_card=agent.role_card,
         agent_archetype=archetype,
+        engine_id=_engine_id_for_agent(agent, archetype),
         authority=authority,
         allowed_artifacts=list(authority.allowed_artifact_types),
         context_policy=_context_policy(archetype),
@@ -145,6 +150,16 @@ def _archetype_for_agent(agent: "AgentWorkflowAgent", authority: str) -> str:
     if authority == "tester":
         return "tester"
     return "executor"
+
+
+def _engine_id_for_agent(agent: "AgentWorkflowAgent", archetype: str) -> str:
+    if agent.role_card:
+        return role_card_for_id(agent.role_card).engine_id
+    return {
+        "planner": "planner-engine",
+        "executor": "code-worker-engine",
+        "tester": "tester-engine",
+    }[archetype]
 
 
 def _context_policy(archetype: str) -> dict[str, object]:

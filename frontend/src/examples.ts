@@ -19,6 +19,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
       id: "executor",
       name: "Executor Agent",
       role: "executor",
+      role_card: "executor",
       model_tier: "standard",
       can_talk_to_human: false,
       capabilities: ["modify_files", "follow_planner_order", "return_execution_result"]
@@ -27,6 +28,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
       id: "tester",
       name: "Tester Agent",
       role: "tester",
+      role_card: "tester",
       model_tier: "standard",
       can_talk_to_human: false,
       capabilities: ["model_review", "optional_check_command", "return_test_result"]

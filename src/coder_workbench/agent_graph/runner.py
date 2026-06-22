@@ -1090,15 +1090,23 @@ class AgentGraphRunner:
                     "summary": execution.execution_summary,
                 }
             )
-            execution_artifact.setdefault("artifact_id", execution.execution_result_ref)
-            tests = [
-                self.agent_run.run_test(
-                    item=item,
-                    execution_artifact=execution_artifact,
-                    tester_agent_id=tester_agent_id,
+            if not execution_artifact.get("artifact_id"):
+                execution_artifact["artifact_id"] = execution.execution_result_ref
+            tests = []
+            for tester_agent_id in item.tester_agent_ids:
+                upstream_artifacts = [
+                    test.artifact_payload
+                    for test in tests
+                    if isinstance(test.artifact_payload, dict)
+                ]
+                tests.append(
+                    self.agent_run.run_test(
+                        item=item,
+                        execution_artifact=execution_artifact,
+                        upstream_artifacts=upstream_artifacts,
+                        tester_agent_id=tester_agent_id,
+                    )
                 )
-                for tester_agent_id in item.tester_agent_ids
-            ]
         return WorkItemOutcome(
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
@@ -1450,9 +1458,15 @@ class _ExecutorAdapter:
             "execution_artifact": kwargs["execution_artifact"],
             "tester_agent_id": kwargs["tester_agent_id"],
         }
+        if kwargs.get("upstream_artifacts") is not None:
+            payload["upstream_artifacts"] = kwargs["upstream_artifacts"]
         if kwargs.get("emit") is not None:
             payload["emit"] = kwargs["emit"]
-        return self.executor.create_test_result(**payload)
+        try:
+            return self.executor.create_test_result(**payload)
+        except TypeError:
+            payload.pop("upstream_artifacts", None)
+            return self.executor.create_test_result(**payload)
 
     def run_planner_decision(self, **kwargs: Any) -> dict[str, Any]:
         payload = {

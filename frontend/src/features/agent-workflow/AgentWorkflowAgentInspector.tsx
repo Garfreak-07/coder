@@ -1,17 +1,8 @@
 import type {
-  AgentModelTier,
   AgentWorkflowAgent,
-  AgentWorkflowRole,
   CapabilitySpec,
   RoleCardSpec
 } from "../../types";
-
-const agentModelTiers: AgentModelTier[] = ["best", "standard", "economy"];
-const agentWorkflowRoles: AgentWorkflowRole[] = [
-  "planner",
-  "executor",
-  "tester"
-];
 
 interface AgentWorkflowAgentInspectorProps {
   agent: AgentWorkflowAgent;
@@ -28,16 +19,14 @@ export function AgentWorkflowAgentInspector({
   isPrimaryPlanner,
   onChange
 }: AgentWorkflowAgentInspectorProps) {
-  const selectedCapabilities = new Set(agent.capabilities);
-  const visibleCapabilities = capabilities.filter(
-    (capability) => capability.allowed_roles.includes(agent.role) || selectedCapabilities.has(capability.id)
-  );
-  const selectedRoleCard = roleCards.find((card) => card.id === agent.role_card) ?? null;
+  void capabilities;
+  const selectedRoleCard =
+    roleCards.find((card) => card.id === agent.role_card) ??
+    (!isPrimaryPlanner ? roleCards.find((card) => card.role === agent.role) ?? null : null);
 
   function applyRoleCard(roleCardId: string) {
     const roleCard = roleCards.find((card) => card.id === roleCardId);
     if (!roleCard) {
-      onChange({ role_card: null });
       return;
     }
     onChange({
@@ -75,8 +64,7 @@ export function AgentWorkflowAgentInspector({
       ) : (
         <label>
           Role
-          <select value={agent.role_card ?? ""} onChange={(event) => applyRoleCard(event.target.value)}>
-            <option value="">Custom</option>
+          <select value={selectedRoleCard?.id ?? ""} onChange={(event) => applyRoleCard(event.target.value)}>
             {roleCards.map((roleCard) => (
               <option key={roleCard.id} value={roleCard.id}>
                 {roleCard.label}
@@ -86,84 +74,6 @@ export function AgentWorkflowAgentInspector({
         </label>
       )}
       {selectedRoleCard && <div className="muted">{selectedRoleCard.description}</div>}
-
-      <details className="json-details">
-        <summary>Advanced Agent Internals</summary>
-        <div className="form-stack">
-          <label>
-            Runtime Role
-            <select value={agent.role} onChange={(event) => onChange({ role: event.target.value as AgentWorkflowRole })}>
-              {agentWorkflowRoles.map((role) => (
-                <option key={role} value={role}>
-                  {role}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Model Tier
-            <select value={agent.model_tier} onChange={(event) => onChange({ model_tier: event.target.value as AgentModelTier })}>
-              {agentModelTiers.map((tier) => (
-                <option key={tier} value={tier}>
-                  {tier}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={agent.can_talk_to_human}
-              disabled={agent.role !== "planner"}
-              onChange={(event) => onChange({ can_talk_to_human: event.target.checked })}
-            />
-            Allow asking the user (Planner only)
-          </label>
-          <div className="panel-subtitle">Resolved Extensions & Policies</div>
-          {capabilities.length === 0 ? (
-            <div className="muted">Extension diagnostics are unavailable.</div>
-          ) : (
-            <div className="capability-list">
-              {visibleCapabilities.map((capability) => {
-                const selected = selectedCapabilities.has(capability.id);
-                const roleAllowed = capability.allowed_roles.includes(agent.role);
-                return (
-                  <label className={`capability-option ${selected ? "selected" : ""}`} key={capability.id}>
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      disabled
-                      readOnly
-                    />
-                    <span>
-                      <strong>{capability.label}</strong>
-                      <small>{capability.description}</small>
-                      <small>
-                        Produces: {capability.produces.join(", ") || "none"} / Requires: {capability.requires.join(", ") || "none"}
-                      </small>
-                      <small>
-                        Permissions: {capabilityPermissionSummary(capability)}
-                        {capability.runtime_effects.length > 0 ? ` / Effects: ${capability.runtime_effects.join(", ")}` : ""}
-                      </small>
-                      {!roleAllowed && selected && <small className="warning-text">Not allowed for role {agent.role}</small>}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </details>
     </div>
   );
-}
-
-function capabilityPermissionSummary(capability: CapabilitySpec): string {
-  const permissions = [
-    capability.permissions.read_files ? "read files" : null,
-    capability.permissions.edit_files ? "edit files" : null,
-    capability.permissions.run_commands ? "run commands" : null,
-    capability.permissions.use_network ? "network" : null
-  ].filter(Boolean);
-  return permissions.length > 0 ? permissions.join(", ") : "no elevated permissions";
 }

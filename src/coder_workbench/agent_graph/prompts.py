@@ -111,22 +111,25 @@ def build_tester_prompt(
     tester: AgentWorkflowAgent,
     item: WorkItem,
     execution_result: dict[str, Any],
+    upstream_artifacts: list[dict[str, Any]] | None = None,
 ) -> str:
-    return "\n\n".join(
-        [
-            _json_only_header("test_result"),
-            "You are a Tester Agent. Return evidence only.",
-            "Do not ask the human. Do not make global continue/finish decisions.",
-            "Use check_commands only for optional commands that would materially improve evidence.",
-            _test_result_schema_notes(),
-            "Tester Agent JSON:",
-            _compact_json(_agent_summary(tester)),
-            "Work item JSON:",
-            _compact_json(item.model_dump(mode="json")),
-            "ExecutionResult JSON:",
-            _compact_json(execution_result),
-        ]
-    )
+    parts = [
+        _json_only_header("test_result"),
+        "You are a Tester Agent. Return evidence only.",
+        "Do not ask the human. Do not make global continue/finish decisions.",
+        "Use check_commands only for optional commands that would materially improve evidence.",
+        "If upstream test_result artifacts are supplied, aggregate them into a new test_result.",
+        _test_result_schema_notes(),
+        "Tester Agent JSON:",
+        _compact_json(_agent_summary(tester)),
+        "Work item JSON:",
+        _compact_json(item.model_dump(mode="json")),
+        "ExecutionResult JSON:",
+        _compact_json(execution_result),
+    ]
+    if upstream_artifacts:
+        parts.extend(["Upstream artifacts JSON:", _compact_json(upstream_artifacts)])
+    return "\n\n".join(parts)
 
 
 def build_planner_decision_prompt(
