@@ -19,11 +19,14 @@ class LargeToolResultExternalizationTests(unittest.TestCase):
             run_context=RunContext(run_id="run", repo_root=".", data=data),
         )
 
-        full_ref = result.payload["result"]["output"]["full_result_ref"]
+        output = result.payload["result"]["output"]
+        blob_id = output["blob_id"]
 
         self.assertEqual(result.status, "ok")
-        self.assertEqual(data["tool_result_store"][full_ref]["content"], large_output)
-        self.assertEqual(data["tool_result_store"][full_ref]["original_chars"], len(large_output))
+        self.assertTrue(blob_id.startswith("sha256:"))
+        self.assertEqual(data["pending_blob_writes"][blob_id]["content"], large_output)
+        self.assertEqual(data["pending_blob_writes"][blob_id]["original_chars"], len(large_output))
+        self.assertEqual(data["tool_result_replacements"][0]["blob_id"], blob_id)
 
 
 class FakeCommandService:

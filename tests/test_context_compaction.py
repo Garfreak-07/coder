@@ -27,9 +27,10 @@ class ContextCompactionTests(unittest.TestCase):
         ).compact(packet, run_id="run", work_item_id="work-1", store=store)
 
         output = result.packet["command_output"]
-        self.assertTrue(output["truncated"])
-        self.assertIn(output["full_ref"], store.backing)
-        self.assertEqual(store.read(output["full_ref"])["content"], "error line\n" * 1000)
+        self.assertIn("blob_id", output)
+        self.assertTrue(output["blob_id"].startswith("sha256:"))
+        self.assertIn(output["blob_id"], store.backing)
+        self.assertEqual(store.read(output["blob_id"])["content"], "error line\n" * 1000)
         self.assertLess(result.token_estimate_after, result.token_estimate_before)
 
     def test_artifact_identity_failure_reason_and_evidence_refs_survive(self) -> None:
@@ -72,6 +73,14 @@ class ContextCompactionTests(unittest.TestCase):
                 depends_on=[],
             )
 
+            data = {
+                "enable_context_compaction": True,
+                "context_budget": {
+                    "max_input_tokens": 120,
+                    "max_artifact_tokens": 20,
+                    "max_tool_result_tokens": 20,
+                },
+            }
             result = ActionGateway().run(
                 ActionSpec(action_id="ctx", action_type="build_context"),
                 run_context=RunContext(
@@ -86,14 +95,7 @@ class ContextCompactionTests(unittest.TestCase):
                     skill_index=SkillIndex(),
                     skill_store_root=root / ".coder",
                     repo_intelligence={"repo_index": {"important_files": ["src/large.py"]}},
-                    data={
-                        "enable_context_compaction": True,
-                        "context_budget": {
-                            "max_input_tokens": 120,
-                            "max_artifact_tokens": 20,
-                            "max_tool_result_tokens": 20,
-                        },
-                    },
+                    data=data,
                 ),
             )
 
@@ -102,8 +104,9 @@ class ContextCompactionTests(unittest.TestCase):
         self.assertTrue(cache.context_external_refs)
         compact_packet = result.payload["compact_coding_context_packet"]
         snippet_content = compact_packet["included_snippets"][0]["content"]
-        self.assertTrue(snippet_content["truncated"])
-        self.assertIn(snippet_content["full_ref"], cache.context_external_refs)
+        self.assertIn("blob_id", snippet_content)
+        self.assertIn(snippet_content["blob_id"], cache.context_external_refs)
+        self.assertIn(snippet_content["blob_id"], data["pending_blob_writes"])
 
 
 if __name__ == "__main__":

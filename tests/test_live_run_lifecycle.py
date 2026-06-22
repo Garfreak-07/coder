@@ -61,6 +61,48 @@ class LiveRunLifecycleTests(unittest.TestCase):
             manager = AgentGraphRunManager(store)
 
         self.assertEqual(manager.get("live").status, "failed")
+        self.assertEqual(manager.get("live").error, "interrupted_without_checkpoint")
+
+    def test_restart_marks_persisted_running_run_resume_available_when_checkpoint_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RunStore(tmp)
+            checkpoint = {
+                "checkpoint_version": 1,
+                "resume_mode": "agent_graph_checkpoint",
+                "data": {"run_id": "live"},
+                "round": 1,
+                "phase": "round_completed",
+            }
+            result = RunResult(
+                status="blocked",
+                data={"run_id": "live"},
+                summaries={},
+                events=[],
+                estimated_tokens_used=0,
+                agent_calls=0,
+                tool_calls=0,
+                resume_checkpoint=checkpoint,
+            )
+            store.save_live(
+                {
+                    "id": "live",
+                    "runtime_type": "agent_graph",
+                    "agent_workflow": default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True),
+                    "repo_root": tmp,
+                    "request": "request",
+                    "initial_data": {},
+                    "status": "running",
+                    "events": [],
+                    "result": result.model_dump(mode="json"),
+                    "stored_run_id": None,
+                    "error": None,
+                }
+            )
+            manager = AgentGraphRunManager(store)
+
+        live = manager.get("live")
+        self.assertEqual(live.status, "blocked")
+        self.assertEqual(live.result.status_code, "resume_available")
 
 
 class SlowFakeRunner:

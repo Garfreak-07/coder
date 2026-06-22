@@ -235,6 +235,7 @@ class ActionGateway:
             artifact_type=str(_input_or_context(spec, run_context, "artifact_type") or "execution_result"),
             context_budget=ContextBudget.from_data(run_context.data),
             enable_context_compaction=context_compaction_enabled(run_context.data),
+            data=run_context.mutable_data,
         )
         self.budget_broker.commit(reservation.reservation_id, actual_tokens=context.token_ledger_entry.estimated_input_tokens)
         return ActionResult(

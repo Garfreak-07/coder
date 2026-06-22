@@ -338,6 +338,8 @@ export function subscribeRunEvents(url: string, onEvent: (event: RunEvent) => vo
     "skill.index.available",
     "skill.route.selected",
     "agent.context_packet_v2",
+    "agent.coding_context_packet",
+    "agent.context_compaction.applied",
     "token.ledger.entry",
     "agent_graph.agent_call.started",
     "agent_graph.agent_call.completed",

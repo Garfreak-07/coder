@@ -566,6 +566,10 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "result": live.result.model_dump(mode="json") if live.result else None,
             "stored_run_id": live.stored_run_id,
             "error": live.error,
+            "run_group_id": live.initial_data.get("run_group_id"),
+            "parent_run_id": live.initial_data.get("parent_run_id"),
+            "continued_from_run_id": live.initial_data.get("continued_from_run_id"),
+            "turn_index": live.initial_data.get("turn_index"),
             "heartbeat": agent_manager.heartbeat(run_id),
             "approval_required": False,
         }

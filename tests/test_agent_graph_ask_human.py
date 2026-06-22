@@ -35,6 +35,13 @@ class AgentGraphAskHumanTests(unittest.TestCase):
         self.assertIn("planner.human_prompt", {event.type for event in result.events})
         self.assertNotIn("approval.required", {event.type for event in result.events})
         self.assertEqual(result.resume_checkpoint["data"]["planner_human_prompt"], "Confirm the next step?")
+        self.assertEqual(result.resume_checkpoint["checkpoint_version"], 1)
+        self.assertEqual(result.resume_checkpoint["resume_mode"], "planner_response")
+        self.assertEqual(result.resume_checkpoint["phase"], "planner_ask_human")
+        self.assertIn("graph_run_cache", result.resume_checkpoint)
+        self.assertIn("completed_work_item_ids", result.resume_checkpoint)
+        self.assertIn("blocked_work_item_ids", result.resume_checkpoint)
+        self.assertIsInstance(result.resume_checkpoint["event_cursor"], int)
 
     def test_live_agent_run_accepts_planner_response_and_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

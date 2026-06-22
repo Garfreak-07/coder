@@ -25,8 +25,9 @@ the Planner -> Execution Engine -> Planner authority model:
   `ToolExecutionService` with ordered results, conservative concurrency,
   per-action timeout handling, structured execution events, and large result
   budgeting.
-- Context construction supports artifact-aware compaction with recoverable
-  external refs for oversized snippets, artifacts, and tool outputs.
+- Context construction supports artifact-aware projection and compaction.
+  Oversized snippets, artifacts, and tool outputs are represented as previews
+  plus `sha256:<digest>` BlobStore refs.
 - The executor harness supports bounded self-checks, verification checks, and
   multi-stage artifact repair. Invalid model output becomes a Planner-visible
   blocked artifact instead of an unstructured runtime crash.
@@ -37,6 +38,27 @@ the Planner -> Execution Engine -> Planner authority model:
   does not loop indefinitely on the same unresolved execution blocker.
 - Live AgentGraph runs expose pause, resume, cancel, and heartbeat control for
   long/background execution.
+
+## Long Context, Storage, And Recovery
+
+Coder uses one durable path for large text:
+
+- `BlobStore` stores full large strings by `sha256:<digest>` id.
+- Context packets live in `ContextPacketStore`; tool results live in
+  `ToolResultStore`.
+- Events store summary, id/ref, status, and size, not full packets or large
+  tool output.
+- `ContextService` remains the public context construction entrypoint. Its
+  private projection chooses hot/warm/cold context before `ContextCompactor`
+  shrinks selected fields.
+- `RunResult.resume_checkpoint` is the active recovery path for interrupted
+  AgentGraph runs. Reloaded queued/running live runs with checkpoint data are
+  marked `blocked` with `status_code="resume_available"`.
+- `run_group_id`, `parent_run_id`, `continued_from_run_id`, and `turn_index`
+  provide lightweight multi-run continuity without a parallel session store.
+
+See [docs/runtime-storage.md](docs/runtime-storage.md) and
+[docs/long-context.md](docs/long-context.md) for contributor notes.
 
 Most low-level runtime behavior is feature-flagged during rollout:
 
@@ -193,6 +215,8 @@ npm.cmd run build
 - New context, patch, command, repair, validation, plugin, and MCP behavior
   should enter through `ActionGateway`.
 - Budget-affecting work should use `BudgetBroker` preflight and reservations.
+- Large text should be persisted through `BlobStore`; do not add another durable
+  context or tool-result ref format.
 - The ordinary UI should not expose runtime JSON, engine knobs, harness graphs,
   context policies, token budgets, manual capability checklists, or advanced
   edge editing.

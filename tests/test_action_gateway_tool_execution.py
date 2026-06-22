@@ -58,14 +58,15 @@ class ActionGatewayToolExecutionTests(unittest.TestCase):
 
         output = result.payload["result"]["output"]
         self.assertEqual(result.status, "ok")
-        self.assertTrue(output["truncated"])
-        self.assertIn("full_result_ref", output)
+        self.assertIn("blob_id", output)
+        self.assertTrue(output["blob_id"].startswith("sha256:"))
         self.assertEqual(output["original_chars"], len(large_output))
-        self.assertIn(output["full_result_ref"], data["tool_result_store"])
-        self.assertEqual(data["tool_result_store"][output["full_result_ref"]]["content"], large_output)
+        self.assertIn(output["blob_id"], data["pending_blob_writes"])
+        self.assertEqual(data["pending_blob_writes"][output["blob_id"]]["content"], large_output)
+        self.assertEqual(data["tool_result_replacements"][0]["blob_id"], output["blob_id"])
         self.assertEqual(
             result.payload["result_budget"]["externalized_refs"],
-            [output["full_result_ref"]],
+            [output["blob_id"]],
         )
 
     def test_repo_index_still_returns_action_result_with_service_enabled(self) -> None:

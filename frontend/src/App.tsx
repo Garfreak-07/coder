@@ -767,7 +767,11 @@ export function App() {
               {liveRuns.map((run) => (
                 <button className="list-item" key={run.id} onClick={() => openLiveRun(run.id)}>
                   <span>{run.workflow_id}</span>
-                  <small>{run.status} / {run.events} events</small>
+                  <small>
+                    {run.status}
+                    {run.status_code ? `:${run.status_code}` : ""} / {run.events} events
+                    {run.turn_index && run.turn_index > 1 ? ` / turn ${run.turn_index}` : ""}
+                  </small>
                 </button>
               ))}
               {liveRuns.length === 0 && <div className="muted">{t.runtime.noLiveRuns}</div>}
@@ -793,6 +797,7 @@ export function App() {
                   <small>
                     {run.status}
                     {run.status_code ? `:${run.status_code}` : ""} / {run.events} events
+                    {run.turn_index && run.turn_index > 1 ? ` / turn ${run.turn_index}` : ""}
                   </small>
                 </button>
               ))}
@@ -858,6 +863,30 @@ export function App() {
 function runStatusLabel(detail: StoredRunDetail | LiveRunDetail, kind: "live" | "stored" | null): string {
   if (kind === "stored" && "result" in detail) return detail.result?.status ?? "unknown";
   return (detail as LiveRunDetail).status ?? "unknown";
+}
+
+function runContinuity(detail: StoredRunDetail | LiveRunDetail, kind: "live" | "stored" | null): {
+  runGroupId: string | null;
+  continuedFromRunId: string | null;
+  turnIndex: number | null;
+} {
+  if (kind === "live") {
+    const live = detail as LiveRunDetail;
+    return {
+      runGroupId: live.run_group_id ?? null,
+      continuedFromRunId: live.continued_from_run_id ?? null,
+      turnIndex: typeof live.turn_index === "number" ? live.turn_index : null
+    };
+  }
+  if (kind === "stored" && "result" in detail) {
+    const data = objectValue(detail.result?.data);
+    return {
+      runGroupId: typeof data?.run_group_id === "string" ? data.run_group_id : null,
+      continuedFromRunId: typeof data?.continued_from_run_id === "string" ? data.continued_from_run_id : null,
+      turnIndex: typeof data?.turn_index === "number" ? data.turn_index : null
+    };
+  }
+  return { runGroupId: null, continuedFromRunId: null, turnIndex: null };
 }
 
 function isWaitingForPlannerHumanResponse(
@@ -1316,6 +1345,9 @@ function RunDetailCard({
   const status = kind === "stored" ? result?.status : (detail as LiveRunDetail).status;
   const events = kind === "stored" ? result?.events.length ?? 0 : (detail as LiveRunDetail).events.length;
   const liveDetail = kind === "live" ? (detail as LiveRunDetail) : null;
+  const continuity = runContinuity(detail, kind);
+  const statusCode = kind === "live" ? liveDetail?.status_code ?? result?.status_code : result?.status_code;
+  const resumeAvailable = status === "blocked" && statusCode === "resume_available";
   const canAttach = liveDetail?.status === "queued" || liveDetail?.status === "running" || liveDetail?.status === "blocked";
   const canApprove = liveDetail?.status === "blocked" && Boolean(liveDetail.approval_required);
 
@@ -1332,9 +1364,21 @@ function RunDetailCard({
         {result && <span>{result.tool_calls} tool calls</span>}
         {result && <span>{result.estimated_tokens_used} est. tokens</span>}
         {result?.blocked_node_id && <span>blocked at {result.blocked_node_id}</span>}
-        {result?.status_code && <span>{result.status_code}</span>}
+        {statusCode && <span>{statusCode}</span>}
+        {continuity.turnIndex && continuity.turnIndex > 1 && <span>continued turn {continuity.turnIndex}</span>}
       </div>
       {result?.status_reason && <div className="muted">Reason: {result.status_reason}</div>}
+      {resumeAvailable && (
+        <div className="approval-card">
+          This run was interrupted and can be resumed from the latest checkpoint.
+        </div>
+      )}
+      {continuity.runGroupId && (
+        <div className="summary-grid">
+          <span>run group: {continuity.runGroupId}</span>
+          {continuity.continuedFromRunId && <span>continued from: {continuity.continuedFromRunId}</span>}
+        </div>
+      )}
       <div className="muted">Repo: {detail.repo_root}</div>
       <div className="muted">Request: {detail.request}</div>
       {liveDetail?.stored_run_id && (

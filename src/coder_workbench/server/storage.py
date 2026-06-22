@@ -14,7 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from coder_workbench.core.artifacts import artifact_summary
 from coder_workbench.runtime import RunEvent, RunResult
 from coder_workbench.server.storage_objects import (
+    CONTEXT_PACKET_EVENT_TYPES,
     collect_blob_ids,
+    compact_large_event_payload,
     context_packet_summary,
     embedded_context_packet,
     embedded_tool_result,
@@ -49,6 +51,10 @@ class StoredRunMetadata(BaseModel):
     estimated_tokens_used: int
     status_reason: str | None = None
     status_code: str | None = None
+    run_group_id: str | None = None
+    parent_run_id: str | None = None
+    continued_from_run_id: str | None = None
+    turn_index: int | None = None
 
 
 class RunStore:
@@ -78,6 +84,7 @@ class RunStore:
         with self._lock:
             run_dir = self._run_dir(stored.id)
             run_dir.mkdir(parents=True, exist_ok=True)
+            run_group = self._run_group_metadata(stored.id, result.data)
             metadata = StoredRunMetadata(
                 id=stored.id,
                 workflow_id=workflow_id,
@@ -90,10 +97,13 @@ class RunStore:
                 estimated_tokens_used=result.estimated_tokens_used,
                 status_reason=result.status_reason,
                 status_code=result.status_code,
+                **run_group,
             )
             self.partitions.metadata.write(stored.id, metadata.model_dump(mode="json"))
             self._upsert_index(metadata, updated_at=time.time())
             result_payload = result.model_dump(mode="json")
+            if isinstance(result_payload.get("data"), dict):
+                result_payload["data"] = self._persist_pending_blob_writes(result_payload["data"])
             result_payload["events"] = []
             result_payload["artifacts"] = self._write_artifacts(stored.id, result.artifacts)
             result_data = result_payload.get("data", {})
@@ -105,6 +115,7 @@ class RunStore:
             self.partitions.results.write(stored.id, result_payload)
             events = self._externalize_context_packets(stored.id, result.events)
             events = self._externalize_tool_results(stored.id, events)
+            events = self._compact_event_payloads(events)
             self._write_events(stored.id, events)
         return stored
 
@@ -202,6 +213,10 @@ class RunStore:
                     "estimated_tokens_used": stored.result.estimated_tokens_used,
                     "status_reason": stored.result.status_reason,
                     "status_code": stored.result.status_code,
+                    "run_group_id": stored.result.data.get("run_group_id") if isinstance(stored.result.data, dict) else stored.id,
+                    "parent_run_id": stored.result.data.get("parent_run_id") if isinstance(stored.result.data, dict) else None,
+                    "continued_from_run_id": stored.result.data.get("continued_from_run_id") if isinstance(stored.result.data, dict) else None,
+                    "turn_index": stored.result.data.get("turn_index") if isinstance(stored.result.data, dict) else None,
                 }
             )
         return runs
@@ -220,6 +235,10 @@ class RunStore:
                     agent_calls INTEGER NOT NULL,
                     tool_calls INTEGER NOT NULL,
                     estimated_tokens_used INTEGER NOT NULL,
+                    run_group_id TEXT,
+                    parent_run_id TEXT,
+                    continued_from_run_id TEXT,
+                    turn_index INTEGER,
                     updated_at REAL NOT NULL
                 )
                 """
@@ -233,9 +252,10 @@ class RunStore:
                 INSERT INTO runs (
                     id, workflow_id, repo_root, request, status, events,
                     agent_calls, tool_calls, estimated_tokens_used,
-                    status_reason, status_code, updated_at
+                    status_reason, status_code, run_group_id, parent_run_id,
+                    continued_from_run_id, turn_index, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     workflow_id=excluded.workflow_id,
                     repo_root=excluded.repo_root,
@@ -247,6 +267,10 @@ class RunStore:
                     estimated_tokens_used=excluded.estimated_tokens_used,
                     status_reason=excluded.status_reason,
                     status_code=excluded.status_code,
+                    run_group_id=excluded.run_group_id,
+                    parent_run_id=excluded.parent_run_id,
+                    continued_from_run_id=excluded.continued_from_run_id,
+                    turn_index=excluded.turn_index,
                     updated_at=excluded.updated_at
                 """,
                 (
@@ -261,6 +285,10 @@ class RunStore:
                     metadata.estimated_tokens_used,
                     metadata.status_reason,
                     metadata.status_code,
+                    metadata.run_group_id,
+                    metadata.parent_run_id,
+                    metadata.continued_from_run_id,
+                    metadata.turn_index,
                     updated_at,
                 ),
             )
@@ -271,6 +299,14 @@ class RunStore:
             connection.execute("ALTER TABLE runs ADD COLUMN status_reason TEXT")
         if "status_code" not in columns:
             connection.execute("ALTER TABLE runs ADD COLUMN status_code TEXT")
+        if "run_group_id" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN run_group_id TEXT")
+        if "parent_run_id" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN parent_run_id TEXT")
+        if "continued_from_run_id" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN continued_from_run_id TEXT")
+        if "turn_index" not in columns:
+            connection.execute("ALTER TABLE runs ADD COLUMN turn_index INTEGER")
 
     def _delete_index(self, run_id: str) -> None:
         with sqlite3.connect(self.index_path) as connection:
@@ -283,7 +319,8 @@ class RunStore:
                 """
                 SELECT id, workflow_id, repo_root, request, status, events,
                        agent_calls, tool_calls, estimated_tokens_used,
-                       status_reason, status_code
+                       status_reason, status_code, run_group_id, parent_run_id,
+                       continued_from_run_id, turn_index
                 FROM runs
                 ORDER BY updated_at DESC
                 """
@@ -299,9 +336,10 @@ class RunStore:
                     INSERT OR REPLACE INTO runs (
                         id, workflow_id, repo_root, request, status, events,
                         agent_calls, tool_calls, estimated_tokens_used,
-                        status_reason, status_code, updated_at
+                        status_reason, status_code, run_group_id, parent_run_id,
+                        continued_from_run_id, turn_index, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run["id"],
@@ -315,6 +353,10 @@ class RunStore:
                         int(run["estimated_tokens_used"]),
                         run.get("status_reason"),
                         run.get("status_code"),
+                        run.get("run_group_id"),
+                        run.get("parent_run_id"),
+                        run.get("continued_from_run_id"),
+                        run.get("turn_index"),
                         time.time() + index,
                     ),
                 )
@@ -503,6 +545,33 @@ class RunStore:
     def _write_blob(self, content: str) -> str:
         return self.partitions.blobs.write_text(content)
 
+    def _persist_pending_blob_writes(self, data: dict[str, Any]) -> dict[str, Any]:
+        output = dict(data)
+        pending = output.pop("pending_blob_writes", None)
+        if not isinstance(pending, dict):
+            return output
+        persisted: list[dict[str, Any]] = []
+        for raw_record in pending.values():
+            if not isinstance(raw_record, dict):
+                continue
+            content = raw_record.get("content")
+            if not isinstance(content, str):
+                continue
+            blob_id = self._write_blob(content)
+            record = {
+                key: value
+                for key, value in raw_record.items()
+                if key != "content"
+            }
+            record["blob_id"] = blob_id
+            persisted.append(record)
+        if persisted:
+            output["persisted_blob_refs"] = [
+                *list(output.get("persisted_blob_refs") or []),
+                *persisted,
+            ] if isinstance(output.get("persisted_blob_refs", []), list) else persisted
+        return output
+
     def _blob_path(self, blob_id: str) -> Path:
         digest = self._safe_blob_id(blob_id)
         return self.blobs_dir / "sha256" / digest[:2] / f"sha256-{digest}"
@@ -574,16 +643,16 @@ class RunStore:
     def _externalize_context_packets(self, run_id: str, events: list[RunEvent]) -> list[RunEvent]:
         compact_events: list[RunEvent] = []
         for event in events:
-            if event.type != "agent.context_packet":
+            if event.type not in CONTEXT_PACKET_EVENT_TYPES:
                 compact_events.append(event)
                 continue
 
             packet = event.payload.get("packet")
-            if packet is None:
+            if not isinstance(packet, dict):
                 compact_events.append(event)
                 continue
 
-            raw_packet_id = str(event.payload.get("packet_id") or event.id)
+            raw_packet_id = self._context_packet_id_for_event(event)
             try:
                 packet_id = self._safe_object_id(raw_packet_id)
             except KeyError:
@@ -591,9 +660,14 @@ class RunStore:
             self.partitions.contexts.write(run_id, packet_id, packet)
             compact_payload = {
                 "packet_id": packet_id,
+                "event_type": event.type,
                 "summary": self._context_packet_summary(packet),
                 "size_chars": len(json.dumps(packet, ensure_ascii=False)),
             }
+            if event.payload.get("round") is not None:
+                compact_payload["round"] = event.payload.get("round")
+            if event.payload.get("work_item_id") is not None:
+                compact_payload["work_item_id"] = event.payload.get("work_item_id")
             compact_events.append(event.model_copy(update={"payload": compact_payload}))
         return compact_events
 
@@ -626,6 +700,39 @@ class RunStore:
             }
             compact_events.append(event.model_copy(update={"payload": compact_payload}))
         return compact_events
+
+    def _compact_event_payloads(self, events: list[RunEvent]) -> list[RunEvent]:
+        compacted: list[RunEvent] = []
+        for event in events:
+            payload = compact_large_event_payload(event.type, event.payload)
+            if payload == event.payload:
+                compacted.append(event)
+            else:
+                compacted.append(event.model_copy(update={"payload": payload}))
+        return compacted
+
+    def _context_packet_id_for_event(self, event: RunEvent) -> str:
+        if event.payload.get("packet_id"):
+            return str(event.payload.get("packet_id"))
+        if event.type == "agent.coding_context_packet" and event.payload.get("work_item_id"):
+            return str(event.payload.get("work_item_id"))
+        return str(event.id)
+
+    def _run_group_metadata(self, stored_run_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        values = data if isinstance(data, dict) else {}
+        run_group_id = str(values.get("run_group_id") or stored_run_id)
+        parent_run_id = values.get("parent_run_id")
+        continued_from_run_id = values.get("continued_from_run_id")
+        try:
+            turn_index = int(values.get("turn_index") or 1)
+        except (TypeError, ValueError):
+            turn_index = 1
+        return {
+            "run_group_id": run_group_id,
+            "parent_run_id": str(parent_run_id) if parent_run_id else None,
+            "continued_from_run_id": str(continued_from_run_id) if continued_from_run_id else None,
+            "turn_index": max(1, turn_index),
+        }
 
     def _read_events(self, path: Path) -> list[RunEvent]:
         if not path.exists():

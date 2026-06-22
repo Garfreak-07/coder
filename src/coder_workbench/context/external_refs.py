@@ -8,6 +8,7 @@ from typing import Any
 @dataclass(frozen=True)
 class ExternalRef:
     ref: str
+    blob_id: str
     ref_type: str
     path: str
     original_chars: int
@@ -15,6 +16,13 @@ class ExternalRef:
 
 
 class ContextExternalRefStore:
+    """Compatibility shim for tests and old callers.
+
+    New durable context references are BlobStore-compatible ``sha256:<digest>``
+    ids. This shim may keep full text in memory for immediate reads, but it no
+    longer creates ``context:<run_id>:...`` references.
+    """
+
     def __init__(self, backing: dict[str, Any] | None = None) -> None:
         self.backing = backing if backing is not None else {}
 
@@ -29,11 +37,12 @@ class ContextExternalRefStore:
         preview_chars: int = 600,
     ) -> ExternalRef:
         path_key = ".".join(path) or "packet"
-        digest = hashlib.sha256(f"{run_id}\0{work_item_id}\0{path_key}\0{value}".encode("utf-8")).hexdigest()[:16]
-        ref = f"{ref_type}:{run_id}:{work_item_id}:{digest}"
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        blob_id = f"sha256:{digest}"
         preview = preview_text(value, preview_chars)
-        self.backing[ref] = {
-            "ref": ref,
+        self.backing[blob_id] = {
+            "ref": blob_id,
+            "blob_id": blob_id,
             "ref_type": ref_type,
             "run_id": run_id,
             "work_item_id": work_item_id,
@@ -41,9 +50,11 @@ class ContextExternalRefStore:
             "content": value,
             "original_chars": len(value),
             "preview": preview,
+            "media_type": "text/plain; charset=utf-8",
         }
         return ExternalRef(
-            ref=ref,
+            ref=blob_id,
+            blob_id=blob_id,
             ref_type=ref_type,
             path=path_key,
             original_chars=len(value),

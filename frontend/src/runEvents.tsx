@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { getArtifact, getBlob, getContextPacket } from "./api";
+import { getArtifact, getBlob, getContextPacket, getToolResult } from "./api";
 import type { RunEvent } from "./types";
 
 interface LoopReplayGroup {
@@ -50,6 +50,8 @@ function EventRow({ event, runId }: { event: RunEvent; runId: string | null }) {
   const contextPacket = isContextPacketEvent(event);
   const artifact = event.type === "artifact.produced";
   const tokenLedger = event.type === "token.ledger.entry";
+  const toolResult = event.type === "tool.result";
+  const contextCompaction = event.type === "agent.context_compaction.applied";
   return (
     <div className="event-row" id={eventDomId(event)}>
       <div className="event-heading">
@@ -60,9 +62,13 @@ function EventRow({ event, runId }: { event: RunEvent; runId: string | null }) {
       {contextPacket && <ContextPacketCard event={event} runId={runId} />}
       {artifact && <ArtifactCard event={event} runId={runId} />}
       {tokenLedger && <TokenLedgerCard event={event} />}
+      {toolResult && <ToolResultCard event={event} runId={runId} />}
+      {contextCompaction && <ContextCompactionCard event={event} />}
       {!contextPacket &&
         !artifact &&
         !tokenLedger &&
+        !toolResult &&
+        !contextCompaction &&
         event.payload &&
         Object.keys(event.payload).length > 0 && <pre>{JSON.stringify(event.payload, null, 2)}</pre>}
     </div>
@@ -78,7 +84,11 @@ function isLoopReplayGroup(item: ReplayItem): item is LoopReplayGroup {
 }
 
 function isContextPacketEvent(event: RunEvent): boolean {
-  return event.type === "agent.context_packet" || event.type === "agent.context_packet_v2";
+  return (
+    event.type === "agent.context_packet" ||
+    event.type === "agent.context_packet_v2" ||
+    event.type === "agent.coding_context_packet"
+  );
 }
 
 function groupReplayEvents(events: RunEvent[]): ReplayItem[] {
@@ -148,15 +158,16 @@ function ContextPacketCard({ event, runId }: { event: RunEvent; runId: string | 
   if (!packet || typeof packet !== "object" || Array.isArray(packet)) {
     return (
       <div className="context-packet-card">
-        <div className="panel-subtitle">ContextPacket</div>
+        <div className="panel-subtitle">Externalized context packet</div>
         <div className="summary-grid">
+          <span>stored separately</span>
           <span>packet: {packetId ?? "inline"}</span>
           <span>size: {String(payload?.size_chars ?? "unknown")}</span>
         </div>
         {summary && <pre>{JSON.stringify(summary, null, 2)}</pre>}
         {packetId && runId && (
           <button onClick={loadPacket} disabled={loading}>
-            {loading ? "Loading..." : "Load full packet"}
+            {loading ? "Loading..." : "Open packet"}
           </button>
         )}
         {loadError && <div className="muted">{loadError}</div>}
@@ -206,6 +217,75 @@ function ContextPacketCard({ event, runId }: { event: RunEvent; runId: string | 
         <summary>View full context packet</summary>
         <pre>{JSON.stringify(value, null, 2)}</pre>
       </details>
+    </div>
+  );
+}
+
+function ContextCompactionCard({ event }: { event: RunEvent }) {
+  const payload = objectValue(event.payload);
+  const refs = stringList(payload?.externalized_refs);
+  return (
+    <div className="context-packet-card">
+      <div className="panel-subtitle">Compacted context</div>
+      <div className="summary-grid">
+        <span>work item: {String(payload?.work_item_id ?? "unknown")}</span>
+        <span>before: {String(payload?.token_estimate_before ?? "unknown")}</span>
+        <span>after: {String(payload?.token_estimate_after ?? "unknown")}</span>
+        <span>refs: {refs.length}</span>
+      </div>
+      {refs.length > 0 && <InlineList title="Externalized refs" values={refs} />}
+      {stringList(payload?.warnings).length > 0 && <InlineList title="Warnings" values={stringList(payload?.warnings)} />}
+    </div>
+  );
+}
+
+function ToolResultCard({ event, runId }: { event: RunEvent; runId: string | null }) {
+  const payload = objectValue(event.payload);
+  const toolResultId = typeof payload?.tool_result_id === "string" ? payload.tool_result_id : null;
+  const inlineResult = objectValue(payload?.result);
+  const [loadedResult, setLoadedResult] = useState<Record<string, unknown> | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function loadResult() {
+    if (!runId || !toolResultId || loading) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const detail = await getToolResult(runId, toolResultId);
+      const hydrated = await hydrateBlobRefs(detail.result, runId);
+      setLoadedResult(objectValue(hydrated) ?? detail.result);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const result = inlineResult ?? loadedResult;
+  return (
+    <div className="artifact-card">
+      <div className="panel-subtitle">Externalized tool result</div>
+      <div className="summary-grid">
+        <span>{String(payload?.tool ?? "tool")}</span>
+        <span>{toolResultId ?? "inline result"}</span>
+        <span>size: {String(payload?.result_size_chars ?? "unknown")}</span>
+        <span>{String(payload?.result_status ?? "unknown")}</span>
+      </div>
+      <div className="muted">Tool output persisted. Preview shown.</div>
+      {payload?.result_summary !== undefined && <pre>{JSON.stringify(payload.result_summary, null, 2)}</pre>}
+      {toolResultId && runId && (
+        <button onClick={loadResult} disabled={loading}>
+          {loading ? "Loading..." : "Open full output"}
+        </button>
+      )}
+      {loadError && <div className="muted">{loadError}</div>}
+      {result && (
+        <details open>
+          <summary>Tool output</summary>
+          <pre>{JSON.stringify(result, null, 2)}</pre>
+        </details>
+      )}
     </div>
   );
 }
@@ -572,7 +652,11 @@ function uniqueStrings(values: string[]): string[] {
 
 export async function hydrateBlobRefs(value: unknown, runId: string): Promise<unknown> {
   const object = objectValue(value);
-  if (object?.blob_id && typeof object.blob_id === "string" && typeof object.size_chars === "number") {
+  if (
+    object?.blob_id &&
+    typeof object.blob_id === "string" &&
+    (typeof object.size_chars === "number" || typeof object.original_chars === "number")
+  ) {
     const blob = await getBlob(runId, object.blob_id);
     return blob.content;
   }

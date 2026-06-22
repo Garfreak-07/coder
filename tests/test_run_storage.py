@@ -114,6 +114,7 @@ class RunStoreTests(unittest.TestCase):
 
             self.assertEqual(context_event["type"], "agent.context_packet")
             self.assertNotIn("packet", context_event["payload"])
+            self.assertEqual(context_event["payload"]["event_type"], "agent.context_packet")
             self.assertEqual(context_event["payload"]["summary"]["agent_id"], "executor")
             self.assertEqual(context_event["payload"]["summary"]["selected_state_keys"], ["review"])
             self.assertGreater(context_event["payload"]["size_chars"], 0)
@@ -122,6 +123,122 @@ class RunStoreTests(unittest.TestCase):
             self.assertTrue(packet_path.exists())
             self.assertEqual(json.loads(packet_path.read_text(encoding="utf-8")), packet)
             self.assertEqual(store.get_context_packet(stored.id, packet_id), packet)
+
+    def test_agent_graph_context_packet_events_are_externalized_from_event_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".coder"
+            store = RunStore(root)
+            packet_v2 = {
+                "agent_id": "executor",
+                "work_item_id": "executor-work",
+                "artifact_type": "execution_result",
+                "estimated_input_tokens": 42,
+            }
+            coding_packet = {
+                "artifact_type": "coding_context_packet",
+                "work_item_id": "executor-work",
+                "included_snippets": [{"path": "src/app.py", "content": "x" * 1000}],
+                "estimated_input_tokens": 250,
+            }
+            result = RunResult(
+                status="completed",
+                data={},
+                summaries={},
+                events=[
+                    RunEvent(
+                        type="agent.context_packet_v2",
+                        message="context v2",
+                        payload={"round": 1, "work_item_id": "executor-work", "packet": packet_v2},
+                    ),
+                    RunEvent(
+                        type="agent.coding_context_packet",
+                        message="coding context",
+                        payload={"round": 1, "work_item_id": "executor-work", "packet": coding_packet},
+                    ),
+                ],
+                estimated_tokens_used=1,
+                agent_calls=1,
+                tool_calls=0,
+            )
+
+            stored = store.save("workflow-1", "/repo", "inspect", result)
+            event_page = store.get_events(stored.id)
+
+            self.assertEqual(event_page["events"][0]["type"], "agent.context_packet_v2")
+            self.assertNotIn("packet", event_page["events"][0]["payload"])
+            self.assertEqual(event_page["events"][0]["payload"]["event_type"], "agent.context_packet_v2")
+            v2_packet_id = event_page["events"][0]["payload"]["packet_id"]
+            self.assertEqual(store.get_context_packet(stored.id, v2_packet_id), packet_v2)
+
+            coding_event = event_page["events"][1]
+            self.assertEqual(coding_event["type"], "agent.coding_context_packet")
+            self.assertNotIn("packet", coding_event["payload"])
+            self.assertEqual(coding_event["payload"]["packet_id"], "executor-work")
+            self.assertEqual(coding_event["payload"]["event_type"], "agent.coding_context_packet")
+            self.assertEqual(store.get_context_packet(stored.id, "executor-work"), coding_packet)
+
+    def test_pending_blob_writes_are_persisted_without_storing_full_content_in_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".coder"
+            store = RunStore(root)
+            content = "large context\n" * 1000
+            result = RunResult(
+                status="completed",
+                data={
+                    "pending_blob_writes": {
+                        "sha256:pending": {
+                            "blob_id": "sha256:pending",
+                            "ref_type": "context",
+                            "field_path": "included_snippets.0.content",
+                            "preview": "large context",
+                            "original_chars": len(content),
+                            "media_type": "text/plain; charset=utf-8",
+                            "content": content,
+                        }
+                    }
+                },
+                summaries={},
+                events=[],
+                estimated_tokens_used=1,
+                agent_calls=1,
+                tool_calls=0,
+            )
+
+            stored = store.save("workflow-1", "/repo", "inspect", result)
+            loaded = store.get(stored.id, include_events=False)
+            persisted = loaded.result.data["persisted_blob_refs"][0]
+
+            self.assertNotIn("pending_blob_writes", loaded.result.data)
+            self.assertNotIn("content", persisted)
+            self.assertEqual(store.get_blob(persisted["blob_id"])["content"], content)
+
+    def test_run_group_metadata_is_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".coder"
+            store = RunStore(root)
+            result = RunResult(
+                status="completed",
+                data={
+                    "run_group_id": "group-1",
+                    "parent_run_id": "run-1",
+                    "continued_from_run_id": "run-1",
+                    "turn_index": 2,
+                },
+                summaries={},
+                events=[],
+                estimated_tokens_used=1,
+                agent_calls=1,
+                tool_calls=0,
+            )
+
+            stored = store.save("workflow-1", "/repo", "continue", result)
+            listed = store.list()[0]
+
+            self.assertEqual(listed["id"], stored.id)
+            self.assertEqual(listed["run_group_id"], "group-1")
+            self.assertEqual(listed["parent_run_id"], "run-1")
+            self.assertEqual(listed["continued_from_run_id"], "run-1")
+            self.assertEqual(listed["turn_index"], 2)
 
     def test_legacy_embedded_context_packets_still_load(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

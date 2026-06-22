@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from coder_workbench.context.budget import ContextBudget
 from coder_workbench.context.external_refs import ContextExternalRefStore
 from coder_workbench.skills import estimate_tokens
+
+
+WriteExternalText = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 
 PRESERVED_KEYS = {
@@ -50,7 +53,8 @@ class ContextCompactor:
         *,
         run_id: str,
         work_item_id: str,
-        store: ContextExternalRefStore,
+        store: ContextExternalRefStore | None = None,
+        write_external_text: WriteExternalText | None = None,
     ) -> CompactionResult:
         before = token_estimate(packet)
         if before <= self.budget.max_input_tokens:
@@ -68,6 +72,7 @@ class ContextCompactor:
             run_id=run_id,
             work_item_id=work_item_id,
             store=store,
+            write_external_text=write_external_text,
             path=[],
             externalized=externalized,
             summaries=summaries,
@@ -95,7 +100,8 @@ class ContextCompactor:
         *,
         run_id: str,
         work_item_id: str,
-        store: ContextExternalRefStore,
+        store: ContextExternalRefStore | None,
+        write_external_text: WriteExternalText | None,
         path: list[str],
         externalized: list[str],
         summaries: list[dict[str, Any]],
@@ -107,28 +113,49 @@ class ContextCompactor:
             threshold = self._string_threshold_for_path(path)
             if estimate_tokens(value) <= threshold:
                 return value
-            ref = store.write(
-                run_id=run_id,
-                work_item_id=work_item_id,
-                path=path,
-                value=value,
-                preview_chars=max(200, min(1200, threshold * 2)),
-            )
-            externalized.append(ref.ref)
+            field_path = ".".join(path) or "packet"
+            preview_chars = max(200, min(1200, threshold * 2))
+            if write_external_text is not None:
+                externalized_value = write_external_text(
+                    value,
+                    {
+                        "ref_type": "context",
+                        "field_path": field_path,
+                        "preview_chars": preview_chars,
+                        "run_id": run_id,
+                        "work_item_id": work_item_id,
+                    },
+                )
+            elif store is not None:
+                ref = store.write(
+                    run_id=run_id,
+                    work_item_id=work_item_id,
+                    path=path,
+                    value=value,
+                    preview_chars=preview_chars,
+                )
+                externalized_value = {
+                    "blob_id": ref.blob_id,
+                    "ref_type": ref.ref_type,
+                    "field_path": ref.path,
+                    "preview": ref.preview,
+                    "original_chars": ref.original_chars,
+                    "media_type": "text/plain; charset=utf-8",
+                }
+            else:
+                raise ValueError("ContextCompactor requires store or write_external_text")
+            blob_id = str(externalized_value.get("blob_id") or "")
+            externalized.append(blob_id)
             summaries.append(
                 {
-                    "field_path": ref.path,
-                    "full_ref": ref.ref,
-                    "original_chars": ref.original_chars,
-                    "preview": ref.preview,
+                    "field_path": externalized_value.get("field_path") or field_path,
+                    "blob_id": blob_id,
+                    "ref_type": externalized_value.get("ref_type") or "context",
+                    "original_chars": externalized_value.get("original_chars") or len(value),
+                    "preview": externalized_value.get("preview"),
                 }
             )
-            return {
-                "content_preview": ref.preview,
-                "truncated": True,
-                "full_ref": ref.ref,
-                "original_chars": ref.original_chars,
-            }
+            return dict(externalized_value)
         if isinstance(value, list):
             return [
                 self._compact_value(
@@ -136,6 +163,7 @@ class ContextCompactor:
                     run_id=run_id,
                     work_item_id=work_item_id,
                     store=store,
+                    write_external_text=write_external_text,
                     path=[*path, str(index)],
                     externalized=externalized,
                     summaries=summaries,
@@ -149,6 +177,7 @@ class ContextCompactor:
                     run_id=run_id,
                     work_item_id=work_item_id,
                     store=store,
+                    write_external_text=write_external_text,
                     path=[*path, str(key)],
                     externalized=externalized,
                     summaries=summaries,

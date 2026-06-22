@@ -116,8 +116,10 @@ class AgentGraphRunner:
         resume_after_node: str | None = None,
         run_control: RunControl | None = None,
     ) -> RunResult:
+        checkpoint_data = resume_checkpoint.get("data") if isinstance(resume_checkpoint, dict) else None
+        data = dict(checkpoint_data) if isinstance(checkpoint_data, dict) else {}
+        data.update(dict(initial_data or {}))
         events = list(prior_events or [])
-        data = dict(initial_data or {})
         artifacts: dict[str, Any] = {}
         blocked_node_id = None
         result_resume_checkpoint = None
@@ -173,6 +175,14 @@ class AgentGraphRunner:
             if controller is not None:
                 data["run_controller"] = controller.diagnostics()
             data["run_control"] = active_run_control.diagnostics()
+            if resume_checkpoint is not None:
+                resume_checkpoint = _normalize_resume_checkpoint(
+                    resume_checkpoint,
+                    data=data,
+                    events=events,
+                    status_code=status_code,
+                    phase=status_code or final_status,
+                )
             return self._result(
                 status=final_status,
                 data=data,
@@ -1450,6 +1460,89 @@ def _hidden_effect_artifact_payload(effect: dict[str, Any], output: dict[str, An
         "effect": effect,
         "output": output,
     }
+
+
+def _normalize_resume_checkpoint(
+    checkpoint: dict[str, Any],
+    *,
+    data: dict[str, Any],
+    events: list[RunEvent],
+    status_code: str | None,
+    phase: str,
+) -> dict[str, Any]:
+    payload = dict(checkpoint)
+    checkpoint_data = payload.get("data") if isinstance(payload.get("data"), dict) else data
+    graph_run_cache = checkpoint_data.get("graph_run_cache") if isinstance(checkpoint_data, dict) else None
+    completed, blocked = _checkpoint_work_item_ids(graph_run_cache)
+    if isinstance(checkpoint_data, dict):
+        checkpoint_data.setdefault("completed_work_item_ids", completed)
+        checkpoint_data.setdefault("blocked_work_item_ids", blocked)
+    round_number = _checkpoint_round(checkpoint_data, graph_run_cache)
+    payload.setdefault("checkpoint_version", 1)
+    payload.setdefault(
+        "resume_mode",
+        "planner_response" if status_code == "planner_ask_human" else "agent_graph_checkpoint",
+    )
+    payload["data"] = checkpoint_data
+    payload.setdefault("round", round_number)
+    payload.setdefault("phase", phase)
+    payload.setdefault("planner_input_bundle", _dict_or_empty(checkpoint_data.get("planner_input_bundle") if isinstance(checkpoint_data, dict) else None))
+    payload.setdefault("round_summary", _dict_or_empty(checkpoint_data.get("round_summary") if isinstance(checkpoint_data, dict) else None))
+    payload.setdefault("planner_decision", _dict_or_empty(checkpoint_data.get("planner_decision") if isinstance(checkpoint_data, dict) else None))
+    payload.setdefault("completed_work_item_ids", completed)
+    payload.setdefault("blocked_work_item_ids", blocked)
+    payload.setdefault("graph_run_cache", graph_run_cache if isinstance(graph_run_cache, dict) else {})
+    payload.setdefault("event_cursor", len(events))
+    return payload
+
+
+def _checkpoint_work_item_ids(graph_run_cache: Any) -> tuple[list[str], list[str]]:
+    if not isinstance(graph_run_cache, dict):
+        return [], []
+    completed: list[str] = []
+    blocked: list[str] = []
+    plan_cache = graph_run_cache.get("plan_cache")
+    work_items = plan_cache.get("work_items") if isinstance(plan_cache, dict) else None
+    if isinstance(work_items, list):
+        for item in work_items:
+            if not isinstance(item, dict):
+                continue
+            work_item_id = str(item.get("work_item_id") or "")
+            if not work_item_id:
+                continue
+            if item.get("status") == "completed":
+                completed.append(work_item_id)
+            elif item.get("status") in {"blocked", "failed", "cancelled"}:
+                blocked.append(work_item_id)
+    executions = graph_run_cache.get("execution_cache")
+    if isinstance(executions, dict):
+        for work_item_id, record in executions.items():
+            if not isinstance(record, dict):
+                continue
+            if record.get("status") == "completed" and str(work_item_id) not in completed:
+                completed.append(str(work_item_id))
+            elif record.get("status") != "completed" and str(work_item_id) not in blocked:
+                blocked.append(str(work_item_id))
+    return completed, blocked
+
+
+def _checkpoint_round(data: Any, graph_run_cache: Any) -> int:
+    if isinstance(graph_run_cache, dict):
+        try:
+            return max(1, int(graph_run_cache.get("round") or 1))
+        except (TypeError, ValueError):
+            pass
+    if isinstance(data, dict):
+        for key in ("round", "active_round"):
+            try:
+                return max(1, int(data.get(key) or 1))
+            except (TypeError, ValueError):
+                continue
+    return 1
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _fallback_verification(execution: ExecutionRecord) -> dict[str, Any]:

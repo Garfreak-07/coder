@@ -200,6 +200,10 @@ export interface RunSummaryItem {
   error?: string | null;
   status_reason?: string | null;
   status_code?: string | null;
+  run_group_id?: string | null;
+  parent_run_id?: string | null;
+  continued_from_run_id?: string | null;
+  turn_index?: number | null;
   approval_required?: boolean;
 }
 
@@ -265,6 +269,12 @@ export interface LiveRunDetail {
   result?: RunResult | null;
   stored_run_id?: string | null;
   error?: string | null;
+  status_reason?: string | null;
+  status_code?: string | null;
+  run_group_id?: string | null;
+  parent_run_id?: string | null;
+  continued_from_run_id?: string | null;
+  turn_index?: number | null;
   approval_required?: boolean;
 }
 

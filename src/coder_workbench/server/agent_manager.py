@@ -11,6 +11,7 @@ from coder_workbench.core import AgentWorkflowSpec
 from coder_workbench.runtime import RunEvent, RunResult
 from coder_workbench.runtime_kernel import RunControl
 from coder_workbench.server.storage import RunStore
+from coder_workbench.server.storage_objects import compact_large_event_payload
 
 
 LiveStatus = Literal["queued", "running", "paused", "cancelling", "cancelled", "completed", "blocked", "failed"]
@@ -55,6 +56,7 @@ class AgentGraphRunManager:
             initial_data=dict(initial_data),
         )
         live.initial_data["run_id"] = live.id
+        self._apply_run_group_defaults(live)
         with self._lock:
             self._runs[live.id] = live
         self._persist_live(live)
@@ -152,6 +154,10 @@ class AgentGraphRunManager:
                     "error": run.error,
                     "status_reason": run.result.status_reason if run.result else run.error,
                     "status_code": run.result.status_code if run.result else None,
+                    "run_group_id": run.initial_data.get("run_group_id"),
+                    "parent_run_id": run.initial_data.get("parent_run_id"),
+                    "continued_from_run_id": run.initial_data.get("continued_from_run_id"),
+                    "turn_index": run.initial_data.get("turn_index"),
                     "heartbeat": self._heartbeat_payload(run),
                     "approval_required": False,
                 }
@@ -190,7 +196,21 @@ class AgentGraphRunManager:
                 ]
                 status = payload.get("status", "failed")
                 if status in {"queued", "running"}:
-                    status = "failed"
+                    if result is not None and result.resume_checkpoint:
+                        status = "blocked"
+                        if result.status_code != "resume_available":
+                            result = result.model_copy(
+                                update={
+                                    "status": "blocked",
+                                    "status_code": "resume_available",
+                                    "status_reason": result.status_reason
+                                    or "This run was interrupted and can be resumed from the latest checkpoint.",
+                                }
+                            )
+                    else:
+                        status = "failed"
+                        if not payload.get("error"):
+                            payload["error"] = "interrupted_without_checkpoint"
                 live = LiveAgentRun(
                     id=str(payload["id"]),
                     agent_workflow=agent_workflow,
@@ -213,9 +233,10 @@ class AgentGraphRunManager:
             run.status = "running"
 
         def sink(event: RunEvent) -> None:
-            run.events.append(event)
+            live_event = _compact_live_event(event)
+            run.events.append(live_event)
             self._update_heartbeat_from_event(run, event)
-            run.queue.put(event)
+            run.queue.put(live_event)
             self._persist_live(run)
 
         try:
@@ -231,13 +252,13 @@ class AgentGraphRunManager:
                 prior_events=prior_events,
                 run_control=run.run_control,
             )
-            run.result = result
             stored = self.store.save(
                 workflow_id=run.agent_workflow.id,
                 repo_root=run.repo_root,
                 request=run.request,
                 result=result,
             )
+            run.result = _result_with_compact_events(result)
             run.stored_run_id = stored.id
             run.status = "cancelled" if result.status == "cancelled" else result.status
         except Exception as exc:  # pragma: no cover - background boundary
@@ -278,3 +299,31 @@ class AgentGraphRunManager:
             wave_index=int(wave_index) if isinstance(wave_index, int) else None,
             active_work_item_ids=[str(item) for item in work_item_ids] if isinstance(work_item_ids, list) else None,
         )
+
+    def _apply_run_group_defaults(self, run: LiveAgentRun) -> None:
+        data = run.initial_data
+        continued_from = data.get("continued_from_run_id") or data.get("parent_run_id")
+        if continued_from:
+            data.setdefault("continued_from_run_id", str(continued_from))
+            data.setdefault("parent_run_id", str(continued_from))
+            data.setdefault("run_group_id", str(data.get("run_group_id") or continued_from))
+            try:
+                data["turn_index"] = max(2, int(data.get("turn_index") or 2))
+            except (TypeError, ValueError):
+                data["turn_index"] = 2
+            return
+        data.setdefault("run_group_id", run.id)
+        data.setdefault("parent_run_id", None)
+        data.setdefault("continued_from_run_id", None)
+        data.setdefault("turn_index", 1)
+
+
+def _compact_live_event(event: RunEvent) -> RunEvent:
+    payload = compact_large_event_payload(event.type, event.payload)
+    if payload == event.payload:
+        return event
+    return event.model_copy(update={"payload": payload})
+
+
+def _result_with_compact_events(result: RunResult) -> RunResult:
+    return result.model_copy(update={"events": [_compact_live_event(event) for event in result.events]})
