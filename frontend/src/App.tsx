@@ -46,6 +46,7 @@ import {
   cloneAgentWorkflow,
   downloadJson,
   formatJson,
+  agentRoleLabel,
   linesToList,
   toAgentFlowEdges,
   toAgentFlowNodes
@@ -96,7 +97,6 @@ export function App() {
   const [newAgentRoleCard, setNewAgentRoleCard] = useState("executor");
   const [newAgentName, setNewAgentName] = useState("");
   const {
-    capabilities,
     runHistory,
     liveRuns,
     health,
@@ -128,6 +128,8 @@ export function App() {
     () => agentWorkflow.agents.find((agent) => agent.id === agentWorkflow.primary_planner_id) ?? null,
     [agentWorkflow.agents, agentWorkflow.primary_planner_id]
   );
+  const selectedAgentIsPrimaryPlanner =
+    selectedAgentWorkflowAgent?.id === agentWorkflow.primary_planner_id;
   const filteredRunHistory = useMemo(
     () => filterRunHistory(runHistory, historyQuery, historyStatusFilter),
     [runHistory, historyQuery, historyStatusFilter]
@@ -399,7 +401,7 @@ export function App() {
     const target = agentWorkflow.agents.find((agent) => agent.id === agentId);
     if (!target) return;
     if (agentId === agentWorkflow.primary_planner_id) {
-      setStatus("Primary Planner cannot be deleted. Assign another Planner first.");
+      setStatus("Primary Planner cannot be deleted.");
       return;
     }
     updateAgentWorkflow((current) => {
@@ -414,7 +416,7 @@ export function App() {
     });
     setSelectedAgentWorkflowId((current) => (current === agentId ? agentWorkflow.primary_planner_id : current));
     setSelectedAgentWorkflowEdgeId(null);
-    setStatus(`Deleted Agent ${target.name}.`);
+    setStatus(`Deleted ${target.name}.`);
   }
 
   function updateSelectedAgentWorkflowAgent(patch: Partial<AgentWorkflowAgent>) {
@@ -452,7 +454,7 @@ export function App() {
       const blockedPrimaryDelete = removedIds.includes(agentWorkflow.primary_planner_id);
       const removableIds = new Set(removedIds.filter((id) => id !== agentWorkflow.primary_planner_id));
       if (blockedPrimaryDelete) {
-        setStatus("Primary Planner cannot be deleted. Assign another Planner first.");
+        setStatus("Primary Planner cannot be deleted.");
       }
       const allowedChanges = changes.filter((change) => change.type !== "remove" || removableIds.has(change.id));
       setNodes((currentNodes) => {
@@ -891,9 +893,9 @@ export function App() {
           </div>
           <div className="summary-grid agent-policy-summary">
             <span>Only Planner can ask the user</span>
-            <span>Executors follow PlannerOrder</span>
+            <span>Executors return execution results</span>
             <span>Testers return evidence</span>
-            <span>Runtime profiles are compiled internally</span>
+            <span>Planner reviews every round</span>
           </div>
           <AgentWorkflowValidationPanel result={agentWorkflowValidation} />
           <details className="json-details">
@@ -961,9 +963,8 @@ export function App() {
           {selectedAgentWorkflowAgent ? (
             <AgentWorkflowAgentInspector
               agent={selectedAgentWorkflowAgent}
-              capabilities={capabilities}
               roleCards={roleCards}
-              isPrimaryPlanner={selectedAgentWorkflowAgent.id === agentWorkflow.primary_planner_id}
+              isPrimaryPlanner={selectedAgentIsPrimaryPlanner}
               onChange={updateSelectedAgentWorkflowAgent}
             />
           ) : selectedAgentWorkflowEdge ? (
@@ -998,7 +999,13 @@ export function App() {
               </div>
               <div className="button-row">
                 <button disabled={roleCards.length === 0} onClick={addAgentWorkflowAgent}>Add Agent</button>
-                <button disabled={!selectedAgentWorkflowAgent} onClick={() => removeAgentWorkflowAgent()}>
+                <button
+                  disabled={
+                    !selectedAgentWorkflowAgent ||
+                    selectedAgentIsPrimaryPlanner
+                  }
+                  onClick={() => removeAgentWorkflowAgent()}
+                >
                   Delete Agent
                 </button>
               </div>
@@ -1013,7 +1020,7 @@ export function App() {
                     }}
                   >
                     <span>{agent.name}</span>
-                    <small>{agent.role_card ?? agent.role}</small>
+                    <small>{agentRoleLabel(agent)}</small>
                   </button>
                 ))}
               </div>
@@ -1641,7 +1648,6 @@ function RunDetailCard({
   const status = kind === "stored" ? result?.status : (detail as LiveRunDetail).status;
   const events = kind === "stored" ? result?.events.length ?? 0 : (detail as LiveRunDetail).events.length;
   const liveDetail = kind === "live" ? (detail as LiveRunDetail) : null;
-  const resultData = objectValue(result?.data);
   const canAttach = liveDetail?.status === "queued" || liveDetail?.status === "running" || liveDetail?.status === "blocked";
   const canApprove = liveDetail?.status === "blocked" && Boolean(liveDetail.approval_required);
 
@@ -1675,55 +1681,7 @@ function RunDetailCard({
       )}
       {kind === "stored" && <button onClick={() => onDeleteStored(detail.id)}>Delete stored run</button>}
       {liveDetail?.error && <div className="muted">Error: {liveDetail.error}</div>}
-      {resultData && <RunDiagnostics data={resultData} />}
     </div>
-  );
-}
-
-function RunDiagnostics({ data }: { data: Record<string, unknown> }) {
-  const graphCache = objectValue(data.graph_run_cache);
-  const skillRoutes = objectValue(graphCache?.skill_routes);
-  const contextPackets = objectValue(graphCache?.context_packets_v2);
-  const tokenLedger = objectList(data.token_ledger);
-  const runtimeProfiles = objectList(data.runtime_profiles);
-  const agentReports = objectList(data.agent_evaluation_reports);
-  const skillReports = objectList(data.skill_evaluation_reports);
-  const hasDiagnostics =
-    tokenLedger.length > 0 ||
-    runtimeProfiles.length > 0 ||
-    agentReports.length > 0 ||
-    skillReports.length > 0 ||
-    Boolean(skillRoutes && Object.keys(skillRoutes).length > 0) ||
-    Boolean(contextPackets && Object.keys(contextPackets).length > 0);
-
-  if (!hasDiagnostics) return null;
-
-  return (
-    <details className="json-details run-diagnostics">
-      <summary>Advanced Run Diagnostics</summary>
-      <div className="summary-grid">
-        <span>{tokenLedger.length} token entries</span>
-        <span>{runtimeProfiles.length} runtime profiles</span>
-        <span>{contextPackets ? Object.keys(contextPackets).length : 0} context packets</span>
-        <span>{skillRoutes ? Object.keys(skillRoutes).length : 0} skill routes</span>
-        <span>{agentReports.length} agent reports</span>
-        <span>{skillReports.length} skill reports</span>
-      </div>
-      <pre>
-        {JSON.stringify(
-          {
-            token_ledger: tokenLedger,
-            runtime_profiles: runtimeProfiles,
-            context_packets_v2: contextPackets ?? {},
-            skill_routes: skillRoutes ?? {},
-            agent_evaluation_reports: agentReports,
-            skill_evaluation_reports: skillReports
-          },
-          null,
-          2
-        )}
-      </pre>
-    </details>
   );
 }
 

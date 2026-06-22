@@ -1,12 +1,10 @@
 import type {
   AgentWorkflowAgent,
-  CapabilitySpec,
   RoleCardSpec
 } from "../../types";
 
 interface AgentWorkflowAgentInspectorProps {
   agent: AgentWorkflowAgent;
-  capabilities: CapabilitySpec[];
   roleCards: RoleCardSpec[];
   isPrimaryPlanner: boolean;
   onChange: (patch: Partial<AgentWorkflowAgent>) => void;
@@ -14,12 +12,10 @@ interface AgentWorkflowAgentInspectorProps {
 
 export function AgentWorkflowAgentInspector({
   agent,
-  capabilities,
   roleCards,
   isPrimaryPlanner,
   onChange
 }: AgentWorkflowAgentInspectorProps) {
-  void capabilities;
   const selectedRoleCard =
     roleCards.find((card) => card.id === agent.role_card) ??
     (!isPrimaryPlanner ? roleCards.find((card) => card.role === agent.role) ?? null : null);
@@ -42,7 +38,7 @@ export function AgentWorkflowAgentInspector({
     <div className="form-stack agent-editor">
       <div className="summary-grid">
         <span>{selectedRoleCard?.label ?? agent.role}</span>
-        <span>{agent.can_talk_to_human ? "Can ask user" : "Does not ask user"}</span>
+        <span>{isPrimaryPlanner ? "User-facing Planner" : "Planner-directed"}</span>
       </div>
       <label>
         Name

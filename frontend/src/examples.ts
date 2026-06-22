@@ -9,7 +9,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
   agents: [
     {
       id: "planner",
-      name: "Planner Agent",
+      name: "Planner",
       role: "planner",
       model_tier: "best",
       can_talk_to_human: true,
@@ -17,7 +17,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
     },
     {
       id: "executor",
-      name: "Executor Agent",
+      name: "Executor",
       role: "executor",
       role_card: "executor",
       model_tier: "standard",
@@ -26,7 +26,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
     },
     {
       id: "tester",
-      name: "Tester Agent",
+      name: "Tester",
       role: "tester",
       role_card: "tester",
       model_tier: "standard",

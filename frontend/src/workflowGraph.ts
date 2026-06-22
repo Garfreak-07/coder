@@ -1,6 +1,6 @@
 import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
 
-import type { AgentWorkflowEdge, AgentWorkflowSpec } from "./types";
+import type { AgentWorkflowAgent, AgentWorkflowEdge, AgentWorkflowSpec } from "./types";
 
 const agentPositions: Record<string, { x: number; y: number }> = {
   planner: { x: 60, y: 105 },
@@ -37,10 +37,14 @@ export function toAgentFlowNodes(workflow: AgentWorkflowSpec): FlowNode[] {
     type: "default",
     position: workflow.ui?.layout?.[agent.id] ?? agentPositions[agent.role] ?? { x: 80 + index * 280, y: 120 },
     data: {
-      label: `${agent.name}\n${roleLabels[agent.role] ?? agent.role}${agent.can_talk_to_human ? " - can ask user" : ""}`
+      label: agentRoleLabel(agent)
     },
     className: `workflow-node agent-workflow-node agent-role-${agent.role}`
   }));
+}
+
+export function agentRoleLabel(agent: AgentWorkflowAgent): string {
+  return roleLabels[agent.role] ?? agent.name;
 }
 
 export function toAgentFlowEdges(workflow: AgentWorkflowSpec): FlowEdge[] {
