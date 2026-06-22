@@ -422,6 +422,16 @@ class PlannerEngine(ModelBackedEngine):
         has_failed_tests = any(item.execution_status == "failed" or item.test_status == "fail" for item in bundle.items)
         has_blocked_work = any(item.execution_status == "blocked" or item.test_status == "blocked" for item in bundle.items)
         has_debug_findings = any(effect.get("effect_type") == "debug_finding" for effect in bundle.effects)
+        has_failed_check_effects = any(
+            effect.get("effect_type") == "optional_check_command"
+            and (effect.get("status") == "failed" or effect.get("passed") is False)
+            for effect in bundle.effects
+        )
+        has_blocked_check_effects = any(
+            effect.get("effect_type") == "optional_check_command"
+            and effect.get("status") == "check_requires_planner_confirmation"
+            for effect in bundle.effects
+        )
         has_failed_runtime_actions = any(
             effect.get("effect_type") == "runtime_action" and effect.get("status") == "failed"
             for effect in bundle.effects
@@ -436,14 +446,18 @@ class PlannerEngine(ModelBackedEngine):
         )
         mock_next_action = (
             "continue"
-            if can_continue_from_interrupts or has_failed_tests or has_debug_findings or has_failed_runtime_actions
+            if can_continue_from_interrupts or has_failed_tests or has_debug_findings or has_failed_check_effects or has_failed_runtime_actions
             else "ask_human"
-            if has_interrupts or has_blocked_work or has_blocked_runtime_actions
+            if has_interrupts or has_blocked_work or has_blocked_check_effects or has_blocked_runtime_actions
             else "finish"
         )
         mock_reason = (
             "DebugFinding is inside the current RunContract; Planner will replan."
             if has_debug_findings
+            else "Check result failed; Planner will replan inside the current RunContract."
+            if has_failed_check_effects
+            else "Check command requires Planner confirmation before it can continue."
+            if has_blocked_check_effects
             else "Runtime action failed; Planner will replan inside the current RunContract."
             if has_failed_runtime_actions
             else "Runtime action requires approval before Planner can continue."
@@ -474,11 +488,16 @@ class PlannerEngine(ModelBackedEngine):
                 "task_done": mock_next_action == "finish",
                 "next_action": mock_next_action,
                 "risk_level": "medium"
-                if has_interrupts or has_debug_findings or has_blocked_runtime_actions or has_failed_runtime_actions
+                if has_interrupts
+                or has_debug_findings
+                or has_failed_check_effects
+                or has_blocked_check_effects
+                or has_blocked_runtime_actions
+                or has_failed_runtime_actions
                 else "low",
                 "requires_human_confirmation": mock_next_action == "ask_human",
                 "reason": mock_reason,
-                "next_round_goal": "Fix debug finding evidence and rerun checks." if has_debug_findings else "Replan around failed runtime action evidence." if has_failed_runtime_actions else "Fix failing test evidence and rerun checks." if has_failed_tests else "Resolve the blocked work item." if mock_next_action == "continue" else "",
+                "next_round_goal": "Fix debug finding evidence and rerun checks." if has_debug_findings else "Fix failed check evidence and rerun checks." if has_failed_check_effects else "Replan around failed runtime action evidence." if has_failed_runtime_actions else "Fix failing test evidence and rerun checks." if has_failed_tests else "Resolve the blocked work item." if mock_next_action == "continue" else "",
                 "remaining_auto_rounds": 2 if mock_next_action == "continue" else 0,
                 "human_message": "Planner needs user input to resolve the blocked work item."
                 if mock_next_action == "ask_human"

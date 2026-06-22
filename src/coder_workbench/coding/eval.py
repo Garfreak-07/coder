@@ -49,9 +49,34 @@ def build_run_coding_eval(data: dict[str, Any], events: list[Any] | None = None)
     debug_findings = data.get("debug_findings") if isinstance(data.get("debug_findings"), list) else []
 
     total_items = max(1, len(execution_cache))
-    patch_created = sum(1 for effect in hidden_effects if effect.get("effect_type") == "modify_files" and effect.get("status") == "patch_preview_created")
+    patch_preview_effects = [
+        effect
+        for effect in hidden_effects
+        if effect.get("effect_type") == "modify_files" and effect.get("status") == "patch_preview_created"
+    ]
+    sandbox_apply_effects = [effect for effect in hidden_effects if effect.get("effect_type") == "sandbox_apply"]
+    patch_created = len(patch_preview_effects)
     check_effects = [effect for effect in hidden_effects if effect.get("effect_type") == "optional_check_command"]
     checks_passed = sum(1 for effect in check_effects if effect.get("status") == "completed" and effect.get("passed", True) is not False)
+    failed_check_results = sum(
+        1
+        for effect in check_effects
+        if effect.get("status") in {"failed", "check_requires_planner_confirmation"} or effect.get("passed") is False
+    )
+    sandbox_apply_passed = sum(
+        1
+        for effect in sandbox_apply_effects
+        if effect.get("status") in {"applied", "ok"}
+    )
+    failed_sandbox_apply = sum(
+        1
+        for effect in sandbox_apply_effects
+        if effect.get("status") not in {"applied", "ok"}
+    )
+    debug_finding_effects = [effect for effect in hidden_effects if effect.get("effect_type") == "debug_finding"]
+    runtime_action_effects = [effect for effect in hidden_effects if effect.get("effect_type") == "runtime_action"]
+    blocked_runtime_actions = sum(1 for effect in runtime_action_effects if effect.get("status") == "blocked")
+    failed_runtime_actions = sum(1 for effect in runtime_action_effects if effect.get("status") == "failed")
     tests = [record for records in test_cache.values() if isinstance(records, list) for record in records if isinstance(record, dict)]
     test_pass_count = sum(1 for record in tests if record.get("status") == "pass")
     interrupts = graph_run_cache.get("interrupts") if isinstance(graph_run_cache.get("interrupts"), list) else []
@@ -63,10 +88,20 @@ def build_run_coding_eval(data: dict[str, Any], events: list[Any] | None = None)
             estimated_tokens += int(entry.get("estimated_output_tokens") or 0)
     repair_count = len([event for event in (events or []) if "repair" in getattr(event, "type", "")])
 
+    effect_gate_passed = not any(
+        [
+            failed_check_results,
+            failed_sandbox_apply,
+            blocked_runtime_actions,
+            failed_runtime_actions,
+            debug_finding_effects,
+        ]
+    )
+    debug_finding_count = max(len(debug_findings), len(debug_finding_effects))
     report = CodingEvaluationReportArtifact(
-        task_pass_rate=1.0 if _run_succeeded(execution_cache, tests) else 0.0,
+        task_pass_rate=1.0 if _run_succeeded(execution_cache, tests) and effect_gate_passed else 0.0,
         patch_created_rate=patch_created / total_items,
-        patch_apply_rate=1.0 if patch_created else 0.0,
+        patch_apply_rate=(sandbox_apply_passed / len(sandbox_apply_effects)) if sandbox_apply_effects else (1.0 if patch_created else 0.0),
         tests_pass_rate=(test_pass_count / len(tests)) if tests else (1.0 if not check_effects else checks_passed / max(1, len(check_effects))),
         forbidden_change_rate=0.0,
         planner_rounds=len(rounds) or int(graph_run_cache.get("round") or 0),
@@ -78,7 +113,15 @@ def build_run_coding_eval(data: dict[str, Any], events: list[Any] | None = None)
             "patch_created": bool(patch_created),
             "sandbox_tests_passed": bool(check_effects and checks_passed == len(check_effects)),
             "sandbox_checks_passed": bool(check_effects and checks_passed == len(check_effects)),
-            "debug_findings": len(debug_findings),
+            "debug_findings": debug_finding_count,
+            "patch_preview_count": len(patch_preview_effects),
+            "sandbox_apply_count": len(sandbox_apply_effects),
+            "check_result_count": len(check_effects),
+            "failed_check_results": failed_check_results,
+            "debug_finding_count": debug_finding_count,
+            "runtime_action_count": len(runtime_action_effects),
+            "blocked_runtime_actions": blocked_runtime_actions,
+            "failed_runtime_actions": failed_runtime_actions,
             "forbidden_change": False,
             "worker_interrupts": len(interrupts),
             "human_prompts": len(human_prompts),
