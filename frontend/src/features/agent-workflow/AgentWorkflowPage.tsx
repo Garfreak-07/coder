@@ -134,21 +134,24 @@ export function AgentWorkflowPage({
 
       <section className="workflow-editor-layout">
         <div className="canvas-panel workflow-canvas-panel">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            nodesConnectable
-            deleteKeyCode="Backspace"
-            onNodeClick={(_, node) => onNodeClick(node.id)}
-            onEdgeClick={(_, edge) => onEdgeClick(edge.id)}
-            fitView
-          >
-            <Background />
-            <MiniMap className="workflow-minimap" position="top-left" style={{ width: 120, height: 80 }} />
-          </ReactFlow>
+          <div className="workflow-flow-shell">
+            <ReactFlow
+              className="workflow-flow"
+              nodes={nodes}
+              edges={edges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              nodesConnectable
+              deleteKeyCode="Backspace"
+              onNodeClick={(_, node) => onNodeClick(node.id)}
+              onEdgeClick={(_, edge) => onEdgeClick(edge.id)}
+              fitView
+            >
+              <Background />
+              <MiniMap className="workflow-minimap" position="top-left" style={{ width: 120, height: 80 }} />
+            </ReactFlow>
+          </div>
         </div>
 
         <WorkflowStructurePanel

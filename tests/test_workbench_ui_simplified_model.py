@@ -9,10 +9,12 @@ ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend" / "src"
 APP = FRONTEND / "App.tsx"
 APP_SIDEBAR = FRONTEND / "components" / "AppSidebar.tsx"
+MAIN = FRONTEND / "main.tsx"
 PLANNER_CHAT_PAGE = FRONTEND / "features" / "planner-chat" / "PlannerChatPage.tsx"
 AGENT_WORKFLOW_PAGE = FRONTEND / "features" / "agent-workflow" / "AgentWorkflowPage.tsx"
 WORKFLOW_SELECTOR = FRONTEND / "features" / "agent-workflow" / "WorkflowSelector.tsx"
 WORKFLOW_STRUCTURE_PANEL = FRONTEND / "features" / "agent-workflow" / "WorkflowStructurePanel.tsx"
+STYLES = FRONTEND / "styles.css"
 
 PRODUCT_SURFACES = [
     APP,
@@ -131,10 +133,27 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
                 self.assertIn(token, source)
 
         self.assertIn('className="workflow-minimap"', source)
+        self.assertIn('className="workflow-flow"', source)
+        self.assertIn("workflow-flow-shell", source)
         self.assertIn('position="top-left"', source)
         self.assertIn("width: 120", source)
         self.assertIn("height: 80", source)
         self.assertNotRegex(source, re.compile(r"\bControls\b"))
+
+    def test_agent_workflow_canvas_has_stable_viewport_styles(self) -> None:
+        styles = STYLES.read_text(encoding="utf-8")
+        main = MAIN.read_text(encoding="utf-8")
+
+        self.assertIn('import "@xyflow/react/dist/style.css";', main)
+        self.assertIn(".workflow-canvas-panel .react-flow", styles)
+        self.assertIn(".workflow-flow-shell", styles)
+        self.assertIn("min-height: 620px", styles)
+        self.assertIn("height: min(72vh, 760px)", styles)
+        self.assertIn(".agent-workflow-node", styles)
+        self.assertIn(".agent-role-planner", styles)
+        self.assertIn(".agent-role-executor", styles)
+        self.assertIn(".agent-role-tester", styles)
+        self.assertIn(".workflow-minimap svg", styles)
 
     def test_workflow_selector_uses_saved_agent_workflows(self) -> None:
         workflow_page = AGENT_WORKFLOW_PAGE.read_text(encoding="utf-8")
