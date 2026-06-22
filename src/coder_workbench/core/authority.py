@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from coder_workbench.core.agent_workflow import AgentWorkflowAgent
 
 
-Authority = Literal["planner", "worker", "tester", "final_tester", "synthesizer"]
+Authority = Literal["planner", "executor", "tester"]
 
 
 class AgentAuthorityProfile(BaseModel):
@@ -32,17 +32,11 @@ PLANNER_PROFILE = AgentAuthorityProfile(
     allowed_artifact_types=["run_contract", "planner_order", "planner_decision", "round_summary"],
 )
 
-WORKER_PROFILE = AgentAuthorityProfile(
-    authority="worker",
+EXECUTOR_PROFILE = AgentAuthorityProfile(
+    authority="executor",
     can_trigger_interrupt=True,
     can_modify_files=True,
     allowed_artifact_types=["execution_result"],
-)
-
-SYNTHESIZER_PROFILE = AgentAuthorityProfile(
-    authority="synthesizer",
-    can_trigger_interrupt=True,
-    allowed_artifact_types=["synthesis_artifact", "execution_result"],
 )
 
 TESTER_PROFILE = AgentAuthorityProfile(
@@ -51,37 +45,22 @@ TESTER_PROFILE = AgentAuthorityProfile(
     allowed_artifact_types=["test_result"],
 )
 
-FINAL_TESTER_PROFILE = AgentAuthorityProfile(
-    authority="final_tester",
-    allowed_artifact_types=["test_result"],
-)
-
 AUTHORITY_PROFILES = {
     "planner": PLANNER_PROFILE,
-    "worker": WORKER_PROFILE,
-    "synthesizer": SYNTHESIZER_PROFILE,
+    "executor": EXECUTOR_PROFILE,
     "tester": TESTER_PROFILE,
-    "final_tester": FINAL_TESTER_PROFILE,
 }
 
 
 def authority_profile_for_agent(agent: "AgentWorkflowAgent", *, primary_planner_id: str) -> AgentAuthorityProfile:
     if agent.id == primary_planner_id:
         return PLANNER_PROFILE
-    if "aggregate_tests" in agent.capabilities:
-        return FINAL_TESTER_PROFILE
-    if (
-        agent.role_card == "organize_information"
-        or agent.role == "summarizer"
-        or any(capability in agent.capabilities for capability in {"synthesize_information", "return_synthesis_artifact"})
-    ):
-        return SYNTHESIZER_PROFILE
-    if agent.role in {"tester", "reviewer"} or any(
+    if agent.role == "tester" or any(
         capability in agent.capabilities
         for capability in {"model_review", "optional_check_command", "return_test_result"}
     ):
         return TESTER_PROFILE
-    return WORKER_PROFILE
+    return EXECUTOR_PROFILE
 
 
 def authority_catalog() -> list[dict[str, object]]:

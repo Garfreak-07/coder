@@ -14,8 +14,8 @@ class CodingEvalGateTests(unittest.TestCase):
             {
                 "graph_run_cache": {
                     "round": 1,
-                    "execution_cache": {"worker": {"status": "completed"}},
-                    "test_cache": {"worker": [{"status": "pass"}]},
+                    "execution_cache": {"executor-work": {"status": "completed"}},
+                    "test_cache": {"executor-work": [{"status": "pass"}]},
                     "hidden_effects": [
                         {"effect_type": "modify_files", "action_type": "propose_patch", "status": "patch_preview_created"},
                         {"effect_type": "sandbox_apply", "action_type": "apply_patch_sandbox", "status": "applied"},

@@ -40,7 +40,7 @@ class AgentEngineSpec(BaseModel):
 
     id: str
     name: str
-    engine_type: Literal["planner", "worker", "tester", "final_tester", "custom"]
+    engine_type: Literal["planner", "executor", "tester"]
     description: str = ""
     harness_graph: HarnessGraph
     allowed_artifacts: list[str] = Field(default_factory=list)

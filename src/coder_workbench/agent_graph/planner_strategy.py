@@ -60,16 +60,15 @@ class ReplayPlannerStrategy:
 
 
 class SimplePlannerStrategy:
-    def __init__(self, *, single_worker: bool = False) -> None:
-        self.single_worker = single_worker
+    def __init__(self, *, single_executor: bool = False) -> None:
+        self.single_executor = single_executor
 
     def create_order(self, context: PlannerStrategyContext) -> PlannerOrder | None:
-        workers = _worker_agents(context.agent_workflow)
-        if self.single_worker:
-            workers = workers[:1]
+        executors = _executor_agents(context.agent_workflow)
+        if self.single_executor:
+            executors = executors[:1]
         testers = _tester_agents(context.agent_workflow)
         tester_ids = [agent.id for agent in testers]
-        final_tester_id = _final_tester_id(testers)
         repo_hint = _repo_hint(context.repo_intelligence)
         work_items = [
             {
@@ -80,7 +79,7 @@ class SimplePlannerStrategy:
                 "depends_on": [],
                 "tester_agent_ids": tester_ids,
             }
-            for index, agent in enumerate(workers, start=1)
+            for index, agent in enumerate(executors, start=1)
         ]
         return PlannerOrder.model_validate(
             {
@@ -89,7 +88,6 @@ class SimplePlannerStrategy:
                 "round_goal": context.request,
                 "plan_graph": {
                     "work_items": work_items,
-                    "final_tester_agent_id": final_tester_id,
                 },
             }
         )
@@ -106,8 +104,8 @@ def planner_strategy_for_mode(mode: str | None) -> PlannerStrategy:
         return ReplayPlannerStrategy()
     if normalized == "simple":
         return SimplePlannerStrategy()
-    if normalized == "single_worker":
-        return SimplePlannerStrategy(single_worker=True)
+    if normalized == "single_executor":
+        return SimplePlannerStrategy(single_executor=True)
     return FullPlannerStrategy()
 
 
@@ -176,7 +174,7 @@ def _local_decision(
         if has_blocked_runtime_actions
         else "Tests failed; local PlannerStrategy will replan inside the existing RunContract."
         if has_failed_tests
-        else "Worker requested Planner intervention."
+        else "Executor requested Planner intervention."
         if has_interrupts
         else "Work is blocked and requires Planner or user judgment."
         if has_blocked_work
@@ -224,7 +222,7 @@ def _local_decision(
     return validate_artifact(payload, expected_type="planner_decision")
 
 
-def _worker_agents(agent_workflow: AgentWorkflowSpec) -> list[AgentWorkflowAgent]:
+def _executor_agents(agent_workflow: AgentWorkflowSpec) -> list[AgentWorkflowAgent]:
     return [
         agent
         for agent in agent_workflow.agents
@@ -237,17 +235,10 @@ def _tester_agents(agent_workflow: AgentWorkflowSpec) -> list[AgentWorkflowAgent
 
 
 def _is_tester(agent: AgentWorkflowAgent) -> bool:
-    return agent.role in {"tester", "reviewer"} or any(
+    return agent.role == "tester" or any(
         capability in agent.capabilities
-        for capability in {"model_review", "optional_check_command", "aggregate_tests", "return_test_result"}
+        for capability in {"model_review", "optional_check_command", "return_test_result"}
     )
-
-
-def _final_tester_id(testers: list[AgentWorkflowAgent]) -> str | None:
-    if len(testers) <= 1:
-        return None
-    aggregate = next((agent for agent in testers if "aggregate_tests" in agent.capabilities), None)
-    return (aggregate or testers[-1]).id
 
 
 def _repo_hint(repo_intelligence: dict[str, Any] | None) -> str:

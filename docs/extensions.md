@@ -52,10 +52,11 @@ New product endpoints:
 - `/api/v2/extensions/search`
 - `/api/v2/extensions/install`
 
-Existing `/api/v2/skills/*` endpoints remain temporary compatibility aliases.
-Legacy `WorkflowSpec` paths must not become new extension integration points.
+Existing `/api/v2/skills/*` endpoints remain temporary skill-management
+compatibility aliases. Old workflow runtime paths are not extension integration
+points.
 
-## v0.9.6 Boundary
+## v1.0 Boundary
 
 - Ordinary users still manage Agents, workflows, plugins, and skills.
 - `RunController` owns Planner loop continuation; extensions do not decide
@@ -65,12 +66,11 @@ Legacy `WorkflowSpec` paths must not become new extension integration points.
 - `ActionGateway` is the entry point for extension-backed runtime actions.
 - `ToolCapability` is the source of truth for plugin/MCP risk, permissions, and
   approval requirements.
-- Worker artifacts can request plugin, MCP, or repo-index operations through
+- Executor artifacts can request plugin, MCP, or repo-index operations through
   `requested_actions`; their outputs are recorded as `runtime_action` hidden
   effects with `tool_result_ref` / `output_ref`.
 - `AgentRun` and `AgentEngineRegistry` are the execution entry point for
   AgentEngine packages.
 - Extension metadata and cache files live behind partitioned extension/cache
   stores.
-- Legacy `WorkflowSpec` endpoints remain compatibility aliases, not new
-  extension surfaces.
+- Old workflow endpoints are removed and are not extension surfaces.

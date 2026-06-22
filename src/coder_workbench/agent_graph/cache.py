@@ -8,7 +8,6 @@ from coder_workbench.agent_graph.schema import (
     AgentTaskEnvelope,
     CachedWorkItem,
     ExecutionRecord,
-    FinalTestRecord,
     PlanCache,
     PlannerInputInterrupt,
     PlannerOrder,
@@ -26,7 +25,6 @@ class GraphRunCache(BaseModel):
     agent_tasks: dict[str, AgentTaskEnvelope] = Field(default_factory=dict)
     execution_cache: dict[str, ExecutionRecord] = Field(default_factory=dict)
     test_cache: dict[str, list[TestRecord]] = Field(default_factory=dict)
-    final_test_cache: FinalTestRecord | None = None
     skill_index: dict[str, Any] | None = None
     skill_routes: dict[str, dict[str, Any]] = Field(default_factory=dict)
     context_packets_v2: dict[str, dict[str, Any]] = Field(default_factory=dict)
@@ -97,10 +95,6 @@ class GraphRunCache(BaseModel):
 
     def record_test(self, record: TestRecord) -> TestRecord:
         self.test_cache.setdefault(record.work_item_id, []).append(record)
-        return record
-
-    def record_final_test(self, record: FinalTestRecord) -> FinalTestRecord:
-        self.final_test_cache = record
         return record
 
     def record_hidden_effect(self, record: dict[str, Any], output: dict[str, Any] | None = None) -> dict[str, Any]:

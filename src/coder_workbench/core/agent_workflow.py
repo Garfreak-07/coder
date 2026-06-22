@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from coder_workbench.core.archetypes import agent_payload_from_role_card
 from coder_workbench.core.authority import authority_profile_for_agent
-from coder_workbench.core.schema import AgentSpec, ContextPolicy, EdgeSpec, NodeSpec, PermissionPolicy, WorkflowSpec
 
 
 AgentModelTier = Literal["best", "standard", "economy"]
@@ -15,7 +14,6 @@ HandoffType = Literal[
     "run_contract",
     "planner_order",
     "execution_result",
-    "synthesis_artifact",
     "test_result",
     "planner_decision",
     "round_summary",
@@ -25,18 +23,11 @@ ValidationLevel = Literal["error", "warning"]
 VALID_AGENT_ROLES = {
     "planner",
     "executor",
-    "worker",
     "tester",
-    "reviewer",
-    "writer",
-    "researcher",
-    "summarizer",
-    "custom",
 }
 VALID_MODEL_TIERS = {"best", "standard", "economy"}
 ARTIFACT_PRIORITY = [
     "planner_order",
-    "synthesis_artifact",
     "execution_result",
     "test_result",
     "run_contract",
@@ -146,9 +137,8 @@ class AgentWorkflowUi(BaseModel):
 class AgentWorkflowSpec(BaseModel):
     """User-visible agent workflow.
 
-    This is deliberately smaller than WorkflowSpec. Users see agents, edges,
-    capabilities, and loop policy; the compiler expands those choices into
-    runtime nodes and internal artifact handoffs.
+    Users see agents, edges, capabilities, and loop policy. The product
+    runtime executes this contract directly through AgentGraphRunner.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -165,7 +155,7 @@ class AgentWorkflowSpec(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_legacy_agent_workflow(cls, data: Any) -> Any:
+    def migrate_agent_workflow_version(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
         migrated = dict(data)
@@ -467,7 +457,7 @@ def validate_agent_workflow(spec: AgentWorkflowSpec) -> AgentWorkflowValidationR
             issues.append(
                 _issue(
                     "missing_meaningful_agent",
-                    "Primary Planner must reach at least one worker, tester, or reviewer Agent.",
+                    "Primary Planner must reach at least one executor or tester Agent.",
                     "workflow",
                 )
             )
@@ -480,24 +470,14 @@ def validate_agent_workflow(spec: AgentWorkflowSpec) -> AgentWorkflowValidationR
                 )
             )
 
-    test_agents = [agent for agent in spec.agents if "test_result" in produces_by_agent.get(agent.id, set())]
-    if len(test_agents) > 1 and not any("aggregate_tests" in agent.capabilities for agent in test_agents):
-        issues.append(
-            _issue(
-                "missing_final_tester",
-                "Workflows with multiple testing Agents must include a user-added final tester with aggregate_tests.",
-                "workflow",
-            )
-        )
-
-    worker_cycle = _non_planner_cycle(spec)
-    if worker_cycle:
+    executor_cycle = _non_planner_cycle(spec)
+    if executor_cycle:
         issues.append(
             _issue(
                 "agent_cycle_without_planner",
-                "Worker/tester subgraphs cannot form cycles that bypass the primary Planner.",
+                "Executor/tester subgraphs cannot form cycles that bypass the primary Planner.",
                 "workflow",
-                "->".join(worker_cycle),
+                "->".join(executor_cycle),
             )
         )
 
@@ -552,7 +532,7 @@ def default_planner_led_agent_workflow() -> AgentWorkflowSpec:
             "id": "default-planner-led",
             "version": "0.4",
             "name": "Planner-led Agent Workflow",
-            "description": "Planner decides. Code Worker proposes changes by order. Tester returns evidence. Runtime hides graph details.",
+            "description": "Planner decides. Executor proposes changes by order. Tester returns evidence. Runtime hides graph details.",
             "primary_planner_id": "planner",
             "agents": [
                 {
@@ -572,7 +552,7 @@ def default_planner_led_agent_workflow() -> AgentWorkflowSpec:
                 },
                 {
                     "id": "executor",
-                    "name": "Code Worker Agent",
+                    "name": "Executor Agent",
                     "role": "executor",
                     "model_tier": "standard",
                     "can_talk_to_human": False,
@@ -609,192 +589,6 @@ def default_planner_led_agent_workflow() -> AgentWorkflowSpec:
                 }
             },
         }
-    )
-
-
-def _compile_agent_workflow_legacy_impl(spec: AgentWorkflowSpec) -> WorkflowSpec:
-    """Compile AgentWorkflowSpec into the legacy WorkflowSpec preview."""
-
-    assert_valid_agent_workflow(spec)
-    primary = next(agent for agent in spec.agents if agent.id == spec.primary_planner_id)
-    runtime_agents = _ordered_runtime_agents(spec)
-    max_rounds = spec.loop_policy.max_auto_rounds
-    assert max_rounds is not None
-
-    agents = [
-        _runtime_agent(
-            source=primary,
-            runtime_id="planner_contract",
-            role="Planner Agent",
-            goal="Negotiate the run contract with the human-facing request.",
-            artifact_type="run_contract",
-            output_key="run_contract",
-        ),
-        _runtime_agent(
-            source=primary,
-            runtime_id="planner_order",
-            role="Planner Agent",
-            goal="Produce the next executable order for downstream Agents.",
-            artifact_type="planner_order",
-            output_key="planner_order",
-            input_keys=["run_contract", "round_summary", "execution_result", "test_result"],
-            summary_keys=["round_summary"],
-        ),
-    ]
-    nodes = [
-        NodeSpec(id="start", type="start"),
-        NodeSpec(id="run_contract", type="agent", agent_id="planner_contract", output_key="run_contract"),
-        NodeSpec(id="planner_order", type="agent", agent_id="planner_order", output_key="planner_order"),
-    ]
-    edges = [
-        EdgeSpec(from_node="start", to_node="run_contract"),
-        EdgeSpec(from_node="run_contract", to_node="planner_order"),
-    ]
-
-    previous_node = "planner_order"
-    for agent in runtime_agents:
-        artifact_type = _runtime_artifact_type(agent)
-        output_key = artifact_type or f"{_safe_id(agent.id)}_result"
-        node_id = f"agent_{_safe_id(agent.id)}"
-        agents.append(
-            _runtime_agent(
-                source=agent,
-                runtime_id=node_id,
-                role=f"{agent.role.title()} Agent",
-                goal=_runtime_goal(agent, artifact_type),
-                artifact_type=artifact_type,
-                output_key=output_key,
-                input_keys=_runtime_input_keys(agent),
-                summary_keys=_runtime_input_keys(agent),
-                can_edit=_can_edit(agent),
-                can_run_commands=_can_run_commands(agent),
-                use_network=_can_use_network(agent),
-            )
-        )
-        nodes.append(NodeSpec(id=node_id, type="agent", agent_id=node_id, output_key=output_key))
-        edges.append(EdgeSpec(from_node=previous_node, to_node=node_id))
-        previous_node = node_id
-
-    agents.extend(
-        [
-            _runtime_agent(
-                source=primary,
-                runtime_id="planner_decision",
-                role="Planner Agent",
-                goal="Decide whether to finish, continue, ask the human, or stop.",
-                artifact_type="planner_decision",
-                output_key="planner_decision",
-                input_keys=["run_contract", "execution_result", "test_result", "round_summary"],
-                summary_keys=["execution_result", "test_result", "round_summary"],
-            ),
-            _runtime_agent(
-                source=primary,
-                runtime_id="round_summarizer",
-                role="Planner Agent",
-                goal="Compress this round into a compact carry-forward summary.",
-                artifact_type="round_summary",
-                output_key="round_summary",
-                input_keys=["planner_order", "execution_result", "test_result", "planner_decision"],
-                summary_keys=["planner_order", "execution_result", "test_result", "planner_decision"],
-            ),
-        ]
-    )
-    nodes.extend(
-        [
-            NodeSpec(id="planner_decision", type="agent", agent_id="planner_decision", output_key="planner_decision"),
-            NodeSpec(id="round_summary", type="agent", agent_id="round_summarizer", output_key="round_summary"),
-            NodeSpec(
-                id="planner_loop",
-                type="loop",
-                loop_mode="retry_until",
-                condition="planner_decision.next_action == 'finish' or planner_decision.next_action == 'stop' or planner_decision.next_action == 'ask_human'",
-                max_iterations=max_rounds or 1,
-                output_key="planner_loop",
-            ),
-            NodeSpec(id="finish", type="end"),
-        ]
-    )
-    edges.extend(
-        [
-            EdgeSpec(from_node=previous_node, to_node="planner_decision"),
-            EdgeSpec(from_node="planner_decision", to_node="round_summary"),
-            EdgeSpec(from_node="round_summary", to_node="planner_loop"),
-            EdgeSpec(
-                from_node="planner_loop",
-                to_node="planner_order",
-                when="planner_loop.should_continue == True",
-                max_traversals=max(1, max_rounds),
-            ),
-            EdgeSpec(from_node="planner_loop", to_node="finish", when="planner_loop.should_continue == False"),
-        ]
-    )
-
-    return WorkflowSpec(
-        id=f"{spec.id}-runtime",
-        version=spec.version,
-        name=spec.name,
-        description=spec.description,
-        max_steps=max(12, 4 + (len(runtime_agents) + 4) * max(1, max_rounds)),
-        max_agent_calls=max(6, (len(runtime_agents) + 4) * max(1, max_rounds)),
-        max_tool_calls=0,
-        token_budget=80000,
-        agents=agents,
-        nodes=nodes,
-        edges=edges,
-        stop_conditions=[
-            "planner_decision.next_action == finish",
-            "planner_decision.next_action == ask_human",
-            "planner_decision.next_action == stop",
-            "max_auto_rounds reached",
-            "token budget exceeded",
-        ],
-    )
-
-
-def _runtime_agent(
-    *,
-    source: AgentWorkflowAgent,
-    runtime_id: str,
-    role: str,
-    goal: str,
-    artifact_type: str | None,
-    output_key: str,
-    input_keys: list[str] | None = None,
-    summary_keys: list[str] | None = None,
-    can_edit: bool = False,
-    can_run_commands: bool = False,
-    use_network: bool = False,
-) -> AgentSpec:
-    model = None if source.model_tier == "standard" else source.model_tier
-    return AgentSpec(
-        id=runtime_id,
-        name=source.name,
-        role=role,
-        goal=goal,
-        instructions=(
-            "Return strict JSON for the requested artifact. "
-            "Do not include full transcripts. Use only the structured inputs supplied by the runtime."
-        ),
-        model=model,
-        tools=[],
-        output_key=output_key,
-        artifact_type=artifact_type,  # type: ignore[arg-type]
-        permissions=PermissionPolicy(
-            read_files=True,
-            edit_files=can_edit,
-            run_commands=can_run_commands,
-            use_network=use_network,
-            requires_approval=can_edit or can_run_commands or use_network,
-        ),
-        context=ContextPolicy(
-            input_keys=input_keys or [],
-            summary_keys=summary_keys or [],
-            max_items_per_key=12,
-            max_chars_per_value=3500,
-            include_all_state=False,
-            include_event_history=False,
-            include_full_outputs=False,
-        ),
     )
 
 
@@ -957,68 +751,6 @@ def _infer_edge_handoff(from_outputs: set[str], to_requires: set[str]) -> str | 
     return None
 
 
-def _ordered_runtime_agents(spec: AgentWorkflowSpec) -> list[AgentWorkflowAgent]:
-    agent_by_id = {agent.id: agent for agent in spec.agents}
-    graph: dict[str, list[str]] = {}
-    for edge in spec.edges:
-        if edge.loop:
-            continue
-        graph.setdefault(edge.from_agent, []).append(edge.to_agent)
-    ordered: list[AgentWorkflowAgent] = []
-    seen = {spec.primary_planner_id}
-    queue: deque[str] = deque(graph.get(spec.primary_planner_id, []))
-    while queue:
-        agent_id = queue.popleft()
-        if agent_id in seen:
-            continue
-        seen.add(agent_id)
-        agent = agent_by_id.get(agent_id)
-        if agent is not None:
-            ordered.append(agent)
-        queue.extend(graph.get(agent_id, []))
-    for agent in spec.agents:
-        if agent.id not in seen and agent.id != spec.primary_planner_id:
-            ordered.append(agent)
-    return ordered
-
-
-def _runtime_artifact_type(agent: AgentWorkflowAgent) -> str | None:
-    produces = _agent_produces(agent)
-    for artifact in (
-        "test_result",
-        "synthesis_artifact",
-        "execution_result",
-        "planner_order",
-        "round_summary",
-        "planner_decision",
-        "run_contract",
-    ):
-        if artifact in produces:
-            return artifact
-    return None
-
-
-def _runtime_goal(agent: AgentWorkflowAgent, artifact_type: str | None) -> str:
-    if artifact_type == "execution_result":
-        return "Follow the PlannerOrder and return only execution facts."
-    if artifact_type == "synthesis_artifact":
-        return "Collect, normalize, deduplicate, rank, and compress information into a SynthesisArtifact."
-    if artifact_type == "test_result":
-        return "Review execution evidence and return only a TestResult."
-    return f"Follow the PlannerOrder and return structured facts for the {agent.role} role."
-
-
-def _runtime_input_keys(agent: AgentWorkflowAgent) -> list[str]:
-    required = _agent_requires(agent)
-    if required:
-        return sorted(required)
-    if _runtime_artifact_type(agent) == "test_result":
-        return ["execution_result", "planner_order"]
-    if _runtime_artifact_type(agent) == "synthesis_artifact":
-        return ["planner_order"]
-    return ["planner_order"]
-
-
 def _agent_requires(agent: AgentWorkflowAgent) -> set[str]:
     registry = capability_registry()
     required: set[str] = set()
@@ -1037,37 +769,6 @@ def _agent_produces(agent: AgentWorkflowAgent) -> set[str]:
         if capability:
             produced.update(capability.produces)
     return produced
-
-
-def _agent_permissions(agent: AgentWorkflowAgent) -> CapabilityPermissions:
-    permissions = CapabilityPermissions(read_files=True)
-    registry = capability_registry()
-    for capability_id in agent.capabilities:
-        capability = registry.get(capability_id)
-        if not capability:
-            continue
-        permissions.read_files = permissions.read_files or capability.permissions.read_files
-        permissions.edit_files = permissions.edit_files or capability.permissions.edit_files
-        permissions.run_commands = permissions.run_commands or capability.permissions.run_commands
-        permissions.use_network = permissions.use_network or capability.permissions.use_network
-    return permissions
-
-
-def _can_edit(agent: AgentWorkflowAgent) -> bool:
-    return _agent_permissions(agent).edit_files
-
-
-def _can_run_commands(agent: AgentWorkflowAgent) -> bool:
-    return _agent_permissions(agent).run_commands
-
-
-def _can_use_network(agent: AgentWorkflowAgent) -> bool:
-    return _agent_permissions(agent).use_network
-
-
-def _safe_id(value: str) -> str:
-    safe = "".join(char if char.isalnum() or char == "_" else "_" for char in value.strip())
-    return safe or "agent"
 
 
 _CAPABILITIES = [
@@ -1127,14 +828,14 @@ _CAPABILITIES = [
         id="follow_planner_order",
         label="Follow Planner order",
         description="Agent follows PlannerOrder and does not redefine the global task.",
-        allowed_roles=["executor", "worker", "writer", "researcher", "summarizer", "custom"],
+        allowed_roles=["executor"],
         requires=["planner_order"],
     ),
     CapabilitySpec(
         id="modify_files",
         label="Modify files",
         description="Prepare and apply file changes under Planner authorization.",
-        allowed_roles=["executor", "worker"],
+        allowed_roles=["executor"],
         requires=["run_contract", "planner_order"],
         produces=["execution_result"],
         permissions=CapabilityPermissions(read_files=True, edit_files=True),
@@ -1144,63 +845,40 @@ _CAPABILITIES = [
         id="generate_text",
         label="Generate text",
         description="Produce non-code text output from Planner instructions.",
-        allowed_roles=["executor", "worker", "writer", "researcher", "summarizer", "custom"],
+        allowed_roles=["executor"],
         requires=["planner_order"],
         produces=["execution_result"],
-    ),
-    CapabilitySpec(
-        id="synthesize_information",
-        label="Synthesize information",
-        description="Collect, normalize, deduplicate, cluster, rank, and compress source material.",
-        allowed_roles=["summarizer", "researcher", "writer", "custom"],
-        requires=["planner_order"],
-        produces=["synthesis_artifact"],
-    ),
-    CapabilitySpec(
-        id="return_synthesis_artifact",
-        label="Return synthesis artifact",
-        description="Agent reports organized information as SynthesisArtifact. It also satisfies legacy execution-result handoffs.",
-        allowed_roles=["summarizer", "researcher", "writer", "custom"],
-        produces=["synthesis_artifact", "execution_result"],
     ),
     CapabilitySpec(
         id="return_execution_result",
         label="Return execution result",
         description="Agent reports facts as ExecutionResult, not decisions.",
-        allowed_roles=["executor", "worker", "writer", "researcher", "summarizer", "custom"],
+        allowed_roles=["executor"],
         produces=["execution_result"],
     ),
     CapabilitySpec(
         id="model_review",
         label="Model review",
-        description="Reviewer inspects ExecutionResult and returns evidence.",
-        allowed_roles=["tester", "reviewer"],
+        description="Tester inspects ExecutionResult and returns evidence.",
+        allowed_roles=["tester"],
         requires=["execution_result"],
         produces=["test_result"],
     ),
     CapabilitySpec(
         id="optional_check_command",
         label="Optional check command",
-        description="Reviewer may attach command evidence when the runtime enables it.",
-        allowed_roles=["tester", "reviewer"],
+        description="Tester may attach command evidence when the runtime enables it.",
+        allowed_roles=["tester"],
         requires=["execution_result"],
         produces=["test_result"],
         permissions=CapabilityPermissions(read_files=True, run_commands=True),
         runtime_effects=["check_command"],
     ),
     CapabilitySpec(
-        id="aggregate_tests",
-        label="Aggregate tests",
-        description="Combine multiple ordered test results into one final TestResult for Planner.",
-        allowed_roles=["tester", "reviewer"],
-        requires=["test_result"],
-        produces=["test_result"],
-    ),
-    CapabilitySpec(
         id="return_test_result",
         label="Return test result",
         description="Agent returns evidence as TestResult, not next actions.",
-        allowed_roles=["tester", "reviewer"],
+        allowed_roles=["tester"],
         produces=["test_result"],
     ),
 ]

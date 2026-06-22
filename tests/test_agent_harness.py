@@ -39,7 +39,7 @@ class AgentHarnessTests(unittest.TestCase):
         self.assertEqual(record.artifact_payload["artifact_type"], "execution_result")
 
     def test_code_worker_repairs_invalid_json_once(self) -> None:
-        worker = CodeWorkerHarness(
+        executor = CodeWorkerHarness(
             model=FakeModel(
                 [
                     "not json",
@@ -48,7 +48,7 @@ class AgentHarnessTests(unittest.TestCase):
             )
         )
 
-        record = worker.create_execution_result(item=_item(), envelope=_envelope())
+        record = executor.create_execution_result(item=_item(), envelope=_envelope())
 
         self.assertEqual(record.status, "completed")
         self.assertEqual(record.execution_summary, "Repaired.")

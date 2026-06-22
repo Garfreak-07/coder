@@ -46,13 +46,3 @@ def tester_policy() -> HarnessPolicy:
         allowed_artifacts=["test_result", "check_result", "debug_finding"],
     )
 
-
-def final_review_policy() -> HarnessPolicy:
-    return HarnessPolicy(
-        max_steps=4,
-        can_ask_human=False,
-        can_modify_files=False,
-        can_run_commands=False,
-        can_write_memory=False,
-        allowed_artifacts=["test_result", "round_summary"],
-    )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import unittest
 from pathlib import Path
 
@@ -27,8 +26,6 @@ class ProductUISurfaceTests(unittest.TestCase):
             with self.subTest(token=token):
                 self.assertNotIn(token, source)
 
-        self.assertIsNone(re.search(r"(?<!Agent)\bWorkflowSpec\b", source))
-
     def test_workbench_app_centers_planner_chat_and_run_evidence(self) -> None:
         source = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
 
@@ -41,17 +38,6 @@ class ProductUISurfaceTests(unittest.TestCase):
         ]:
             with self.subTest(token=token):
                 self.assertIn(token, source)
-
-    def test_frontend_api_does_not_call_legacy_runtime_endpoints(self) -> None:
-        source = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
-
-        for token in [
-            "/api/v2/live-runs",
-            "/api/v2/agent-workflows/compile",
-            "/api/v2/library/workflows",
-        ]:
-            with self.subTest(token=token):
-                self.assertNotIn(token, source)
 
     def test_visible_frontend_copy_does_not_reference_legacy_runtime(self) -> None:
         for relative_path in [

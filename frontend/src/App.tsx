@@ -93,7 +93,7 @@ export function App() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [historyQuery, setHistoryQuery] = useState("");
   const [historyStatusFilter, setHistoryStatusFilter] = useState("all");
-  const [newAgentRoleCard, setNewAgentRoleCard] = useState("do_work");
+  const [newAgentRoleCard, setNewAgentRoleCard] = useState("executor");
   const [newAgentName, setNewAgentName] = useState("");
   const {
     capabilities,
@@ -737,7 +737,7 @@ export function App() {
           <div className="planner-chat-header">
             <div>
               <div className="panel-title">Planner Chat</div>
-              <div className="muted">Only the Planner talks to the user. Workers and Testers return evidence.</div>
+              <div className="muted">Only the Planner talks to the user. Executors and Testers return evidence.</div>
             </div>
             <div className="run-state-strip">
               <span>{selectedRunDetail ? `${selectedRunKind}: ${runStatusLabel(selectedRunDetail, selectedRunKind)}` : "No run selected"}</span>
@@ -891,8 +891,8 @@ export function App() {
           </div>
           <div className="summary-grid agent-policy-summary">
             <span>Only Planner can ask the user</span>
-            <span>Workers follow PlannerOrder</span>
-            <span>Reviewers return evidence</span>
+            <span>Executors follow PlannerOrder</span>
+            <span>Testers return evidence</span>
             <span>Runtime profiles are compiled internally</span>
           </div>
           <AgentWorkflowValidationPanel result={agentWorkflowValidation} />

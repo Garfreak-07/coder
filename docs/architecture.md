@@ -15,8 +15,8 @@ conversation. Runtime internals are compiled from those choices.
 
 ## Human Channel
 
-Only Planner can talk to the user. Workers, Testers, Final Testers, and other
-non-Planner Agents return structured artifacts or blockers to Planner.
+Only Planner can talk to the user. Executor and Tester Agents return structured
+artifacts or blockers to Planner.
 
 ## Runtime Flow
 
@@ -28,10 +28,10 @@ AgentRun -> AgentEngineRegistry -> AgentEngine -> artifact
 PlannerInputBundle -> PlannerDecision -> RunController
 ```
 
-Legacy `WorkflowSpec` remains only as a compatibility and advanced preview
-boundary. Product live Agent workflows use `AgentGraphRunner`.
+Product live Agent workflows use `AgentGraphRunner` directly. The old workflow
+runtime boundary has been removed from product code.
 
-## v0.9.6 Control Plane
+## v1.0 Control Plane
 
 `RunController` owns global continuation decisions after each
 `PlannerDecision`. It enforces max rounds and plan fingerprint loop guards
@@ -62,10 +62,7 @@ run. Reservation diagnostics are written alongside `TokenLedger`, which remains
 the audit record after context is built.
 
 `AgentRun` is the product Agent execution facade. It dispatches PlannerOrder,
-Worker, Tester, Final Review, Synthesizer, and PlannerDecision work through
-`AgentEngineRegistry`. `AgentGraphExecutor` remains only as a compatibility
-adapter for older call sites and must not be constructed by the product
-`AgentGraphRunner`.
+Executor, Tester, and PlannerDecision work through `AgentEngineRegistry`.
 
 Coding work follows the controlled auto-loop path:
 
@@ -79,7 +76,7 @@ DebugFinding records carry structured artifact refs in
 `PlannerInputBundle.effects`, so Planner replan prompts can cite raw
 failed-check or tool output instead of summaries only.
 
-`WaveExecutor` owns worker wave concurrency. `AgentGraphRunner` prepares task
+`WaveExecutor` owns executor wave concurrency. `AgentGraphRunner` prepares task
 contexts and handles outcomes, but does not own `ThreadPoolExecutor` details.
 
 Action events use helper-built envelopes for `action.started` and
@@ -99,11 +96,7 @@ explicit metadata, result, event, artifact, blob, ledger, context, tool-result,
 live-run, extension, and cache write path. `RunStore.save()` orchestrates these
 stores instead of owning primary object file writes directly.
 
-Legacy `WorkflowSpec` code remains compatibility-only and is not exposed by the
-product AgentWorkflow API. `/api/v2/agent-workflows/default` returns only the
-AgentWorkflow contract, and `/api/v2/agent-workflows/compile` returns
-`410 Gone`. `/api/v2/live-runs` is deprecated in favor of
-`/api/v2/live-agent-runs` for product AgentGraph execution. Live AgentGraph
-creation returns `live-agent-runs` event and result URLs. Legacy
-`/api/v2/live-runs/{run_id}` and `/events` return `410 Gone` for AgentGraph run
-ids with migration URLs instead of returning AgentGraph payloads.
+The old workflow runtime code and endpoints are removed. `/api/v2/agent-workflows/default`
+returns only the AgentWorkflow contract. Product execution uses
+`/api/v2/live-agent-runs`, and live AgentGraph creation returns
+`live-agent-runs` event and result URLs.

@@ -1,4 +1,4 @@
-import type { NodeType } from "./types";
+type NodeType = "start" | "agent" | "tool" | "mcp_tool" | "condition" | "loop" | "human_gate" | "end";
 
 export const enUS = {
   app: {
@@ -9,7 +9,7 @@ export const enUS = {
   templates: {
     title: "Start From Template",
     defaultCodingName: "Planner-led Default Workflow",
-    defaultCodingPurpose: "Planner decides, Code Worker acts, Tester returns evidence, and only structured handoff data is passed.",
+    defaultCodingPurpose: "Planner decides, Executor acts, Tester returns evidence, and only structured handoff data is passed.",
     blankName: "Blank Advanced Workflow",
     blankPurpose: "Start with a minimal Planner-led AgentGraph and add agents as needed.",
     useTemplate: "Use Template",
@@ -24,7 +24,7 @@ export const enUS = {
     optionalModel: "OpenAI/DeepSeek or mock mode",
     projectKnowledge: "Project summary, expandable with local md/txt knowledge",
     structuredHandoff: "Structured artifacts such as RunContract, PlannerOrder, and ExecutionResult",
-    mediumRisk: "Medium: Code Worker owns implementation but direct write tools stay hidden by default",
+    mediumRisk: "Medium: Executor owns implementation but direct write tools stay hidden by default",
     lowRisk: "Low: no writable nodes"
   },
   library: {
@@ -84,9 +84,6 @@ export const enUS = {
     noLiveRuns: "No live runs.",
     storedHistory: "Stored History",
     noStoredRuns: "No stored runs."
-  },
-  canvas: {
-    addNode: (type: NodeType) => `+ ${nodeTypeLabels[type]}`
   },
   json: {
     title: "Workflow JSON (Advanced)",
@@ -168,7 +165,7 @@ export const zhCN = {
   templates: {
     title: "从模板开始",
     defaultCodingName: "Planner-led 默认工作流",
-    defaultCodingPurpose: "Planner 决策，Code Worker 执行，Tester 返回证据；只传结构化交接信息。",
+    defaultCodingPurpose: "Planner 决策，Executor 执行，Tester 返回证据；只传结构化交接信息。",
     blankName: "空白高级工作流",
     blankPurpose: "只包含 start/end，适合手动搭建或粘贴 JSON。",
     useTemplate: "使用模板",
@@ -183,7 +180,7 @@ export const zhCN = {
     optionalModel: "OpenAI/DeepSeek 或 mock 模式",
     projectKnowledge: "项目摘要，可扩展本地 md/txt 知识库",
     structuredHandoff: "RunContract、PlannerOrder、ExecutionResult 等结构化 artifact",
-    mediumRisk: "中：Code Worker 有实现职责，但默认不暴露直接写入工具",
+    mediumRisk: "中：Executor 有实现职责，但默认不暴露直接写入工具",
     lowRisk: "低：不包含可写节点"
   },
   library: {
@@ -243,9 +240,6 @@ export const zhCN = {
     noLiveRuns: "没有实时运行。",
     storedHistory: "历史运行",
     noStoredRuns: "没有历史运行。"
-  },
-  canvas: {
-    addNode: (type: NodeType) => `+ ${zhCNNodeTypeLabels[type]}`
   },
   json: {
     title: "工作流 JSON（高级）",
@@ -307,24 +301,3 @@ export const zhCN = {
   }
 };
 
-export const nodeTypeLabels: Record<NodeType, string> = {
-  start: "Start",
-  agent: "Agent",
-  tool: "Tool",
-  mcp_tool: "MCP Tool",
-  condition: "Condition",
-  loop: "Loop",
-  human_gate: "Human Approval",
-  end: "End"
-};
-
-export const nodeTypeDescriptions: Record<NodeType, string> = {
-  start: "Workflow entry point",
-  agent: "Call a configured agent",
-  tool: "Call a built-in local tool",
-  mcp_tool: "Call an MCP stdio tool",
-  condition: "Branch by a state expression",
-  loop: "Explicit loop control node that emits continue, iteration, and break_reason for edge conditions",
-  human_gate: "Wait for the user to approve or reject",
-  end: "Workflow end"
-};

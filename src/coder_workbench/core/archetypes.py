@@ -10,8 +10,8 @@ if TYPE_CHECKING:
     from coder_workbench.core.agent_workflow import AgentWorkflowAgent, AgentWorkflowSpec
 
 
-RoleCardId = Literal["do_work", "check_result", "organize_information", "research_sources", "write_draft"]
-AgentArchetype = Literal["worker", "tester", "synthesizer", "research_worker", "draft_worker"]
+RoleCardId = Literal["executor", "tester"]
+AgentArchetype = Literal["planner", "executor", "tester"]
 
 
 class RoleCardSpec(BaseModel):
@@ -44,44 +44,20 @@ class AgentRuntimeProfile(BaseModel):
 
 ROLE_CARDS = [
     RoleCardSpec(
-        id="do_work",
-        label="Do work",
-        archetype="worker",
-        role="worker",
+        id="executor",
+        label="Executor",
+        archetype="executor",
+        role="executor",
         default_capabilities=["follow_planner_order", "modify_files", "return_execution_result"],
         description="Perform implementation or execution work assigned by Planner.",
     ),
     RoleCardSpec(
-        id="check_result",
-        label="Check result",
+        id="tester",
+        label="Tester",
         archetype="tester",
         role="tester",
         default_capabilities=["model_review", "return_test_result"],
         description="Review execution evidence and return test_result facts.",
-    ),
-    RoleCardSpec(
-        id="organize_information",
-        label="Organize information",
-        archetype="synthesizer",
-        role="summarizer",
-        default_capabilities=["follow_planner_order", "synthesize_information", "return_synthesis_artifact"],
-        description="Collect, normalize, deduplicate, and summarize information.",
-    ),
-    RoleCardSpec(
-        id="research_sources",
-        label="Research sources",
-        archetype="research_worker",
-        role="researcher",
-        default_capabilities=["follow_planner_order", "generate_text", "return_execution_result"],
-        description="Gather source material and return structured research facts.",
-    ),
-    RoleCardSpec(
-        id="write_draft",
-        label="Write draft",
-        archetype="draft_worker",
-        role="writer",
-        default_capabilities=["follow_planner_order", "generate_text", "return_execution_result"],
-        description="Draft text from Planner instructions and available evidence.",
     ),
 ]
 
@@ -124,15 +100,9 @@ def default_capabilities_for_role(role: str) -> list[str]:
             "make_next_decision",
             "round_summarize",
         ]
-    if role in {"tester", "reviewer"}:
+    if role == "tester":
         return ["model_review", "return_test_result"]
-    if role == "summarizer":
-        return ["follow_planner_order", "synthesize_information", "return_synthesis_artifact"]
-    if role == "researcher":
-        return ["follow_planner_order", "generate_text", "return_execution_result"]
-    if role == "writer":
-        return ["follow_planner_order", "generate_text", "return_execution_result"]
-    if role in {"executor", "worker", "custom"}:
+    if role == "executor":
         return ["follow_planner_order", "modify_files", "return_execution_result"]
     return []
 
@@ -174,15 +144,7 @@ def _archetype_for_agent(agent: "AgentWorkflowAgent", authority: str) -> str:
         return "planner"
     if authority == "tester":
         return "tester"
-    if authority == "final_tester":
-        return "synthesizer"
-    if agent.role == "researcher":
-        return "research_worker"
-    if agent.role == "writer":
-        return "draft_worker"
-    if agent.role == "summarizer":
-        return "synthesizer"
-    return "worker"
+    return "executor"
 
 
 def _context_policy(archetype: str) -> dict[str, object]:
@@ -190,8 +152,6 @@ def _context_policy(archetype: str) -> dict[str, object]:
         return {"skill_load_mode": "index_only", "memory": "workflow_summary", "max_skill_tokens": 0}
     if archetype == "tester":
         return {"skill_load_mode": "selected_summary", "memory": "none", "max_skill_tokens": 800}
-    if archetype == "synthesizer":
-        return {"skill_load_mode": "on_demand", "memory": "direct_refs_only", "max_skill_tokens": 2000}
     return {"skill_load_mode": "on_demand", "memory": "direct_refs_only", "max_skill_tokens": 1600}
 
 
@@ -205,10 +165,7 @@ def _memory_policy(authority: str) -> dict[str, object]:
 def _token_budget(archetype: str) -> dict[str, object]:
     budgets = {
         "planner": 12000,
-        "worker": 8000,
-        "research_worker": 9000,
-        "draft_worker": 8000,
-        "synthesizer": 9000,
+        "executor": 8000,
         "tester": 6000,
     }
     return {"max_input_tokens": budgets.get(archetype, 8000), "managed_by_runtime": True}
@@ -217,7 +174,7 @@ def _token_budget(archetype: str) -> dict[str, object]:
 def _internal_loops(authority: str) -> dict[str, object]:
     return {
         "schema_repair_attempts": 1,
-        "self_check": authority in {"worker", "tester", "final_tester", "synthesizer"},
+        "self_check": authority in {"executor", "tester"},
         "planner_repair": authority == "planner",
     }
 
@@ -237,6 +194,4 @@ def _evaluation_profile(archetype: str) -> dict[str, object]:
         return {"artifact_type": "test_result", "metrics": ["evidence_ref_rate", "confidence_calibration"]}
     if archetype == "planner":
         return {"artifact_type": "planner_order", "metrics": ["plan_valid_rate", "wrong_skill_selection_rate"]}
-    if archetype == "synthesizer":
-        return {"artifact_type": "synthesis_artifact", "metrics": ["deduplication_rate", "compression_ratio"]}
     return {"artifact_type": "execution_result", "metrics": ["schema_valid_rate", "blocked_rate"]}

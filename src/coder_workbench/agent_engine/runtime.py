@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from pydantic import ValidationError
@@ -10,7 +9,6 @@ from coder_workbench.budget import BudgetBroker
 from coder_workbench.config import RuntimeConfig, load_runtime_config
 from coder_workbench.core import AgentWorkflowAgent
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
-from coder_workbench.core.authority import authority_profile_for_agent
 from coder_workbench.llm import create_chat_model
 from coder_workbench.skills import estimate_tokens
 
@@ -18,7 +16,6 @@ if TYPE_CHECKING:
     from coder_workbench.agent_graph.schema import (
         AgentTaskEnvelope,
         ExecutionRecord,
-        FinalTestRecord,
         PlannerInputBundle,
         PlannerOrder,
         TestRecord,
@@ -462,7 +459,7 @@ class PlannerEngine(ModelBackedEngine):
             if has_failed_runtime_actions
             else "Runtime action requires approval before Planner can continue."
             if has_blocked_runtime_actions
-            else "Worker requested Planner intervention."
+            else "Executor requested Planner intervention."
             if has_interrupts
             else "Tests failed; Planner will replan inside the existing RunContract."
             if has_failed_tests
@@ -593,176 +590,6 @@ class TesterEngine(ModelBackedEngine):
         )
 
 
-class FinalReviewEngine(ModelBackedEngine):
-    id = "final-review-engine"
-
-    def run_final_test(
-        self,
-        *,
-        agent_workflow: "AgentWorkflowSpec",
-        bundle: "PlannerInputBundle",
-        final_tester_agent_id: str,
-        runtime_settings: Any | None = None,
-        model_factory: ModelFactory = create_chat_model,
-        budget_broker: BudgetBroker | None = None,
-        action_gateway: ActionGateway | None = None,
-        run_id: str | None = None,
-        emit: EmitEvent | None = None,
-    ) -> "FinalTestRecord":
-        from coder_workbench.agent_graph.prompts import build_final_tester_prompt
-        from coder_workbench.agent_graph.schema import FinalTestRecord
-
-        final_tester = _agent(agent_workflow, final_tester_agent_id)
-        fallback = {
-            "artifact_type": "test_result",
-            "round": bundle.round,
-            "tester_agent_id": final_tester_agent_id,
-            "status": "blocked",
-            "summary": "Final tester output did not match test_result schema after one repair.",
-            "remaining_work": ["schema_validation_failed"],
-            "confidence": "low",
-        }
-        payload = self._invoke_or_mock(
-            artifact_type="test_result",
-            agent_id=final_tester.id,
-            prompt=build_final_tester_prompt(final_tester=final_tester, bundle=bundle),
-            mock_payload={
-                "artifact_type": "test_result",
-                "round": bundle.round,
-                "tester_agent_id": final_tester_agent_id,
-                "status": _aggregate_test_status(bundle),
-                "summary": _aggregate_test_summary(bundle),
-                "evidence": [ref for item in bundle.items for ref in item.refs],
-                "issues": [],
-                "remaining_work": _aggregate_remaining_work(bundle),
-                "confidence": "medium",
-                "check_commands": [],
-                "check_outputs_ref": None,
-            },
-            emit=emit,
-            agent_workflow=agent_workflow,
-            runtime_settings=runtime_settings,
-            model_factory=model_factory,
-            budget_broker=budget_broker,
-            action_gateway=action_gateway,
-            run_id=run_id,
-            fallback_payload=fallback,
-        )
-        payload = _with_forced_fields(
-            payload,
-            {
-                "artifact_type": "test_result",
-                "round": bundle.round,
-                "tester_agent_id": final_tester_agent_id,
-            },
-        )
-        artifact = self._validate_payload(
-            payload,
-            artifact_type="test_result",
-            agent_id=final_tester.id,
-            emit=emit,
-            fallback_payload=fallback,
-        )
-        return FinalTestRecord(
-            round=bundle.round,
-            final_tester_agent_id=final_tester_agent_id,
-            status=artifact["status"],
-            summary=artifact["summary"],
-            final_test_result_ref=_artifact_ref("test_result", "final", final_tester_agent_id),
-            artifact_payload=artifact,
-        )
-
-
-class SynthesizerEngine(ModelBackedEngine):
-    id = "synthesizer-engine"
-
-    def run_execution(
-        self,
-        *,
-        agent: AgentWorkflowAgent,
-        item: "WorkItem",
-        envelope: "AgentTaskEnvelope",
-        model: Any | None = None,
-        emit: Any | None = None,
-    ) -> "ExecutionRecord":
-        placeholder_workflow = SimpleNamespace(id="synthesizer-engine-run")
-        return self.run_synthesis(
-            agent_workflow=placeholder_workflow,
-            agent=agent,
-            item=item,
-            envelope=envelope,
-            model=model,
-            emit=emit,
-        )
-
-    def run_synthesis(
-        self,
-        *,
-        agent_workflow: "AgentWorkflowSpec",
-        agent: AgentWorkflowAgent,
-        item: "WorkItem",
-        envelope: "AgentTaskEnvelope",
-        model: Any | None = None,
-        runtime_settings: Any | None = None,
-        model_factory: ModelFactory = create_chat_model,
-        budget_broker: BudgetBroker | None = None,
-        action_gateway: ActionGateway | None = None,
-        run_id: str | None = None,
-        emit: EmitEvent | None = None,
-    ) -> "ExecutionRecord":
-        from coder_workbench.agent_graph.prompts import build_synthesis_prompt
-        from coder_workbench.agent_graph.schema import ExecutionRecord
-        from coder_workbench.agent_graph.synthesis import build_synthesis_artifact
-
-        fallback = _blocked_synthesis_payload(item, envelope.round)
-        payload = self._invoke_or_mock(
-            artifact_type="synthesis_artifact",
-            agent_id=agent.id,
-            prompt=build_synthesis_prompt(agent=agent, item=item, envelope=envelope),
-            mock_payload=build_synthesis_artifact(item=item, envelope=envelope, agent_id=agent.id),
-            emit=emit,
-            agent_workflow=agent_workflow,
-            runtime_settings=runtime_settings,
-            model_factory=model_factory,
-            budget_broker=budget_broker,
-            action_gateway=action_gateway,
-            run_id=run_id,
-            model=model,
-            fallback_payload=fallback,
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-        )
-        payload = _with_forced_fields(
-            payload,
-            {
-                "artifact_type": "synthesis_artifact",
-                "round": envelope.round,
-                "work_item_id": item.work_item_id,
-                "merge_index": item.merge_index,
-                "agent_id": item.assignee_agent_id,
-            },
-        )
-        artifact = self._validate_payload(
-            payload,
-            artifact_type="synthesis_artifact",
-            agent_id=agent.id,
-            emit=emit,
-            fallback_payload=fallback,
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-        )
-        return ExecutionRecord(
-            artifact_type="synthesis_artifact",
-            work_item_id=item.work_item_id,
-            merge_index=item.merge_index,
-            agent_id=item.assignee_agent_id,
-            status=artifact["status"],
-            execution_summary=artifact["summary"],
-            execution_result_ref=_artifact_ref("synthesis_artifact", item.work_item_id),
-            artifact_payload=artifact,
-        )
-
-
 class CodeWorkerEngine:
     id = "code-worker-engine"
 
@@ -815,14 +642,7 @@ def _artifact_ref(artifact_type: str, *parts: Any) -> str:
 
 
 def _is_tester(agent: AgentWorkflowAgent) -> bool:
-    return agent.role in {"tester", "reviewer"} or any("test" in capability for capability in agent.capabilities)
-
-
-def _work_artifact_type(agent: AgentWorkflowAgent, primary_planner_id: str) -> str:
-    profile = authority_profile_for_agent(agent, primary_planner_id=primary_planner_id)
-    if profile.authority == "synthesizer":
-        return "synthesis_artifact"
-    return "execution_result"
+    return agent.role == "tester" or any("test" in capability for capability in agent.capabilities)
 
 
 def _mock_planner_order_payload(
@@ -833,7 +653,7 @@ def _mock_planner_order_payload(
     repo_intelligence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     testers = [agent for agent in agent_workflow.agents if _is_tester(agent)]
-    workers = [
+    executors = [
         agent
         for agent in agent_workflow.agents
         if agent.id != agent_workflow.primary_planner_id and not _is_tester(agent)
@@ -854,34 +674,9 @@ def _mock_planner_order_payload(
                     "depends_on": [],
                     "tester_agent_ids": tester_ids,
                 }
-                for index, agent in enumerate(workers, start=1)
+                for index, agent in enumerate(executors, start=1)
             ],
-            "final_tester_agent_id": tester_ids[-1] if len(tester_ids) > 1 else None,
         },
-    }
-
-
-def _blocked_synthesis_payload(item: "WorkItem", round_number: int) -> dict[str, Any]:
-    return {
-        "artifact_type": "synthesis_artifact",
-        "round": round_number,
-        "work_item_id": item.work_item_id,
-        "merge_index": item.merge_index,
-        "agent_id": item.assignee_agent_id,
-        "status": "blocked",
-        "summary": "Synthesizer output did not match synthesis_artifact schema after one repair.",
-        "sources": [],
-        "deduplicated_source_ids": [],
-        "clusters": [],
-        "ranked_items": [],
-        "compressed_summary": "",
-        "index": {},
-        "unexpected_issues": ["schema_validation_failed"],
-        "needs_planner_decision": True,
-        "blocker_type": "schema_validation_failed",
-        "planner_question": "Synthesizer output failed schema validation. Should Planner retry, reassign, or ask the user?",
-        "candidate_options": [],
-        "continue_without_human_possible": False,
     }
 
 
@@ -897,30 +692,6 @@ def _blocked_test_payload(item: "WorkItem", tester_agent_id: str, round_number: 
         "remaining_work": ["schema_validation_failed"],
         "confidence": "low",
     }
-
-
-def _aggregate_test_status(bundle: "PlannerInputBundle") -> str:
-    if any(item.execution_status == "blocked" or item.test_status == "blocked" for item in bundle.items):
-        return "blocked"
-    if any(item.execution_status == "failed" or item.test_status == "fail" for item in bundle.items):
-        return "fail"
-    return "pass"
-
-
-def _aggregate_test_summary(bundle: "PlannerInputBundle") -> str:
-    if not bundle.items:
-        return "No work items required final aggregation."
-    status = _aggregate_test_status(bundle)
-    return f"Final tester aggregate status is {status} for {len(bundle.items)} work item(s)."
-
-
-def _aggregate_remaining_work(bundle: "PlannerInputBundle") -> list[str]:
-    return [
-        item.test_summary or item.execution_summary or item.task_summary
-        for item in bundle.items
-        if item.execution_status in {"blocked", "failed"} or item.test_status in {"blocked", "fail"}
-    ]
-
 
 def _safe_id(value: str) -> str:
     safe = "".join(char if char.isalnum() or char == "_" else "_" for char in value.strip())

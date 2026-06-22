@@ -55,22 +55,17 @@ def compile_agent_workflow_profiles(workflow: "AgentWorkflowSpec") -> list[Agent
 def _engine_id(role: str) -> str:
     return {
         "planner": "planner-engine",
-        "do_work": "code-worker-engine",
-        "check_result": "tester-engine",
-        "organize": "synthesizer-engine",
-        "research": "synthesizer-engine",
-        "write_draft": "synthesizer-engine",
+        "executor": "code-worker-engine",
+        "tester": "tester-engine",
     }.get(role, "code-worker-engine")
 
 
 def _context_profile(role: str) -> str:
     if role == "planner":
         return "planner-index-only"
-    if role == "check_result":
+    if role == "tester":
         return "tester-evidence"
-    if role in {"organize", "research", "write_draft"}:
-        return "knowledge-worker"
-    return "coding-worker"
+    return "coding-executor"
 
 
 def _token_budget(role: str, *, planner_preferences: dict[str, Any] | None) -> TokenBudget:
@@ -78,11 +73,8 @@ def _token_budget(role: str, *, planner_preferences: dict[str, Any] | None) -> T
     planner_budget = {"fast": 8000, "balanced": 12000, "strong": 18000}.get(planner_strength, 12000)
     budgets = {
         "planner": planner_budget,
-        "do_work": 9000,
-        "check_result": 6000,
-        "organize": 9000,
-        "research": 10000,
-        "write_draft": 8000,
+        "executor": 9000,
+        "tester": 6000,
     }
     return TokenBudget(max_input_tokens=budgets.get(role, 8000))
 
@@ -90,10 +82,8 @@ def _token_budget(role: str, *, planner_preferences: dict[str, Any] | None) -> T
 def _allowed_artifacts(role: str) -> list[str]:
     if role == "planner":
         return ["run_contract", "planner_order", "planner_decision", "round_summary"]
-    if role == "check_result":
+    if role == "tester":
         return ["test_result"]
-    if role in {"organize", "research", "write_draft"}:
-        return ["synthesis_artifact", "execution_result"]
     return ["execution_result"]
 
 
@@ -132,8 +122,8 @@ def _repair_policy(role: str) -> dict[str, Any]:
 
 def _tool_policy(role: str) -> dict[str, Any]:
     return {
-        "read_files": role in {"do_work", "check_result", "organize", "research", "write_draft"},
-        "write_files": role == "do_work",
-        "run_commands": role == "check_result",
+        "read_files": role in {"executor", "tester"},
+        "write_files": role == "executor",
+        "run_commands": role == "tester",
         "ask_human": role == "planner",
     }

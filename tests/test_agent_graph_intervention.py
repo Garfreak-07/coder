@@ -269,7 +269,7 @@ class InterventionExecutor:
             "next_action": "ask_human",
             "risk_level": "medium",
             "requires_human_confirmation": True,
-            "reason": "Worker requested Planner intervention.",
+            "reason": "Executor requested Planner intervention.",
             "human_message": "Planner needs a user decision.",
         }
 
@@ -477,7 +477,7 @@ class ResumeThroughPlannerExecutor(MultiRoundExecutor):
                 "risk_level": "medium",
                 "requires_human_confirmation": True,
                 "reason": "User must confirm scope.",
-                "human_message": "Can the worker use the local fix?",
+                "human_message": "Can the executor use the local fix?",
             }
         if bundle.interrupts:
             return {

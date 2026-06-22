@@ -32,7 +32,6 @@ from .archetypes import (
     role_card_for_id,
     role_card_registry,
 )
-from .schema import AgentSpec
 
 __all__ = [
     "AgentWorkflowAgent",
@@ -47,7 +46,6 @@ __all__ = [
     "CapabilityPermissions",
     "CapabilitySpec",
     "RoleCardSpec",
-    "AgentSpec",
     "AUTHORITY_PROFILES",
     "AgentAuthorityProfile",
     "assert_valid_agent_workflow",

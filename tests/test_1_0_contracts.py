@@ -5,12 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from coder_workbench.actions.schema import ACTION_TYPES
 from coder_workbench.agent_graph.runner import AgentGraphRunner
 from coder_workbench.core import default_planner_led_agent_workflow
-from coder_workbench.server.app import create_app
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,7 +60,7 @@ class OnePointZeroContractTests(unittest.TestCase):
             "work_item_id",
             "approved_runtime_actions",
             "ActionGateway",
-            "must not re-run the worker model",
+            "must not re-run the executor model",
         ]:
             with self.subTest(token=token):
                 self.assertIn(token, text)
@@ -75,21 +72,11 @@ class OnePointZeroContractTests(unittest.TestCase):
         self.assertIn("run_command_sandbox", ACTION_TYPES)
         self.assertIn("run_command", ACTION_TYPES)
 
-    def test_product_runner_source_keeps_legacy_runtime_isolated(self) -> None:
+    def test_product_runner_source_uses_release_runtime_services(self) -> None:
         source = inspect.getsource(AgentGraphRunner)
 
-        self.assertNotIn("WorkflowRunner", source)
-        self.assertNotIn("compile_agent_workflow", source)
         self.assertIn("RunController", source)
         self.assertIn("ActionGateway", source)
-
-    def test_legacy_live_runs_endpoint_remains_deprecated(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with TestClient(create_app(store_root=tmp, frontend_dist=str(ROOT))) as client:
-                response = client.get("/api/v2/live-runs")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["deprecated"])
 
     def test_default_product_run_produces_agentgraph_contract_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

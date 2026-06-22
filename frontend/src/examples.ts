@@ -4,7 +4,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
   id: "default-planner-led",
   version: "0.4",
   name: "Planner-led Agent Workflow",
-  description: "Planner decides. Code Worker proposes changes by order. Tester returns evidence. Runtime hides graph details.",
+  description: "Planner decides. Executor proposes changes by order. Tester returns evidence. Runtime hides graph details.",
   primary_planner_id: "planner",
   agents: [
     {
@@ -17,7 +17,7 @@ export const defaultPlannerLedAgentWorkflow: AgentWorkflowSpec = {
     },
     {
       id: "executor",
-      name: "Code Worker Agent",
+      name: "Executor Agent",
       role: "executor",
       model_tier: "standard",
       can_talk_to_human: false,

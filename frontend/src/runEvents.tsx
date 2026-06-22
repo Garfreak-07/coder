@@ -389,29 +389,6 @@ function ArtifactPreview({
       </div>
     );
   }
-  if (artifactType === "synthesis_artifact") {
-    const sources = objectList(artifact.sources);
-    const clusters = objectList(artifact.clusters);
-    const ranked = objectList(artifact.ranked_items).map((item) => String(item.title ?? item.summary ?? item.item_id));
-    const unexpected = stringList(artifact.unexpected_issues);
-    return (
-      <div className="artifact-specific">
-        <div className="muted">{String(artifact.compressed_summary ?? artifact.summary ?? "")}</div>
-        <KeyValueList
-          items={[
-            ["Round", String(artifact.round ?? "unknown")],
-            ["Status", String(artifact.status ?? "unknown")],
-            ["Sources", String(sources.length)],
-            ["Clusters", String(clusters.length)],
-            ["Ranked items", String(ranked.length)],
-            ["Needs Planner", String(artifact.needs_planner_decision ?? false)]
-          ]}
-        />
-        {ranked.length > 0 && <InlineList title="Ranked items" values={ranked} />}
-        {unexpected.length > 0 && <InlineList title="Unexpected issues" values={unexpected} />}
-      </div>
-    );
-  }
   if (artifactType === "test_result") {
     const evidence = stringList(artifact.evidence);
     const remaining = stringList(artifact.remaining_work);

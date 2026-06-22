@@ -1,7 +1,7 @@
 # Agent Capability Boundaries
 
 Coder uses explicit authority profiles so prompts are not the only enforcement
-point for Planner, Worker, Tester, and Final Tester behavior.
+point for Planner, Executor, and Tester behavior.
 
 ## Authority Profiles
 
@@ -12,7 +12,7 @@ Planner authority:
 - Can write workflow memory.
 - Owns global `continue`, `ask_human`, `finish`, and `stop` decisions.
 
-Worker authority:
+Executor authority:
 
 - Can create `execution_result`.
 - Can report Planner intervention blockers.
@@ -23,12 +23,6 @@ Tester authority:
 
 - Can create `test_result`.
 - Can propose optional command evidence when capability policy allows it.
-- Cannot ask the user or decide global continuation.
-
-Final Tester authority:
-
-- Can create aggregate `test_result` artifacts.
-- Compresses evidence for Planner.
 - Cannot ask the user or decide global continuation.
 
 ## Skill Modules
@@ -45,7 +39,7 @@ Planner modules:
 - `memory_read_write`
 - `tool_policy_planning`
 
-Worker modules:
+Executor modules:
 
 - `follow_task_envelope`
 - `local_execution`
@@ -59,11 +53,6 @@ Tester modules:
 - `check_command_proposal`
 - `test_result_output`
 - `confidence_calibration`
-
-Final Tester modules:
-
-- `aggregate_tests`
-- `round_evidence_compression`
 
 These modules are a registry boundary first. Runtime strategy can attach richer
 logic to each module later without changing the user-facing AgentWorkflow shape.

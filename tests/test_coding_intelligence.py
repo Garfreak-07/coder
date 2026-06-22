@@ -104,10 +104,10 @@ class CodingIntelligenceTests(unittest.TestCase):
             "graph_run_cache": {
                 "round": 1,
                 "execution_cache": {
-                    "worker": {"status": "completed"},
+                    "executor-work": {"status": "completed"},
                 },
                 "test_cache": {
-                    "worker": [{"status": "pass"}],
+                    "executor-work": [{"status": "pass"}],
                 },
                 "hidden_effects": [
                     {"effect_type": "modify_files", "status": "patch_preview_created"},

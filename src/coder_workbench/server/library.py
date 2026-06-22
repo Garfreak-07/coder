@@ -6,7 +6,7 @@ from threading import Lock
 from typing import Any, Literal
 
 from coder_workbench.core import (
-    AgentSpec,
+    AgentWorkflowAgent,
     AgentWorkflowSpec,
     AgentWorkflowValidationError,
     assert_valid_agent_workflow,
@@ -31,7 +31,7 @@ class LibraryStore:
         return self._list("agent_workflows")
 
     def save_agent(self, data: dict[str, Any]) -> dict[str, Any]:
-        agent = AgentSpec.model_validate(data)
+        agent = AgentWorkflowAgent.model_validate(data)
         payload = agent.model_dump(mode="json")
         self._write("agents", agent.id, payload)
         return payload
@@ -83,9 +83,9 @@ def _summary(kind: LibraryKind, data: dict[str, Any]) -> dict[str, Any]:
             "id": data.get("id"),
             "name": data.get("name"),
             "role": data.get("role"),
-            "goal": data.get("goal"),
-            "model": data.get("model"),
-            "tools": data.get("tools", []),
+            "purpose": data.get("purpose", ""),
+            "model_tier": data.get("model_tier"),
+            "capabilities": data.get("capabilities", []),
         }
     return {
         "id": data.get("id"),

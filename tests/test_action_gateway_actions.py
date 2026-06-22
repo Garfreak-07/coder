@@ -26,7 +26,7 @@ class ActionGatewayActionClosureTests(unittest.TestCase):
                 planner_order_ref="planner_order_round_1",
                 upstream_refs=[],
                 user_request="Build context.",
-                role="worker",
+                role="executor",
                 skill_index=SkillIndex(),
                 skill_store_root=root / ".coder",
                 repo_intelligence={},

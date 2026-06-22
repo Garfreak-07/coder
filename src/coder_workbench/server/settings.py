@@ -90,16 +90,6 @@ def provider_status(settings: ProviderSettings, providers: list[str] | None = No
     }
 
 
-def workflow_provider_status(settings: ProviderSettings, workflow: Any) -> dict[str, Any]:
-    providers = {
-        _normalize_provider(getattr(agent, "provider", None) or settings.default_provider) or DEFAULT_PROVIDER
-        for agent in getattr(workflow, "agents", [])
-    }
-    if not providers:
-        providers.add(settings.default_provider)
-    return provider_status(settings, sorted(providers))
-
-
 def resolve_settings_config(
     settings: ProviderSettings,
     provider_override: str | None,

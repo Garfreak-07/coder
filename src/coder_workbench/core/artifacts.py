@@ -4,11 +4,6 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from coder_workbench.core.legacy_artifacts import (
-    LEGACY_ARTIFACT_MODELS,
-    LegacyArtifactType,
-    legacy_artifact_summary,
-)
 from coder_workbench.core.planner_artifacts import (
     PLANNER_ARTIFACT_MODELS,
     PlannerArtifactType,
@@ -20,18 +15,13 @@ ArtifactType = Literal[
     "run_contract",
     "planner_order",
     "execution_result",
-    "synthesis_artifact",
     "test_result",
     "planner_decision",
     "round_summary",
-    "plan_artifact",
-    "patch_artifact",
-    "review_artifact",
 ]
 
 ARTIFACT_MODELS = {
     **PLANNER_ARTIFACT_MODELS,
-    **LEGACY_ARTIFACT_MODELS,
 }
 
 
@@ -80,15 +70,12 @@ def artifact_summary(artifact: dict[str, Any]) -> dict[str, Any]:
     }
     if artifact_type in PLANNER_ARTIFACT_MODELS:
         summary.update(planner_artifact_summary(artifact))
-    elif artifact_type in LEGACY_ARTIFACT_MODELS:
-        summary.update(legacy_artifact_summary(artifact))
     return {key: value for key, value in summary.items() if value not in (None, "", [])}
 
 
 __all__ = [
     "ArtifactType",
     "ArtifactValidationError",
-    "LegacyArtifactType",
     "PlannerArtifactType",
     "artifact_summary",
     "supported_artifact_types",

@@ -114,20 +114,6 @@ class AgentRun:
                 recipe_from_workflow_agent(agent, primary_planner_id=self.agent_workflow.primary_planner_id)
             )
         engine = self.engine_registry.get(profile.engine_id)
-        if profile.engine_id == "synthesizer-engine" and hasattr(engine, "run_synthesis"):
-            return engine.run_synthesis(
-                agent_workflow=self.agent_workflow,
-                agent=agent,
-                item=item,
-                envelope=envelope,
-                model=model,
-                runtime_settings=self.runtime_settings,
-                model_factory=self.model_factory,
-                budget_broker=self.budget_broker,
-                action_gateway=self.action_gateway,
-                run_id=self.run_id,
-                emit=emit,
-            )
         return engine.run_execution(agent=agent, item=item, envelope=envelope, model=model or self._chat_model(), emit=emit)
 
     def run_test(
@@ -143,25 +129,6 @@ class AgentRun:
             item=item,
             execution_artifact=execution_artifact,
             tester_agent_id=tester_agent_id,
-            runtime_settings=self.runtime_settings,
-            model_factory=self.model_factory,
-            budget_broker=self.budget_broker,
-            action_gateway=self.action_gateway,
-            run_id=self.run_id,
-            emit=emit,
-        )
-
-    def run_final_test(
-        self,
-        *,
-        bundle: Any,
-        final_tester_agent_id: str,
-        emit: Any | None = None,
-    ) -> Any:
-        return self.engine_registry.final_review().run_final_test(
-            agent_workflow=self.agent_workflow,
-            bundle=bundle,
-            final_tester_agent_id=final_tester_agent_id,
             runtime_settings=self.runtime_settings,
             model_factory=self.model_factory,
             budget_broker=self.budget_broker,

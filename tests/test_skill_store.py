@@ -277,7 +277,7 @@ class SkillInstallerTests(unittest.TestCase):
                 skill_index=skill_index,
                 user_request="Research GitHub repositories for similar projects.",
                 work_item={"work_item_id": "research", "task_summary": "Search GitHub sources"},
-                role="researcher",
+                role="executor",
             )
 
             self.assertEqual(decision.allowed_skill_ids, ["github-research"])
@@ -437,9 +437,9 @@ def _manifest(**overrides: object) -> dict[str, object]:
         "skill_type": "procedure",
         "risk_level": "low",
         "publisher": "coder-official",
-        "allowed_authorities": ["planner", "worker", "tester", "synthesizer"],
+        "allowed_authorities": ["planner", "executor", "tester"],
         "requires": ["search_query"],
-        "produces": ["source_collection", "synthesis_artifact", "execution_result"],
+        "produces": ["source_collection", "execution_result"],
         "connectors": ["github_readonly"],
         "external_effect": False,
         "requires_preview": False,

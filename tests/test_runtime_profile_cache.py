@@ -23,7 +23,7 @@ class RuntimeProfileCacheTests(unittest.TestCase):
         cache = RuntimeProfileCache()
         workflow = default_planner_led_agent_workflow()
         role_changed_payload = workflow.model_dump(mode="json", by_alias=True)
-        role_changed_payload["agents"][1]["role"] = "writer"
+        role_changed_payload["agents"][1]["role"] = "tester"
         role_changed = AgentWorkflowSpec.model_validate(role_changed_payload)
 
         base = cache.compile_or_get(workflow, installed_extensions=[{"id": "skill", "version": "1"}])

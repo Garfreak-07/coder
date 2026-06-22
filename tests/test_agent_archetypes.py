@@ -19,17 +19,14 @@ class AgentArchetypeTests(unittest.TestCase):
     def test_role_card_catalog_contains_ordinary_user_choices(self) -> None:
         labels = {card["label"] for card in role_card_catalog()}
 
-        self.assertEqual(
-            labels,
-            {"Do work", "Check result", "Organize information", "Research sources", "Write draft"},
-        )
+        self.assertEqual(labels, {"Executor", "Tester"})
 
     def test_role_card_payload_compiles_default_role_and_capabilities(self) -> None:
         payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
         payload["agents"][1] = {
             "id": "executor",
-            "name": "Worker",
-            "role_card": "do_work",
+            "name": "Executor",
+            "role_card": "executor",
             "model_tier": "standard",
             "can_talk_to_human": False,
         }
@@ -38,48 +35,22 @@ class AgentArchetypeTests(unittest.TestCase):
         validation = validate_agent_workflow_payload(payload)
 
         self.assertEqual(validation.status, "pass")
-        self.assertEqual(spec.agents[1].role, "worker")
+        self.assertEqual(spec.agents[1].role, "executor")
         self.assertEqual(spec.agents[1].capabilities, ["follow_planner_order", "modify_files", "return_execution_result"])
 
     def test_runtime_profile_compiles_runtime_managed_internals(self) -> None:
         payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-        payload["agents"][1]["role_card"] = "do_work"
+        payload["agents"][1]["role_card"] = "executor"
         workflow = AgentWorkflowSpec.model_validate(payload)
 
         profiles = compile_runtime_profiles(workflow)
-        worker = next(profile for profile in profiles if profile.agent_id == "executor")
+        executor = next(profile for profile in profiles if profile.agent_id == "executor")
 
-        self.assertEqual(worker.agent_archetype, "worker")
-        self.assertEqual(worker.authority.authority, "worker")
-        self.assertTrue(worker.tool_policy["edit_files"])
-        self.assertTrue(worker.token_budget["managed_by_runtime"])
-        self.assertEqual(worker.internal_loops["schema_repair_attempts"], 1)
-
-    def test_organize_information_role_card_compiles_synthesizer_profile(self) -> None:
-        payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-        payload["agents"][1] = {
-            "id": "executor",
-            "name": "Organizer",
-            "role_card": "organize_information",
-            "model_tier": "standard",
-            "can_talk_to_human": False,
-        }
-
-        workflow = AgentWorkflowSpec.model_validate(payload)
-        validation = validate_agent_workflow_payload(payload)
-        profiles = compile_runtime_profiles(workflow)
-        organizer = next(profile for profile in profiles if profile.agent_id == "executor")
-
-        self.assertEqual(validation.status, "pass")
-        self.assertEqual(workflow.agents[1].role, "summarizer")
-        self.assertEqual(
-            workflow.agents[1].capabilities,
-            ["follow_planner_order", "synthesize_information", "return_synthesis_artifact"],
-        )
-        self.assertEqual(organizer.agent_archetype, "synthesizer")
-        self.assertEqual(organizer.authority.authority, "synthesizer")
-        self.assertIn("synthesis_artifact", organizer.allowed_artifacts)
-        self.assertEqual(organizer.evaluation_profile["artifact_type"], "synthesis_artifact")
+        self.assertEqual(executor.agent_archetype, "executor")
+        self.assertEqual(executor.authority.authority, "executor")
+        self.assertTrue(executor.tool_policy["edit_files"])
+        self.assertTrue(executor.token_budget["managed_by_runtime"])
+        self.assertEqual(executor.internal_loops["schema_repair_attempts"], 1)
 
 
 class AgentArchetypeApiTests(unittest.TestCase):
@@ -89,15 +60,15 @@ class AgentArchetypeApiTests(unittest.TestCase):
             role_cards = client.get("/api/v2/agent-role-cards")
 
             self.assertEqual(role_cards.status_code, 200)
-            self.assertEqual(len(role_cards.json()["role_cards"]), 5)
+            self.assertEqual(len(role_cards.json()["role_cards"]), 2)
 
             payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-            payload["agents"][1]["role_card"] = "do_work"
+            payload["agents"][1]["role_card"] = "executor"
             profiles = client.post("/api/v2/agent-workflows/runtime-profiles", json=payload)
 
         self.assertEqual(profiles.status_code, 200)
         executor = next(profile for profile in profiles.json()["profiles"] if profile["agent_id"] == "executor")
-        self.assertEqual(executor["agent_archetype"], "worker")
+        self.assertEqual(executor["agent_archetype"], "executor")
         self.assertEqual(executor["tool_policy"]["connector_operations"], "deny_by_default")
 
 

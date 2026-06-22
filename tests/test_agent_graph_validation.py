@@ -8,7 +8,7 @@ from coder_workbench.core import AgentWorkflowSpec, default_planner_led_agent_wo
 
 
 class AgentGraphStaticValidationTests(unittest.TestCase):
-    def test_multiple_testers_require_user_added_final_tester(self) -> None:
+    def test_multiple_testers_are_valid_without_aggregate_agent(self) -> None:
         payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
         payload["agents"].append(
             {
@@ -26,14 +26,6 @@ class AgentGraphStaticValidationTests(unittest.TestCase):
                 {"from": "tester2", "to": "planner", "loop": True},
             ]
         )
-
-        validation = validate_agent_workflow_payload(payload)
-
-        self.assertEqual(validation.status, "error")
-        self.assertIn("missing_final_tester", {issue.code for issue in validation.issues})
-
-    def test_multiple_testers_pass_with_explicit_aggregate_final_tester(self) -> None:
-        payload = _workflow_with_two_testers_and_final_tester()
 
         validation = validate_agent_workflow_payload(payload)
 
@@ -55,8 +47,8 @@ class AgentGraphPlannerOrderValidationTests(unittest.TestCase):
         payload["agents"].append(
             {
                 "id": "isolated",
-                "name": "Isolated Worker",
-                "role": "worker",
+                "name": "Isolated Executor",
+                "role": "executor",
                 "model_tier": "standard",
                 "can_talk_to_human": False,
                 "capabilities": ["follow_planner_order", "return_execution_result"],
@@ -87,8 +79,8 @@ class AgentGraphPlannerOrderValidationTests(unittest.TestCase):
         self.assertEqual(validation.status, "error")
         self.assertIn("planner_order_assignee_not_reachable", {issue.code for issue in validation.issues})
 
-    def test_multiple_planner_order_testers_require_final_tester(self) -> None:
-        workflow = AgentWorkflowSpec.model_validate(_workflow_with_two_testers_and_final_tester())
+    def test_planner_order_allows_multiple_testers_on_work_item(self) -> None:
+        workflow = AgentWorkflowSpec.model_validate(_workflow_with_two_testers())
         planner_order = PlannerOrder.model_validate(
             {
                 "round": 1,
@@ -110,35 +102,7 @@ class AgentGraphPlannerOrderValidationTests(unittest.TestCase):
 
         validation = validate_planner_order(workflow, planner_order)
 
-        self.assertEqual(validation.status, "error")
-        self.assertIn("missing_final_tester", {issue.code for issue in validation.issues})
-
-    def test_final_tester_must_be_explicit_aggregate_agent(self) -> None:
-        workflow = AgentWorkflowSpec.model_validate(_workflow_with_two_testers_and_final_tester())
-        planner_order = PlannerOrder.model_validate(
-            {
-                "round": 1,
-                "round_goal": "Test in parallel.",
-                "plan_graph": {
-                    "work_items": [
-                        {
-                            "work_item_id": "executor-work",
-                            "merge_index": 1,
-                            "assignee_agent_id": "executor",
-                            "task_summary": "Run work.",
-                            "depends_on": [],
-                            "tester_agent_ids": ["tester", "tester2"],
-                        }
-                    ],
-                    "final_tester_agent_id": "tester",
-                },
-            }
-        )
-
-        validation = validate_planner_order(workflow, planner_order)
-
-        self.assertEqual(validation.status, "error")
-        self.assertIn("final_tester_missing_aggregate_tests", {issue.code for issue in validation.issues})
+        self.assertEqual(validation.status, "pass")
 
     def test_planner_order_rejects_duplicate_merge_index(self) -> None:
         workflow = default_planner_led_agent_workflow()
@@ -209,35 +173,24 @@ class AgentGraphPlannerOrderValidationTests(unittest.TestCase):
         self.assertIn("planner_order_dependency_cycle", {issue.code for issue in validation.issues})
 
 
-def _workflow_with_two_testers_and_final_tester() -> dict:
+def _workflow_with_two_testers() -> dict:
     payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-    payload["agents"].extend(
-        [
-            {
-                "id": "tester2",
-                "name": "Second Tester",
-                "role": "tester",
-                "model_tier": "standard",
-                "can_talk_to_human": False,
-                "capabilities": ["model_review", "return_test_result"],
-            },
-            {
-                "id": "final_tester",
-                "name": "Final Tester",
-                "role": "reviewer",
-                "model_tier": "standard",
-                "can_talk_to_human": False,
-                "capabilities": ["aggregate_tests", "return_test_result"],
-            },
-        ]
+    payload["agents"].append(
+        {
+            "id": "tester2",
+            "name": "Second Tester",
+            "role": "tester",
+            "model_tier": "standard",
+            "can_talk_to_human": False,
+            "capabilities": ["model_review", "return_test_result"],
+        }
     )
     payload["edges"] = [
         {"from": "planner", "to": "executor"},
         {"from": "executor", "to": "tester"},
         {"from": "executor", "to": "tester2"},
-        {"from": "tester", "to": "final_tester"},
-        {"from": "tester2", "to": "final_tester"},
-        {"from": "final_tester", "to": "planner", "loop": True},
+        {"from": "tester", "to": "planner", "loop": True},
+        {"from": "tester2", "to": "planner", "loop": True},
     ]
     return payload
 

@@ -14,18 +14,13 @@ preferred_extension_ids
 Supported recipe roles:
 
 - `planner`
-- `do_work`
-- `check_result`
-- `organize`
-- `research`
-- `write_draft`
+- `executor`
+- `tester`
 
 `RuntimeProfileCompiler` compiles each recipe into an internal
 `AgentRuntimeProfile` with engine id, context profile, token budget, artifact
 policy, plugin policy, skill policy, memory policy, repair policy, and tool
 policy.
-Research and draft recipes currently compile to the registered
-`synthesizer-engine` knowledge-worker fallback.
 
 `RuntimeProfileCache` keys compiled profiles by workflow shape, installed
 extension versions, and planner settings. The ordinary user model stays the same;
@@ -39,7 +34,7 @@ Planner remains the only Agent that can ask the user or decide global
 `continue`, `ask_human`, `finish`, and `stop` outcomes. `RunController` enforces
 that loop boundary after each `PlannerDecision`.
 
-## v0.9.6 Boundary
+## v1.0 Boundary
 
 - Ordinary users define Agent intent; runtime profiles remain internal.
 - `RunController` owns round continuation after Planner decisions.
@@ -47,10 +42,8 @@ that loop boundary after each `PlannerDecision`.
 - `ActionGateway` is where profile tool/context policies become runtime action
   requests. Plugin and MCP actions still resolve through registry
   `ToolCapability` before execution.
-- `AgentRun` and `AgentEngineRegistry` own Planner, Worker, Tester,
-  FinalReview, Synthesizer, and PlannerDecision execution behind compiled
-  profile engine ids.
+- `AgentRun` and `AgentEngineRegistry` own Planner, Executor, Tester, and
+  PlannerDecision execution behind compiled profile engine ids.
 - Partitioned stores keep profile diagnostics, metadata, results, ledgers,
   artifacts, contexts, tool results, live runs, and cache data separated.
-- Legacy `WorkflowSpec` compilation is limited to
-  `compile_agent_workflow_legacy_preview()` for preview/migration.
+- The old workflow compiler and runner are removed from the product runtime.

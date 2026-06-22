@@ -176,11 +176,6 @@ def _call_counts(
                 agent_id = str(record.get("tester_agent_id") or "")
                 if agent_id:
                     counts[agent_id] = counts.get(agent_id, 0) + 1
-    final_test = graph_run_cache.get("final_test_cache") if isinstance(graph_run_cache, dict) else None
-    if isinstance(final_test, dict):
-        agent_id = str(final_test.get("final_tester_agent_id") or "")
-        if agent_id:
-            counts[agent_id] = counts.get(agent_id, 0) + 1
     planner_calls = sum(
         1
         for event in events

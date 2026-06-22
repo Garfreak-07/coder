@@ -27,7 +27,7 @@ class ActionGatewayTests(unittest.TestCase):
                     planner_order_ref="planner_order_round_1",
                     upstream_refs=[],
                     user_request="Build context.",
-                    role="worker",
+                    role="executor",
                     skill_index=SkillIndex(),
                     skill_store_root=Path(tmp) / ".coder",
                     repo_intelligence={},
@@ -72,7 +72,7 @@ class ActionGatewayTests(unittest.TestCase):
                     planner_order_ref="planner_order_round_1",
                     upstream_refs=[],
                     user_request="small",
-                    role="worker",
+                    role="executor",
                     skill_index=SkillIndex(
                         skills=[
                             SkillIndexEntry(

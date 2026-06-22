@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 SkillType = Literal["knowledge", "procedure", "connector", "artifact", "evaluation"]
 SkillRiskLevel = Literal["low", "medium", "high"]
 SkillTrustLevel = Literal["official", "verified", "community", "local", "untrusted"]
-SkillAuthority = Literal["planner", "worker", "tester", "synthesizer"]
+SkillAuthority = Literal["planner", "executor", "tester"]
 SkillUpdatePolicy = Literal["manual", "auto_official_low_risk"]
 
 _SKILL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")

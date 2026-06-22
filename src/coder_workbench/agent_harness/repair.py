@@ -9,7 +9,7 @@ from coder_workbench.core.artifacts import ArtifactValidationError, validate_art
 
 
 class ArtifactRepairService:
-    """Centralized one-shot artifact repair for Planner/Worker/Tester engines."""
+    """Centralized one-shot artifact repair for Planner/Executor/Tester engines."""
 
     def repair_once(
         self,

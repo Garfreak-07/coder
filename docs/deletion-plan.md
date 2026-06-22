@@ -1,26 +1,23 @@
-# Legacy Deletion Plan
+# Legacy Deletion Record
 
-The goal is one ordinary AgentGraph product path. Legacy runtime pieces are
-removed only after product references are gone and tests protect the boundary.
+The goal is one ordinary AgentGraph product path. The old workflow runtime has
+now been physically removed from product code after product references were
+migrated and tests locked the boundary.
 
 ## Order
 
-1. Add architecture boundary tests.
-2. Stop new product calls to legacy runtime paths.
-3. Keep `WorkflowSpec` / `WorkflowRunner` only for compatibility tests and old
-   saved workflow support.
-4. Migrate product UI away from runtime JSON editing.
-5. Migrate patch/check/repair/context code behind `ActionGateway`.
-6. Move Planner/Tester/FinalReview/Synthesizer execution behind
-   `AgentEngineRegistry`.
-7. Move or delete legacy modules once no product tests or endpoints depend on
-   them.
+1. Architecture boundary tests were added.
+2. Product calls to old runtime paths were removed.
+3. Product UI was moved away from runtime JSON editing.
+4. Patch/check/repair/context code moved behind `ActionGateway`.
+5. Planner/Executor/Tester execution moved behind `AgentEngineRegistry`.
+6. Old schema, compile, runner, node executor, context, condition, artifact
+   recorder, and server manager modules were deleted.
 
-## Current v0.9.7 Boundary
+## Current Boundary
 
-`compile_agent_workflow_legacy_preview()` and `compile_agent_workflow()` remain
-legacy compatibility helpers, but they are no longer exposed through the product
-server API.
+The removed old runtime files are locked by `tests/test_no_legacy_workflow_runtime.py`.
+Product code does not export or import the removed old workflow symbols.
 
 Product live Agent runs use:
 
@@ -43,8 +40,8 @@ AgentWorkflowSpec
 -> RunController
 ```
 
-They must not compile into `WorkflowSpec`, run through `WorkflowRunner`, or
-construct `AgentGraphExecutor` from the product runner path.
+They must not compile into the removed old workflow schema, run through a
+fallback runner, or construct `AgentGraphExecutor` from the product runner path.
 
 The product default AgentWorkflow response no longer includes legacy preview
 fields:
@@ -56,18 +53,13 @@ runtime_type
 deprecated
 ```
 
-`/api/v2/agent-workflows/compile` returns `410 Gone`.
+The old compile and live-run endpoints are removed from the product API. Product
+AgentGraph runs use `/api/v2/live-agent-runs`, and creation responses return
+`live-agent-runs` event/result URLs.
 
-`/api/v2/live-runs` remains as a compatibility endpoint and is marked
-`deprecated=true`. Product AgentGraph runs use `/api/v2/live-agent-runs`, and
-creation responses return `live-agent-runs` event/result URLs. Legacy
-`/api/v2/live-runs/{run_id}` and `/events` return `410 Gone` for AgentGraph run
-ids with migration URLs.
+## Artifact Boundary
 
-## Legacy Artifacts
-
-`plan_artifact`, `patch_artifact`, and `review_artifact` are compatibility
-artifacts for old saved workflows. New product AgentGraph runs use:
+Product AgentGraph runs use:
 
 - `planner_order`
 - `execution_result`
@@ -77,9 +69,7 @@ artifacts for old saved workflows. New product AgentGraph runs use:
 - coding diagnostics such as `patch_preview`, `check_result`, and
   `debug_finding`
 
-The next deletion pass should migrate tests that still intentionally exercise
-legacy artifacts, then remove legacy artifact production from non-preview
-paths.
+Old plan/patch/review artifact production is not part of the product runtime.
 
 ## v0.9.7 Boundary Rules
 
@@ -93,11 +83,11 @@ paths.
   direct `load_skill` is not a product runtime action.
 - Plugin and MCP execution must read registry `ToolCapability` before runtime
   dispatch; unknown or approval-gated operations must not execute silently.
-- Unknown worker-requested runtime actions must create failed `runtime_action`
+- Unknown executor-requested runtime actions must create failed `runtime_action`
   artifacts, not disappear from Planner-visible effects.
 - Blocked plugin/MCP runtime actions must preserve `approval_key`, policy,
   original `ActionSpec`, and `work_item_id`; approved replay must use
-  `ActionGateway` without rerunning worker model output generation.
+  `ActionGateway` without rerunning executor model output generation.
 - `AgentRun` and `AgentEngineRegistry` own product Agent execution;
   `AgentGraphExecutor` is a compatibility adapter only.
 - Coding auto-loop effects keep patch preview, sandbox apply, check result,
@@ -106,5 +96,5 @@ paths.
 - Partitioned stores are the explicit write path for metadata, results, events,
   artifacts, blobs, ledgers, contexts, tool results, live runs, extensions, and
   cache data.
-- Legacy preview is quarantined; new product behavior must not depend on
-  `WorkflowSpec`, `WorkflowRunner`, `run_workflow`, or `legacy_compile`.
+- Old workflow preview is deleted; new product behavior must not depend on the
+  removed old workflow runtime symbols or endpoints.

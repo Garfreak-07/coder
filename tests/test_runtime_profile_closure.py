@@ -11,19 +11,22 @@ class RuntimeProfileClosureTests(unittest.TestCase):
         registry = default_agent_engine_registry()
         compiler = RuntimeProfileCompiler()
 
-        for role in ["planner", "do_work", "check_result", "organize", "research", "write_draft"]:
+        for role in ["planner", "executor", "tester"]:
             profile = compiler.compile(
                 AgentRecipe(id=f"{role}-agent", name=f"{role} Agent", role=role)
             )
             self.assertIn(profile.engine_id, registry.ids(), role)
 
-    def test_knowledge_roles_use_synthesis_artifacts(self) -> None:
+    def test_executor_and_tester_profiles_use_agentgraph_artifacts(self) -> None:
         compiler = RuntimeProfileCompiler()
 
-        for role in ["organize", "research", "write_draft"]:
-            profile = compiler.compile(AgentRecipe(id=role, name=role, role=role))
-            self.assertEqual(profile.engine_id, "synthesizer-engine")
-            self.assertIn("synthesis_artifact", profile.allowed_artifacts)
+        executor = compiler.compile(AgentRecipe(id="executor", name="Executor", role="executor"))
+        tester = compiler.compile(AgentRecipe(id="tester", name="Tester", role="tester"))
+
+        self.assertEqual(executor.engine_id, "code-worker-engine")
+        self.assertEqual(executor.allowed_artifacts, ["execution_result"])
+        self.assertEqual(tester.engine_id, "tester-engine")
+        self.assertEqual(tester.allowed_artifacts, ["test_result"])
 
 
 if __name__ == "__main__":

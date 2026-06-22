@@ -40,7 +40,7 @@ def _block_issues(spec: AgentEngineSpec, block: HarnessBlock) -> list[HarnessVal
     issues: list[HarnessValidationIssue] = []
     if block.type == "model_loop" and not block.config.get("max_steps"):
         issues.append(_issue("loop_requires_max_steps", "Model loops require max_steps.", block.id))
-    if spec.engine_type in {"worker", "tester", "final_tester"} and _block_asks_human(block):
+    if spec.engine_type in {"executor", "tester"} and _block_asks_human(block):
         issues.append(_issue("non_planner_ask_human", "Only planner engines can ask the human.", block.id))
     if spec.engine_type == "tester" and _block_writes_files(block):
         issues.append(_issue("tester_cannot_write_files", "Tester engines cannot write files.", block.id))

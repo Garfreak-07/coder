@@ -25,16 +25,14 @@ from coder_workbench.budget import BudgetBroker, BudgetLimit
 from coder_workbench.core import AgentWorkflowSpec, default_planner_led_agent_workflow, validate_agent_workflow_payload
 from coder_workbench.server.storage import RunStore
 from coder_workbench.server.settings import ProviderSettings
-import coder_workbench.server.app as server_app
 from coder_workbench.server.app import create_app
 
 
 class ArchitectureBoundaryTests(unittest.TestCase):
-    def test_live_agent_runs_do_not_use_workflow_runner(self) -> None:
+    def test_live_agent_runs_use_agentgraph_urls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
             payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-            self.assertFalse(hasattr(server_app, "WorkflowRunner"))
             response = client.post(
                 "/api/v2/live-agent-runs",
                 json={
@@ -51,8 +49,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIn(response.json()["status"], {"queued", "running", "completed"})
         self.assertIn("/api/v2/live-agent-runs/", response.json()["events_url"])
         self.assertIn("/api/v2/live-agent-runs/", response.json()["result_url"])
-        self.assertNotIn("/api/v2/live-runs/", response.json()["events_url"])
-        self.assertNotIn("/api/v2/live-runs/", response.json()["result_url"])
 
     def test_agent_graph_runner_does_not_import_legacy_agent_execution_adapter(self) -> None:
         source = inspect.getsource(__import__("coder_workbench.agent_graph.runner", fromlist=["_"]))
@@ -115,7 +111,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
             "planner_order": AgentRun.run_planner_order,
             "execution": AgentRun.run_execution,
             "test": AgentRun.run_test,
-            "final_test": AgentRun.run_final_test,
             "planner_decision": AgentRun.run_planner_decision,
         }
 
@@ -131,10 +126,9 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 patch.object(AgentRun, "run_planner_order", track("planner_order", originals["planner_order"])),
                 patch.object(AgentRun, "run_execution", track("execution", originals["execution"])),
                 patch.object(AgentRun, "run_test", track("test", originals["test"])),
-                patch.object(AgentRun, "run_final_test", track("final_test", originals["final_test"])),
                 patch.object(AgentRun, "run_planner_decision", track("planner_decision", originals["planner_decision"])),
             ):
-                result = AgentGraphRunner(_workflow_with_final_tester()).run("Use every product AgentRun path.", tmp)
+                result = AgentGraphRunner(default_planner_led_agent_workflow()).run("Use every product AgentRun path.", tmp)
 
         self.assertEqual(result.status, "completed")
         for name in originals:
@@ -368,9 +362,8 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("planner_mode", frontend_source)
         self.assertNotIn("PlannerStrategy", frontend_source)
         self.assertNotIn("planner strategy", frontend_source)
-        self.assertNotIn("single_worker", frontend_source)
 
-    def test_single_worker_planner_strategy_preserves_control_plane_path(self) -> None:
+    def test_single_executor_planner_strategy_preserves_control_plane_path(self) -> None:
         execution_calls: list[str] = []
         action_types: list[str] = []
         original_execution = AgentRun.run_execution
@@ -391,9 +384,9 @@ class ArchitectureBoundaryTests(unittest.TestCase):
                 patch.object(ActionGateway, "run", tracking_gateway),
             ):
                 result = AgentGraphRunner(default_planner_led_agent_workflow()).run(
-                    "Run a single worker local plan.",
+                    "Run a single executor local plan.",
                     tmp,
-                    initial_data={"planner_mode": "single_worker"},
+                    initial_data={"planner_mode": "single_executor"},
                 )
 
         event_types = {event.type for event in result.events}
@@ -416,38 +409,6 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("ActionGateway", source)
         self.assertNotIn("propose_patch", source)
         self.assertNotIn("run_command_sandbox", source)
-
-    def test_legacy_live_runs_endpoint_is_marked_deprecated(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
-            response = client.get("/api/v2/live-runs")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(response.json()["deprecated"])
-
-    def test_legacy_live_run_get_does_not_return_agent_graph_payload(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
-            response = client.post(
-                "/api/v2/live-agent-runs",
-                json={
-                    "repo": tmp,
-                    "request": "Run through the product AgentGraph endpoint.",
-                    "agent_workflow": default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True),
-                    "approved": True,
-                },
-            )
-
-            self.assertEqual(response.status_code, 200)
-            run_id = response.json()["run_id"]
-            legacy = client.get(f"/api/v2/live-runs/{run_id}")
-            legacy_events = client.get(f"/api/v2/live-runs/{run_id}/events")
-            _wait_for_live_run(client, run_id)
-
-        self.assertEqual(legacy.status_code, 410)
-        self.assertIn("/api/v2/live-agent-runs/", legacy.json()["detail"]["result_url"])
-        self.assertEqual(legacy_events.status_code, 410)
-        self.assertIn("/api/v2/live-agent-runs/", legacy_events.json()["detail"]["events_url"])
 
     def test_agent_graph_product_artifacts_do_not_emit_legacy_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -472,11 +433,11 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
     def test_agent_recipe_compiles_to_internal_runtime_profile(self) -> None:
         profile = RuntimeProfileCompiler().compile(
-            AgentRecipe(id="worker", name="Worker", role="do_work", purpose="Implement a change.")
+            AgentRecipe(id="executor", name="Executor", role="executor", purpose="Implement a change.")
         )
 
         self.assertEqual(profile.engine_id, "code-worker-engine")
-        self.assertEqual(profile.context_profile, "coding-worker")
+        self.assertEqual(profile.context_profile, "coding-executor")
         self.assertIn("execution_result", profile.allowed_artifacts)
         self.assertTrue(profile.tool_policy["write_files"])
 
@@ -484,8 +445,8 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
         payload["agents"][1] = {
             "id": "executor",
-            "name": "Code Worker Agent",
-            "role": "worker",
+            "name": "Executor Agent",
+            "role": "executor",
             "model_tier": "standard",
             "can_talk_to_human": False,
         }
@@ -500,7 +461,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         valid_worker = AgentEngineSpec(
             id="code-worker-engine",
             name="Code Worker Engine",
-            engine_type="worker",
+            engine_type="executor",
             harness_graph=HarnessGraph(
                 nodes=[
                     HarnessBlock(id="context", type="context_builder"),
@@ -554,15 +515,13 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("build_planner_order_prompt", executor_source)
         self.assertNotIn("build_planner_decision_prompt", executor_source)
         self.assertNotIn("build_tester_prompt", executor_source)
-        self.assertNotIn("build_final_tester_prompt", executor_source)
-        self.assertNotIn("build_synthesis_prompt", executor_source)
 
     def test_extensions_api_splits_plugins_and_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
             plugins = client.get("/api/v2/extensions/plugins")
             skills = client.get("/api/v2/extensions/skills")
-            search = client.get("/api/v2/extensions/search?q=worker")
+            search = client.get("/api/v2/extensions/search?q=executor")
 
         self.assertEqual(plugins.status_code, 200)
         self.assertEqual(skills.status_code, 200)
@@ -614,39 +573,6 @@ class CountingChatModel:
         if not self.responses:
             raise AssertionError("model should not be invoked again")
         return CountingResponse(self.responses.pop(0))
-
-
-def _workflow_with_final_tester() -> AgentWorkflowSpec:
-    payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-    payload["agents"].append(
-        {
-            "id": "tester2",
-            "name": "Second Tester Agent",
-            "role": "tester",
-            "model_tier": "standard",
-            "can_talk_to_human": False,
-            "capabilities": ["model_review", "return_test_result"],
-        }
-    )
-    payload["agents"].append(
-        {
-            "id": "final_tester",
-            "name": "Final Tester Agent",
-            "role": "reviewer",
-            "model_tier": "standard",
-            "can_talk_to_human": False,
-            "capabilities": ["aggregate_tests", "return_test_result"],
-        }
-    )
-    payload["edges"].extend(
-        [
-            {"from": "executor", "to": "tester2"},
-            {"from": "tester", "to": "final_tester"},
-            {"from": "tester2", "to": "final_tester"},
-            {"from": "final_tester", "to": "planner", "loop": True},
-        ]
-    )
-    return AgentWorkflowSpec.model_validate(payload)
 
 
 def _wait_for_live_run(client: TestClient, run_id: str) -> dict[str, Any]:

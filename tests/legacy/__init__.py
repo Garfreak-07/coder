@@ -1,1 +1,0 @@
-"""Legacy runtime compatibility tests."""

@@ -16,7 +16,6 @@ from coder_workbench.core.artifacts import (
     supported_artifact_types,
     validate_artifact,
 )
-import coder_workbench.server.app as server_app
 from coder_workbench.server.app import create_app
 from fastapi.testclient import TestClient
 
@@ -86,7 +85,6 @@ class PlannerLedArtifactTests(unittest.TestCase):
                             "tester_agent_ids": ["backend-tester"],
                         },
                     ],
-                    "final_tester_agent_id": "qa",
                 },
             }
         )
@@ -237,18 +235,18 @@ class AgentWorkflowContractTests(unittest.TestCase):
         payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
         payload["agents"].append(
             {
-                "id": "reviewer",
-                "name": "Reviewer Agent",
-                "role": "reviewer",
+                "id": "executor2",
+                "name": "Second Executor Agent",
+                "role": "executor",
                 "model_tier": "standard",
                 "can_talk_to_human": False,
-                "capabilities": ["model_review", "aggregate_tests", "return_test_result"],
+                "capabilities": ["follow_planner_order", "return_execution_result"],
             }
         )
         payload["edges"].extend(
             [
-                {"from": "tester", "to": "reviewer"},
-                {"from": "reviewer", "to": "planner", "loop": True},
+                {"from": "planner", "to": "executor2"},
+                {"from": "executor2", "to": "tester"},
             ]
         )
 
@@ -328,16 +326,6 @@ class AgentWorkflowApiTests(unittest.TestCase):
             self.assertNotIn("runtime_type", payload)
             self.assertNotIn("deprecated", payload)
 
-    def test_agent_workflow_compile_api_is_quarantined(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
-            agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-
-            response = client.post("/api/v2/agent-workflows/compile", json=agent_workflow)
-
-            self.assertEqual(response.status_code, 410)
-            self.assertTrue(response.json()["detail"]["removed"])
-
     def test_agent_workflow_library_saves_agent_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
@@ -380,12 +368,11 @@ class AgentWorkflowApiTests(unittest.TestCase):
             detail = response.json()["detail"]
             self.assertIn("missing_primary_planner", {issue["code"] for issue in detail["issues"]})
 
-    def test_live_agent_run_uses_agent_graph_runner_without_legacy_compile(self) -> None:
+    def test_live_agent_run_uses_agent_graph_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
             agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
 
-            self.assertFalse(hasattr(server_app, "compile_agent_workflow_legacy_preview"))
             response = client.post(
                 "/api/v2/live-agent-runs",
                 json={
@@ -407,13 +394,10 @@ class AgentWorkflowApiTests(unittest.TestCase):
                 time.sleep(0.02)
                 detail = client.get(f"/api/v2/live-agent-runs/{run_id}").json()
                 final_status = detail["status"]
-            legacy = client.get(f"/api/v2/live-runs/{run_id}")
             self.assertEqual(final_status, "completed")
             self.assertEqual(detail["runtime_type"], "agent_graph")
             self.assertIn("agent_graph.run.completed", {event["type"] for event in detail["events"]})
             self.assertNotIn("compiled_workflow", detail["result"]["data"])
-            self.assertEqual(legacy.status_code, 410)
-            self.assertIn("/api/v2/live-agent-runs/", legacy.json()["detail"]["result_url"])
 
 if __name__ == "__main__":
     unittest.main()

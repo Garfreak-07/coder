@@ -133,7 +133,7 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         self.assertIn("agent_evaluation_reports", result.data)
         runtime_profiles = result.data["runtime_profiles"]
         executor_profile = next(profile for profile in runtime_profiles if profile["agent_id"] == "executor")
-        self.assertEqual(executor_profile["authority"]["authority"], "worker")
+        self.assertEqual(executor_profile["authority"]["authority"], "executor")
         executor_report = next(report for report in result.data["agent_evaluation_reports"] if report["agent_id"] == "executor")
         self.assertEqual(executor_report["calls"], 1)
         self.assertEqual(executor_report["schema_valid_rate"], 1.0)
@@ -181,11 +181,11 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         self.assertEqual(loaded["items"][0]["work_item_id"], "executor-work")
         self.assertEqual(ledger_entries[0]["work_item_id"], "executor-work")
 
-    def test_runner_records_final_tester_aggregate(self) -> None:
+    def test_runner_records_multiple_tester_evidence_without_aggregate_agent(self) -> None:
         planner_order = {
             "artifact_type": "planner_order",
             "round": 1,
-            "round_goal": "Aggregate test evidence.",
+            "round_goal": "Collect parallel test evidence.",
             "plan_graph": {
                 "work_items": [
                     {
@@ -196,24 +196,26 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
                         "depends_on": [],
                         "tester_agent_ids": ["tester", "tester2"],
                     }
-                ],
-                "final_tester_agent_id": "final_tester",
+                ]
             },
         }
         with tempfile.TemporaryDirectory() as tmp:
-            result = AgentGraphRunner(_workflow_with_final_tester()).run(
-                "Aggregate test evidence.",
+            result = AgentGraphRunner(_workflow_with_second_tester()).run(
+                "Collect parallel test evidence.",
                 tmp,
                 initial_data={"planner_order": planner_order},
             )
 
         self.assertEqual(result.status, "completed")
         cache = result.data["graph_run_cache"]
-        self.assertEqual(cache["final_test_cache"]["final_tester_agent_id"], "final_tester")
-        self.assertEqual(cache["final_test_cache"]["final_test_result_ref"], "test_result_final_final_tester")
-        self.assertEqual(result.data["planner_input_bundle"]["final_test_ref"], "test_result_final_final_tester")
-        self.assertIn("test_result_final_final_tester", result.artifacts)
-        self.assertIn("test.final.completed", {event.type for event in result.events})
+        test_refs = [record["test_result_ref"] for record in cache["test_cache"]["executor-work"]]
+        self.assertEqual(
+            test_refs,
+            ["test_result_executor-work_tester", "test_result_executor-work_tester2"],
+        )
+        self.assertNotIn("final_test_cache", cache)
+        self.assertNotIn("final_test_ref", result.data["planner_input_bundle"])
+        self.assertIn("test.local.completed", {event.type for event in result.events})
 
     def test_runner_events_carry_trace_and_span_hierarchy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -269,73 +271,25 @@ class AgentGraphRunnerPhase2Tests(unittest.TestCase):
         self.assertIn("agent.context_packet_v2", {event.type for event in result.events})
         self.assertIn("token.ledger.entry", {event.type for event in result.events})
 
-    def test_organizer_role_card_records_synthesis_artifact(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            result = AgentGraphRunner(_workflow_with_organizer()).run(
-                "Organize the available project facts.",
-                tmp,
-            )
-
-        self.assertEqual(result.status, "completed")
-        cache = result.data["graph_run_cache"]
-        execution = cache["execution_cache"]["executor-work"]
-        self.assertEqual(execution["artifact_type"], "synthesis_artifact")
-        self.assertEqual(execution["execution_result_ref"], "synthesis_artifact_executor-work")
-        self.assertEqual(cache["context_packets_v2"]["executor-work"]["artifact_type"], "synthesis_artifact")
-        self.assertEqual(cache["token_ledger"][0]["artifact_type"], "synthesis_artifact")
-        self.assertIn("synthesis_artifact_executor-work", result.artifacts)
-        artifact = result.artifacts["synthesis_artifact_executor-work"]
-        self.assertEqual(artifact["artifact_type"], "synthesis_artifact")
-        self.assertEqual(artifact["status"], "completed")
-        self.assertGreaterEqual(len(artifact["sources"]), 1)
-        self.assertGreaterEqual(len(artifact["ranked_items"]), 1)
-        self.assertIn("synthesis_artifact_executor-work", result.data["planner_input_bundle"]["items"][0]["refs"])
-        executor_report = next(report for report in result.data["agent_evaluation_reports"] if report["agent_id"] == "executor")
-        self.assertEqual(executor_report["agent_archetype"], "synthesizer")
-
-
-def _workflow_with_final_tester() -> AgentWorkflowSpec:
+def _workflow_with_second_tester() -> AgentWorkflowSpec:
     payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-    payload["agents"].extend(
-        [
-            {
-                "id": "tester2",
-                "name": "Second Tester",
-                "role": "tester",
-                "model_tier": "standard",
-                "can_talk_to_human": False,
-                "capabilities": ["model_review", "return_test_result"],
-            },
-            {
-                "id": "final_tester",
-                "name": "Final Tester",
-                "role": "reviewer",
-                "model_tier": "standard",
-                "can_talk_to_human": False,
-                "capabilities": ["aggregate_tests", "return_test_result"],
-            },
-        ]
+    payload["agents"].append(
+        {
+            "id": "tester2",
+            "name": "Second Tester",
+            "role": "tester",
+            "model_tier": "standard",
+            "can_talk_to_human": False,
+            "capabilities": ["model_review", "return_test_result"],
+        }
     )
     payload["edges"] = [
         {"from": "planner", "to": "executor"},
         {"from": "executor", "to": "tester"},
         {"from": "executor", "to": "tester2"},
-        {"from": "tester", "to": "final_tester"},
-        {"from": "tester2", "to": "final_tester"},
-        {"from": "final_tester", "to": "planner", "loop": True},
+        {"from": "tester", "to": "planner", "loop": True},
+        {"from": "tester2", "to": "planner", "loop": True},
     ]
-    return AgentWorkflowSpec.model_validate(payload)
-
-
-def _workflow_with_organizer() -> AgentWorkflowSpec:
-    payload = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
-    payload["agents"][1] = {
-        "id": "executor",
-        "name": "Organizer",
-        "role_card": "organize_information",
-        "model_tier": "standard",
-        "can_talk_to_human": False,
-    }
     return AgentWorkflowSpec.model_validate(payload)
 
 
@@ -352,7 +306,7 @@ def _install_skill(root: Path) -> InstalledSkillStore:
             "skill_type": "procedure",
             "risk_level": "low",
             "publisher": "coder-official",
-            "allowed_authorities": ["planner", "worker", "tester", "synthesizer"],
+            "allowed_authorities": ["planner", "executor", "tester"],
             "requires": ["search_query"],
             "produces": ["source_collection", "execution_result"],
             "connectors": ["github_readonly"],

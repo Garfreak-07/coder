@@ -46,7 +46,7 @@ class CodeWorkerHarness(AgentHarness):
         try:
             artifact = validate_artifact(payload, expected_type="execution_result")
         except ArtifactValidationError:
-            artifact = _blocked_payload(item, envelope.round, "Worker output failed schema validation after one repair.")
+            artifact = _blocked_payload(item, envelope.round, "Executor output failed schema validation after one repair.")
         return ExecutionRecord(
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
@@ -94,7 +94,7 @@ class CodeWorkerHarness(AgentHarness):
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
         )
-        response = self.model.invoke(prompt or _worker_prompt(item, envelope, coding_context_packet))
+        response = self.model.invoke(prompt or _executor_prompt(item, envelope, coding_context_packet))
         content = str(getattr(response, "content", response))
         payload = parse_json_object(content)
         if payload is not None:
@@ -126,7 +126,7 @@ class CodeWorkerHarness(AgentHarness):
         )
         if repaired is not None:
             return repaired
-        return _blocked_payload(item, envelope.round, "Worker output did not match execution_result schema after one repair.")
+        return _blocked_payload(item, envelope.round, "Executor output did not match execution_result schema after one repair.")
 
 
 def _emit_schema_failed(emit: Any | None, item: WorkItem, errors: list[dict[str, Any]]) -> None:
@@ -147,7 +147,7 @@ def _emit(emit: Any | None, event_type: str, message: str, **payload: Any) -> No
         emit(event_type, message, **{key: value for key, value in payload.items() if value is not None})
 
 
-def _worker_prompt(item: WorkItem, envelope: AgentTaskEnvelope, coding_context_packet: dict[str, Any] | None) -> str:
+def _executor_prompt(item: WorkItem, envelope: AgentTaskEnvelope, coding_context_packet: dict[str, Any] | None) -> str:
     return "\n\n".join(
         [
             "Return JSON only with artifact_type='execution_result'.",
@@ -173,7 +173,7 @@ def _blocked_payload(item: WorkItem, round_number: int, summary: str) -> dict[st
         "needs_planner_decision": True,
         "blocker_type": "schema_validation_failed" if schema_blocker else "context_missing",
         "planner_question": (
-            "Worker output failed schema validation. Should Planner retry, reassign, or ask the user?"
+            "Executor output failed schema validation. Should Planner retry, reassign, or ask the user?"
             if schema_blocker
             else "Should Planner provide more context, retry, or replan this work item?"
         ),

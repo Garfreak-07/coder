@@ -102,42 +102,6 @@ def validate_planner_order(agent_workflow: AgentWorkflowSpec, planner_order: Pla
             )
         )
 
-    distinct_testers = sorted(
-        {
-            tester_id
-            for item in planner_order.plan_graph.work_items
-            for tester_id in item.tester_agent_ids
-        }
-    )
-    if len(distinct_testers) > 1:
-        final_tester_id = planner_order.plan_graph.final_tester_agent_id
-        if not final_tester_id:
-            issues.append(
-                _issue(
-                    "missing_final_tester",
-                    "PlannerOrder with multiple tester Agents must include final_tester_agent_id.",
-                    "plan_graph",
-                )
-            )
-        elif final_tester_id not in agent_by_id:
-            issues.append(
-                _issue(
-                    "final_tester_not_found",
-                    f'Final tester "{final_tester_id}" is not a user-added Agent.',
-                    "plan_graph",
-                    final_tester_id,
-                )
-            )
-        elif "aggregate_tests" not in agent_by_id[final_tester_id].capabilities:
-            issues.append(
-                _issue(
-                    "final_tester_missing_aggregate_tests",
-                    f'Final tester "{final_tester_id}" must use aggregate_tests.',
-                    "agent",
-                    final_tester_id,
-                )
-            )
-
     return _validation_result(issues)
 
 

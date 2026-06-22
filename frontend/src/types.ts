@@ -3,19 +3,12 @@ export type AgentModelTier = "best" | "standard" | "economy";
 export type AgentWorkflowRole =
   | "planner"
   | "executor"
-  | "worker"
-  | "tester"
-  | "reviewer"
-  | "writer"
-  | "researcher"
-  | "summarizer"
-  | "custom";
+  | "tester";
 export type AgentCapability = string;
 export type HandoffType =
   | "run_contract"
   | "planner_order"
   | "execution_result"
-  | "synthesis_artifact"
   | "test_result"
   | "planner_decision"
   | "round_summary";
@@ -84,93 +77,6 @@ export interface AgentWorkflowSpec {
   ui?: {
     layout?: Record<string, { x: number; y: number }>;
   };
-}
-export type NodeType = "start" | "agent" | "tool" | "mcp_tool" | "condition" | "loop" | "human_gate" | "end";
-export type LoopMode = "while" | "for_each" | "retry_until";
-
-export interface PermissionPolicy {
-  read_files: boolean;
-  edit_files: boolean;
-  run_commands: boolean;
-  use_network: boolean;
-  requires_approval: boolean;
-}
-
-export interface ContextPolicy {
-  input_keys: string[];
-  summary_keys: string[];
-  max_items_per_key: number;
-  max_chars_per_value: number;
-  include_all_state: boolean;
-  include_event_history: boolean;
-  include_full_outputs: boolean;
-}
-
-export interface AgentSpec {
-  id: string;
-  name?: string | null;
-  role: string;
-  goal: string;
-  instructions: string;
-  provider?: string | null;
-  model?: string | null;
-  tools: string[];
-  output_key?: string | null;
-  artifact_type?:
-    | "run_contract"
-    | "planner_order"
-    | "execution_result"
-    | "synthesis_artifact"
-    | "test_result"
-    | "planner_decision"
-    | "round_summary"
-    | "plan_artifact"
-    | "patch_artifact"
-    | "review_artifact"
-    | null;
-  permissions: PermissionPolicy;
-  context: ContextPolicy;
-}
-
-export interface NodeSpec {
-  id: string;
-  type: NodeType;
-  agent_id?: string | null;
-  tool?: string | null;
-  input?: Record<string, unknown>;
-  output_key?: string | null;
-  condition?: string | null;
-  approval_reason?: string | null;
-  loop_mode?: LoopMode | null;
-  items_key?: string | null;
-  item_key?: string | null;
-  iteration_key?: string | null;
-  max_iterations?: number | null;
-  collect_key?: string | null;
-  summary_key?: string | null;
-}
-
-export interface EdgeSpec {
-  from: string;
-  to: string;
-  when?: string | null;
-  priority?: number;
-  max_traversals?: number | null;
-}
-
-export interface WorkflowSpec {
-  id: string;
-  version: string;
-  name: string;
-  description: string;
-  max_steps: number;
-  max_agent_calls: number;
-  max_tool_calls: number;
-  token_budget: number | null;
-  agents: AgentSpec[];
-  nodes: NodeSpec[];
-  edges: EdgeSpec[];
-  stop_conditions: string[];
 }
 
 export interface PreflightIssue {
@@ -261,10 +167,10 @@ export interface AgentWorkflowSummary {
 export interface AgentSummary {
   id: string;
   name?: string;
-  role?: string;
-  goal?: string;
-  model?: string;
-  tools: string[];
+  role?: AgentWorkflowRole;
+  purpose?: string;
+  model_tier?: AgentModelTier;
+  capabilities: AgentCapability[];
 }
 
 export interface LibraryIndex {
@@ -284,7 +190,7 @@ export interface RunEvent {
 export interface RunSummaryItem {
   id: string;
   workflow_id: string;
-  runtime_type?: "agent_graph" | "legacy_workflow";
+  runtime_type?: "agent_graph";
   repo_root: string;
   request: string;
   status: string;
@@ -353,8 +259,7 @@ export interface BlobDetail {
 export interface LiveRunDetail {
   id: string;
   workflow_id: string;
-  runtime_type?: "agent_graph" | "legacy_workflow";
-  deprecated?: boolean;
+  runtime_type?: "agent_graph";
   repo_root: string;
   request: string;
   status: string;

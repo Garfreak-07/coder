@@ -19,13 +19,13 @@ class MergeIndexedModel(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def accept_legacy_order_index(cls, data: Any) -> Any:
+    def accept_order_index_alias(cls, data: Any) -> Any:
         if not isinstance(data, dict) or "order_index" not in data:
             return data
         migrated = dict(data)
         order_index = migrated.pop("order_index")
         if "merge_index" in migrated and migrated["merge_index"] != order_index:
-            raise ValueError("merge_index and legacy order_index must match when both are provided")
+            raise ValueError("merge_index and order_index must match when both are provided")
         migrated.setdefault("merge_index", order_index)
         return migrated
 
@@ -56,7 +56,6 @@ class PlannerOrderPlanGraph(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     work_items: list[WorkItem]
-    final_tester_agent_id: str | None = None
 
 
 class PlannerOrder(BaseModel):
@@ -90,7 +89,7 @@ class AgentTaskEnvelope(MergeIndexedModel):
 
 
 class ExecutionRecord(MergeIndexedModel):
-    artifact_type: Literal["execution_result", "synthesis_artifact"] = "execution_result"
+    artifact_type: Literal["execution_result"] = "execution_result"
     work_item_id: str
     agent_id: str
     status: ExecutionStatus
@@ -112,17 +111,6 @@ class WorkItemOutcome(MergeIndexedModel):
     work_item_id: str
     execution: ExecutionRecord
     tests: list[TestRecord] = Field(default_factory=list)
-
-
-class FinalTestRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    round: int = Field(ge=1)
-    final_tester_agent_id: str
-    status: TestStatus
-    summary: str
-    final_test_result_ref: str | None = None
-    artifact_payload: dict[str, Any] | None = None
 
 
 class PlanCache(BaseModel):
@@ -166,8 +154,6 @@ class PlannerInputBundle(BaseModel):
     planner_order_ref: str
     plan_status: PlanStatus
     items: list[PlannerInputBundleItem]
-    final_test_summary: str | None = None
-    final_test_ref: str | None = None
     effects: list[dict[str, Any]] = Field(default_factory=list)
     interrupts: list[PlannerInputInterrupt] = Field(default_factory=list)
 

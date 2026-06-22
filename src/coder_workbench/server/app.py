@@ -402,18 +402,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
         }
 
-    @app.post("/api/v2/agent-workflows/compile")
-    def compile_legacy_runtime_preview_endpoint(agent_workflow: dict[str, Any]) -> dict[str, Any]:
-        raise HTTPException(
-            status_code=410,
-            detail={
-                "deprecated": True,
-                "removed": True,
-                "message": "Legacy WorkflowSpec preview compilation is no longer exposed by the product API.",
-                "replacement": "/api/v2/agent-workflows/validate",
-            },
-        )
-
     @app.post("/api/v2/agent-workflows/validate")
     def validate_agent_workflow_endpoint(agent_workflow: dict[str, Any]) -> dict[str, Any]:
         return validate_agent_workflow_payload(agent_workflow).model_dump(mode="json")
@@ -437,15 +425,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     @app.get("/api/v2/runs")
     def list_runs() -> dict[str, Any]:
         return {"runs": store.list()}
-
-    @app.get("/api/v2/live-runs")
-    def list_live_runs() -> dict[str, Any]:
-        return {
-            "deprecated": True,
-            "removed": True,
-            "replacement": "/api/v2/live-agent-runs",
-            "runs": [],
-        }
 
     @app.post("/api/v2/live-agent-runs")
     def create_live_agent_run(body: AgentRunRequest) -> dict[str, Any]:
@@ -501,21 +480,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             return store.delete(run_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="run not found") from exc
-
-    @app.get("/api/v2/live-runs/{run_id}")
-    def get_live_run(run_id: str) -> dict[str, Any]:
-        try:
-            live = agent_manager.get(run_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="live run not found") from exc
-        raise HTTPException(
-            status_code=410,
-            detail={
-                "message": f"AgentGraph live runs moved to /api/v2/live-agent-runs/{live.id}",
-                "result_url": f"/api/v2/live-agent-runs/{live.id}",
-                "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
-            },
-        )
 
     @app.get("/api/v2/runs/{run_id}/events")
     def stream_events(
@@ -584,21 +548,6 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             return store.get_blob(blob_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="blob not found") from exc
-
-    @app.get("/api/v2/live-runs/{run_id}/events")
-    def stream_live_events(run_id: str) -> StreamingResponse:
-        try:
-            live = agent_manager.get(run_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="live run not found") from exc
-        raise HTTPException(
-            status_code=410,
-            detail={
-                "message": f"AgentGraph live run events moved to /api/v2/live-agent-runs/{live.id}/events",
-                "result_url": f"/api/v2/live-agent-runs/{live.id}",
-                "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
-            },
-        )
 
     @app.get("/api/v2/live-agent-runs/{run_id}")
     def get_live_agent_run(run_id: str) -> dict[str, Any]:

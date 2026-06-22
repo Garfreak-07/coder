@@ -30,7 +30,7 @@ class RunStoreTests(unittest.TestCase):
                 "done",
             )
             ledgers = store.partitions.ledgers.list(stored.id)
-            self.assertTrue(any(entry.get("work_item_id") == "worker" for entry in ledgers))
+            self.assertTrue(any(entry.get("work_item_id") == "executor-work" for entry in ledgers))
             self.assertTrue(any(entry.get("ledger_kind") == "trace_span" for entry in ledgers))
 
             loaded = store.get(stored.id)
@@ -85,7 +85,7 @@ class RunStoreTests(unittest.TestCase):
             store = RunStore(root)
             packet = {
                 "task": "inspect context",
-                "agent": {"id": "worker", "name": "Worker"},
+                "agent": {"id": "executor", "name": "Executor"},
                 "node_id": "agent",
                 "selected_state_keys": ["review"],
                 "state_summaries": {"review": "needs changes"},
@@ -114,7 +114,7 @@ class RunStoreTests(unittest.TestCase):
 
             self.assertEqual(context_event["type"], "agent.context_packet")
             self.assertNotIn("packet", context_event["payload"])
-            self.assertEqual(context_event["payload"]["summary"]["agent_id"], "worker")
+            self.assertEqual(context_event["payload"]["summary"]["agent_id"], "executor")
             self.assertEqual(context_event["payload"]["summary"]["selected_state_keys"], ["review"])
             self.assertGreater(context_event["payload"]["size_chars"], 0)
 
@@ -127,7 +127,7 @@ class RunStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".coder"
             store = RunStore(root)
-            packet = {"task": "legacy context", "agent": {"id": "worker"}}
+            packet = {"task": "legacy context", "agent": {"id": "executor"}}
             event = RunEvent(type="agent.context_packet", message="context", payload={"packet": packet})
             legacy = StoredRun(
                 id="legacy-context-run",
@@ -181,7 +181,7 @@ def _result() -> RunResult:
         status="completed",
         data={
             "answer": "done",
-            "token_ledger": [{"ledger_id": "token_1", "work_item_id": "worker", "estimated_input_tokens": 12}],
+            "token_ledger": [{"ledger_id": "token_1", "work_item_id": "executor-work", "estimated_input_tokens": 12}],
             "trace_spans": [{"span_id": "span_1", "name": "run", "kind": "run"}],
         },
         summaries={"answer": "done"},

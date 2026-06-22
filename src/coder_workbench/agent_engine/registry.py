@@ -5,9 +5,7 @@ from typing import Any
 from .runtime import (
     AgentEngine,
     CodeWorkerEngine,
-    FinalReviewEngine,
     PlannerEngine,
-    SynthesizerEngine,
     TesterEngine,
 )
 
@@ -22,8 +20,6 @@ class AgentEngineRegistry:
                     PlannerEngine(),
                     CodeWorkerEngine(),
                     TesterEngine(),
-                    FinalReviewEngine(),
-                    SynthesizerEngine(),
                 ]
             )
         }
@@ -42,12 +38,6 @@ class AgentEngineRegistry:
 
     def tester(self) -> TesterEngine:
         return self.get(TesterEngine.id)  # type: ignore[return-value]
-
-    def final_review(self) -> FinalReviewEngine:
-        return self.get(FinalReviewEngine.id)  # type: ignore[return-value]
-
-    def synthesizer(self) -> SynthesizerEngine:
-        return self.get(SynthesizerEngine.id)  # type: ignore[return-value]
 
 
 def default_agent_engine_registry() -> AgentEngineRegistry:

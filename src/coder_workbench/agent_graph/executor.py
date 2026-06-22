@@ -7,7 +7,6 @@ from coder_workbench.agent_graph.agent_run import AgentRun
 from coder_workbench.agent_graph.schema import (
     AgentTaskEnvelope,
     ExecutionRecord,
-    FinalTestRecord,
     PlannerInputBundle,
     PlannerOrder,
     TestRecord,
@@ -64,15 +63,6 @@ class AgentGraphExecutorProtocol(Protocol):
         planner_human_response: dict[str, Any] | None = None,
         emit: Any | None = None,
     ) -> dict[str, Any]:
-        ...
-
-    def create_final_test_result(
-        self,
-        *,
-        bundle: PlannerInputBundle,
-        final_tester_agent_id: str,
-        emit: Any | None = None,
-    ) -> FinalTestRecord:
         ...
 
 
@@ -169,24 +159,6 @@ class AgentGraphExecutor:
             agent_workflow=self.agent_workflow,
             bundle=bundle,
             planner_human_response=planner_human_response,
-            runtime_settings=self.runtime_settings,
-            model_factory=self.model_factory,
-            budget_broker=self.budget_broker,
-            run_id=self.run_id,
-            emit=emit,
-        )
-
-    def create_final_test_result(
-        self,
-        *,
-        bundle: PlannerInputBundle,
-        final_tester_agent_id: str,
-        emit: Any | None = None,
-    ) -> FinalTestRecord:
-        return self.agent_run.engine_registry.final_review().run_final_test(
-            agent_workflow=self.agent_workflow,
-            bundle=bundle,
-            final_tester_agent_id=final_tester_agent_id,
             runtime_settings=self.runtime_settings,
             model_factory=self.model_factory,
             budget_broker=self.budget_broker,

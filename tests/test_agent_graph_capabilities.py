@@ -24,7 +24,7 @@ class AgentGraphCapabilityBoundaryTests(unittest.TestCase):
 
         self.assertEqual(profiles["planner"].authority, "planner")
         self.assertIn("planner_decision", profiles["planner"].allowed_artifact_types)
-        self.assertEqual(profiles["executor"].authority, "worker")
+        self.assertEqual(profiles["executor"].authority, "executor")
         self.assertTrue(profiles["executor"].can_trigger_interrupt)
         self.assertEqual(profiles["tester"].authority, "tester")
         self.assertIn("test_result", profiles["tester"].allowed_artifact_types)
@@ -54,15 +54,13 @@ class AgentGraphCapabilityBoundaryTests(unittest.TestCase):
 
     def test_skill_modules_define_agent_boundaries(self) -> None:
         planner_modules = {module.id for module in skill_modules_for_authority("planner")}
-        worker_modules = {module.id for module in skill_modules_for_authority("worker")}
+        executor_modules = {module.id for module in skill_modules_for_authority("executor")}
         tester_modules = {module.id for module in skill_modules_for_authority("tester")}
-        final_tester_modules = {module.id for module in skill_modules_for_authority("final_tester")}
 
         self.assertIn("replanning", planner_modules)
         self.assertIn("human_escalation", planner_modules)
-        self.assertIn("blocker_reporting", worker_modules)
+        self.assertIn("blocker_reporting", executor_modules)
         self.assertIn("confidence_calibration", tester_modules)
-        self.assertIn("round_evidence_compression", final_tester_modules)
 
 
 if __name__ == "__main__":

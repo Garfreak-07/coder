@@ -26,7 +26,6 @@ from coder_workbench.agent_graph.merge import build_planner_input_bundle, build_
 from coder_workbench.agent_graph.round_budget import evaluate_round_budget_preflight
 from coder_workbench.agent_graph.scheduler import AgentGraphScheduler
 from coder_workbench.agent_graph.schema import (
-    FinalTestRecord,
     ExecutionRecord,
     PlannerInputBundle,
     PlannerOrder,
@@ -42,7 +41,6 @@ from coder_workbench.core import (
     compile_runtime_profiles,
     assert_valid_agent_workflow,
 )
-from coder_workbench.core.authority import authority_profile_for_agent
 from coder_workbench.budget import BudgetBroker, BudgetLimit
 from coder_workbench.coding import (
     build_debug_finding,
@@ -84,9 +82,8 @@ class AgentGraphBlocked(ValueError):
 class AgentGraphRunner:
     """AgentWorkflow runtime boundary.
 
-    This runner deliberately does not compile AgentWorkflowSpec into WorkflowSpec.
-    The first implementation uses deterministic mock records while preserving
-    the real PlanGraph/cache/task-envelope data flow.
+    This runner executes AgentWorkflowSpec directly through AgentGraph data
+    flow: PlannerOrder, GraphRunCache, AgentRun, and PlannerDecision.
     """
 
     def __init__(
@@ -103,7 +100,7 @@ class AgentGraphRunner:
         self.runtime_settings = runtime_settings
         if executor is not None and agent_run is not None:
             raise ValueError("Pass either executor or agent_run, not both")
-        self.agent_run = agent_run or (_LegacyAgentRunAdapter(executor) if executor is not None else AgentRun(
+        self.agent_run = agent_run or (_ExecutorAdapter(executor) if executor is not None else AgentRun(
             agent_workflow,
             runtime_settings=runtime_settings,
         ))
@@ -625,7 +622,7 @@ class AgentGraphRunner:
                     stop_after_current_wave = True
                     emit(
                         "agent_graph.interrupt.requested",
-                        "Worker requested Planner intervention",
+                        "Executor requested Planner intervention",
                         round=cache.round,
                         work_item_id=recorded_interrupt.work_item_id,
                         merge_index=recorded_interrupt.merge_index,
@@ -714,25 +711,6 @@ class AgentGraphRunner:
         if cache.hidden_effects:
             data["hidden_effects"] = cache.hidden_effects
 
-        final_tester_agent_id = planner_order.plan_graph.final_tester_agent_id
-        if final_tester_agent_id and not cache.interrupts:
-            pre_final_bundle = build_planner_input_bundle(cache)
-            final_test = cache.record_final_test(
-                self.agent_run.run_final_test(
-                    bundle=pre_final_bundle,
-                    final_tester_agent_id=final_tester_agent_id,
-                    emit=emit,
-                )
-            )
-            self._record_final_test_artifact(recorder, final_test)
-            emit(
-                "test.final.completed",
-                "Final tester aggregation completed",
-                round=cache.round,
-                final_tester_agent_id=final_test.final_tester_agent_id,
-                test_result_ref=final_test.final_test_result_ref,
-                status=final_test.status,
-            )
         data["graph_run_cache"] = cache.as_runtime_payload()
         data.setdefault("token_ledger", []).extend(cache.token_ledger)
 
@@ -1092,10 +1070,6 @@ class AgentGraphRunner:
         return ""
 
     def _work_artifact_type(self, agent_id: str) -> str:
-        for agent in self.agent_workflow.agents:
-            if agent.id == agent_id:
-                profile = authority_profile_for_agent(agent, primary_planner_id=self.agent_workflow.primary_planner_id)
-                return "synthesis_artifact" if profile.authority == "synthesizer" else "execution_result"
         return "execution_result"
 
     def _build_work_item_outcome(self, context: dict[str, Any]) -> WorkItemOutcome:
@@ -1172,26 +1146,6 @@ class AgentGraphRunner:
         }
         return recorder.record(
             test.test_result_ref or graph_artifact_id("test_result", test.work_item_id, test.tester_agent_id),
-            payload,
-            expected_type="test_result",
-        )
-
-    def _record_final_test_artifact(
-        self,
-        recorder: AgentGraphArtifactRecorder,
-        final_test: FinalTestRecord,
-    ) -> dict[str, Any] | None:
-        if not final_test.final_test_result_ref:
-            return None
-        payload = final_test.artifact_payload or {
-            "artifact_type": "test_result",
-            "round": final_test.round,
-            "tester_agent_id": final_test.final_tester_agent_id,
-            "status": final_test.status,
-            "summary": final_test.summary,
-        }
-        return recorder.record(
-            final_test.final_test_result_ref,
             payload,
             expected_type="test_result",
         )
@@ -1461,9 +1415,9 @@ def _merge_replay_cache_payload(
         hidden_outputs.update(replay_outputs)
 
 
-class _LegacyAgentRunAdapter:
-    def __init__(self, legacy_runner: Any) -> None:
-        self.legacy_runner = legacy_runner
+class _ExecutorAdapter:
+    def __init__(self, executor: Any) -> None:
+        self.executor = executor
 
     def run_planner_order(self, request: str, **kwargs: Any) -> PlannerOrder:
         core_kwargs = {
@@ -1474,12 +1428,12 @@ class _LegacyAgentRunAdapter:
             "emit": kwargs.get("emit"),
         }
         try:
-            return self.legacy_runner.create_planner_order(request, **kwargs)
+            return self.executor.create_planner_order(request, **kwargs)
         except TypeError:
             try:
-                return self.legacy_runner.create_planner_order(request, **core_kwargs)
+                return self.executor.create_planner_order(request, **core_kwargs)
             except TypeError:
-                return self.legacy_runner.create_planner_order(request, emit=kwargs.get("emit"))
+                return self.executor.create_planner_order(request, emit=kwargs.get("emit"))
 
     def run_execution(self, **kwargs: Any) -> ExecutionRecord:
         payload = {
@@ -1488,7 +1442,7 @@ class _LegacyAgentRunAdapter:
         }
         if kwargs.get("emit") is not None:
             payload["emit"] = kwargs["emit"]
-        return self.legacy_runner.create_execution_result(**payload)
+        return self.executor.create_execution_result(**payload)
 
     def run_test(self, **kwargs: Any) -> TestRecord:
         payload = {
@@ -1498,16 +1452,7 @@ class _LegacyAgentRunAdapter:
         }
         if kwargs.get("emit") is not None:
             payload["emit"] = kwargs["emit"]
-        return self.legacy_runner.create_test_result(**payload)
-
-    def run_final_test(self, **kwargs: Any) -> FinalTestRecord:
-        payload = {
-            "bundle": kwargs["bundle"],
-            "final_tester_agent_id": kwargs["final_tester_agent_id"],
-        }
-        if kwargs.get("emit") is not None:
-            payload["emit"] = kwargs["emit"]
-        return self.legacy_runner.create_final_test_result(**payload)
+        return self.executor.create_test_result(**payload)
 
     def run_planner_decision(self, **kwargs: Any) -> dict[str, Any]:
         payload = {
@@ -1516,7 +1461,7 @@ class _LegacyAgentRunAdapter:
         }
         if kwargs.get("emit") is not None:
             payload["emit"] = kwargs["emit"]
-        return self.legacy_runner.create_planner_decision(**payload)
+        return self.executor.create_planner_decision(**payload)
 
 
 def _max_concurrency_from_data(data: dict[str, Any]) -> int:
@@ -1563,8 +1508,6 @@ def _round_preflight_model_calls(planner_order: PlannerOrder, *, runtime_setting
     work_items = list(planner_order.plan_graph.work_items)
     calls = len(work_items)
     calls += sum(len(item.tester_agent_ids) for item in work_items)
-    if planner_order.plan_graph.final_tester_agent_id:
-        calls += 1
     if not _replay_planner_decision_available(data):
         calls += 1
     return calls

@@ -238,7 +238,7 @@ class AgentGraphExecutorTests(unittest.TestCase):
         assert record.artifact_payload is not None
         self.assertEqual(record.artifact_payload["blocker_type"], "schema_validation_failed")
         self.assertFalse(record.artifact_payload["continue_without_human_possible"])
-        self.assertIn("Worker output failed schema validation", record.artifact_payload["planner_question"])
+        self.assertIn("Executor output failed schema validation", record.artifact_payload["planner_question"])
         self.assertIn("agent_graph.agent_call.repair_failed", [event["type"] for event in events])
 
     def test_valid_tester_json_becomes_test_record(self) -> None:
@@ -302,20 +302,6 @@ class AgentGraphExecutorTests(unittest.TestCase):
 
         self.assertEqual(decision["next_action"], "continue")
         self.assertIn("Fix failing test", decision["next_round_goal"])
-
-    def test_valid_final_tester_json_becomes_final_test_record(self) -> None:
-        model = FakeChatModel(['{"artifact_type":"test_result","status":"pass","summary":"Aggregate passed."}'])
-        executor = _executor(model)
-
-        record = executor.create_final_test_result(
-            bundle=_planner_bundle(),
-            final_tester_agent_id="tester",
-        )
-
-        self.assertEqual(record.status, "pass")
-        self.assertEqual(record.final_tester_agent_id, "tester")
-        self.assertEqual(record.summary, "Aggregate passed.")
-        self.assertEqual(record.final_test_result_ref, "test_result_final_tester")
 
     def test_planner_order_graph_validation_failure_stops_runner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -84,7 +84,7 @@ def build_worker_execution_prompt(
     return "\n\n".join(
         [
             _json_only_header("execution_result"),
-            "You are a Worker Agent. Return execution facts only.",
+            "You are an Executor Agent. Return execution facts only.",
             "Do not ask the human. Do not make global continue/finish decisions.",
             "If you cannot safely complete the work item, return status=\"blocked\", "
             "needs_planner_decision=true, blocker_type, planner_question, candidate_options, "
@@ -100,32 +100,6 @@ def build_worker_execution_prompt(
             _compact_json(envelope.model_dump(mode="json")),
             "CodingContextPacket JSON:",
             _compact_json(envelope.coding_context_packet),
-            "Selected Skill context JSON:",
-            _compact_json(envelope.selected_skill_context),
-        ]
-    )
-
-
-def build_synthesis_prompt(
-    *,
-    agent: AgentWorkflowAgent,
-    item: WorkItem,
-    envelope: AgentTaskEnvelope,
-) -> str:
-    return "\n\n".join(
-        [
-            _json_only_header("synthesis_artifact"),
-            "You are a Synthesizer Agent. Return organized information only.",
-            "Run this pipeline internally: collect, normalize, deduplicate, cluster, rank, synthesize, compress, index.",
-            "Do not ask the human. Do not make global continue/finish decisions.",
-            "If the source material is insufficient, return status=\"blocked\" with blocker_type=\"context_missing\".",
-            _synthesis_artifact_schema_notes(),
-            "Assigned Agent JSON:",
-            _compact_json(_agent_summary(agent)),
-            "Work item JSON:",
-            _compact_json(item.model_dump(mode="json")),
-            "AgentTaskEnvelope JSON:",
-            _compact_json(envelope.model_dump(mode="json")),
             "Selected Skill context JSON:",
             _compact_json(envelope.selected_skill_context),
         ]
@@ -151,26 +125,6 @@ def build_tester_prompt(
             _compact_json(item.model_dump(mode="json")),
             "ExecutionResult JSON:",
             _compact_json(execution_result),
-        ]
-    )
-
-
-def build_final_tester_prompt(
-    *,
-    final_tester: AgentWorkflowAgent,
-    bundle: PlannerInputBundle,
-) -> str:
-    return "\n\n".join(
-        [
-            _json_only_header("test_result"),
-            "You are the Final Tester Agent. Aggregate local tester evidence across the full PlannerInputBundle.",
-            "Return one test_result for the whole round, not per-work-item output.",
-            "Do not ask the human. Do not make global continue/finish decisions.",
-            _test_result_schema_notes(),
-            "Final Tester Agent JSON:",
-            _compact_json(_agent_summary(final_tester)),
-            "PlannerInputBundle JSON:",
-            _compact_json(bundle.model_dump(mode="json", exclude_none=True)),
         ]
     )
 
@@ -214,8 +168,6 @@ def schema_notes_for_artifact(artifact_type: str) -> str:
         return _planner_order_schema_notes()
     if artifact_type == "execution_result":
         return _execution_result_schema_notes()
-    if artifact_type == "synthesis_artifact":
-        return _synthesis_artifact_schema_notes()
     if artifact_type == "test_result":
         return _test_result_schema_notes()
     if artifact_type == "planner_decision":
@@ -235,7 +187,7 @@ def _planner_order_schema_notes() -> str:
         "Required planner_order fields: artifact_type, round, round_goal, plan_graph.\n"
         "plan_graph.work_items is a list of objects with work_item_id, merge_index, assignee_agent_id, "
         "task_summary, depends_on, tester_agent_ids.\n"
-        "plan_graph.final_tester_agent_id is optional."
+        "Each work item may list tester_agent_ids for evidence review."
     )
 
 
@@ -249,18 +201,6 @@ def _execution_result_schema_notes() -> str:
         "Allowed blocker_type values: technical_blocker, ambiguity, scope_boundary, risk_boundary, "
         "dependency_missing, context_missing, plan_conflict, schema_validation_failed.\n"
         "candidate_options is a list of objects with option_id, summary, risk_level, and requires_human."
-    )
-
-
-def _synthesis_artifact_schema_notes() -> str:
-    return (
-        "Required synthesis_artifact fields: artifact_type, status, summary.\n"
-        "Allowed status values: completed, blocked, failed.\n"
-        "Use sources for collected inputs, deduplicated_source_ids for retained source IDs, clusters for grouped sources, "
-        "ranked_items for ordered synthesized findings, compressed_summary for concise carry-forward context, "
-        "and index for keyword to source-id lookup.\n"
-        "If blocked, include needs_planner_decision=true, blocker_type, planner_question, candidate_options, "
-        "and continue_without_human_possible when known."
     )
 
 

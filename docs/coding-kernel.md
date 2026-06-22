@@ -61,7 +61,7 @@ time and converted into Planner interrupts. Sandbox actions use `sandbox_root`
 when provided; otherwise they are marked `sandbox_unavailable` and fall back to
 the repo-root compatibility path with normal approval behavior.
 
-## v0.9.6 Boundary
+## v1.0 Boundary
 
 - Ordinary users see coding capabilities through Agents and workflow edges, not
   kernel services.
@@ -73,10 +73,10 @@ the repo-root compatibility path with normal approval behavior.
   runtime actions.
 - Plugin and MCP actions use registry `ToolCapability` to derive risk,
   permissions, and approval requirements before execution.
-- `AgentRun` and `AgentEngineRegistry` own Planner, Worker, Tester,
-  FinalReview, Synthesizer, and PlannerDecision execution.
+- `AgentRun` and `AgentEngineRegistry` own Planner, Executor, Tester, and
+  PlannerDecision execution.
 - Partitioned stores separate metadata, results, patch previews, command output
   blobs, token ledgers, trace spans, artifacts, contexts, tool results, live
   runs, and run events.
-- Legacy `plan_artifact`, `patch_artifact`, and `review_artifact` remain only
-  for old `WorkflowSpec` flows.
+- Old `plan_artifact`, `patch_artifact`, and `review_artifact` outputs are not
+  emitted by product AgentGraph runs.

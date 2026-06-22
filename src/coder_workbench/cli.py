@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 from pprint import pprint
 
 from dotenv import load_dotenv
 
-from coder_workbench.core.schema import load_workflow
-from coder_workbench.runtime import run_workflow
+from coder_workbench.agent_graph.runner import AgentGraphRunner
+from coder_workbench.core import AgentWorkflowSpec, default_planner_led_agent_workflow
 from coder_workbench.tools.filesystem import resolve_existing_dir
 
 
@@ -21,7 +22,7 @@ def main() -> None:
     parser.add_argument("--provider", help="Override CODER_PROVIDER for this run.")
     parser.add_argument("--model", help="Override CODER_MODEL for this run.")
     parser.add_argument("--base-url", help="Override CODER_BASE_URL for this run.")
-    parser.add_argument("--workflow", help="Run a JSON workflow spec.")
+    parser.add_argument("--agent-workflow", help="Run an AgentWorkflowSpec JSON file. Defaults to the built-in Planner-led AgentGraph.")
     parser.add_argument("--approve", action="store_true", help="Approve human gates for this run.")
     args = parser.parse_args()
 
@@ -34,12 +35,12 @@ def main() -> None:
 
     repo_root = resolve_existing_dir(args.repo)
 
-    if not args.workflow:
-        parser.error("--workflow is required")
+    if args.agent_workflow:
+        workflow = AgentWorkflowSpec.model_validate(json.loads(Path(args.agent_workflow).read_text(encoding="utf-8")))
+    else:
+        workflow = default_planner_led_agent_workflow()
 
-    workflow = load_workflow(args.workflow)
-    result = run_workflow(
-        workflow=workflow,
+    result = AgentGraphRunner(workflow).run(
         request=args.request,
         repo_root=str(repo_root),
         initial_data={

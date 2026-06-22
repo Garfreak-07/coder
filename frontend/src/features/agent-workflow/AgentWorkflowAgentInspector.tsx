@@ -10,13 +10,7 @@ const agentModelTiers: AgentModelTier[] = ["best", "standard", "economy"];
 const agentWorkflowRoles: AgentWorkflowRole[] = [
   "planner",
   "executor",
-  "worker",
-  "tester",
-  "reviewer",
-  "writer",
-  "researcher",
-  "summarizer",
-  "custom"
+  "tester"
 ];
 
 interface AgentWorkflowAgentInspectorProps {

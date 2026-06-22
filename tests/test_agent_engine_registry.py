@@ -4,9 +4,7 @@ import unittest
 
 from coder_workbench.agent_engine import (
     CodeWorkerEngine,
-    FinalReviewEngine,
     PlannerEngine,
-    SynthesizerEngine,
     TesterEngine,
     default_agent_engine_registry,
 )
@@ -21,17 +19,13 @@ class AgentEngineRegistryTests(unittest.TestCase):
             registry.ids(),
             [
                 "code-worker-engine",
-                "final-review-engine",
                 "planner-engine",
-                "synthesizer-engine",
                 "tester-engine",
             ],
         )
         self.assertIsInstance(registry.get("code-worker-engine"), CodeWorkerEngine)
         self.assertIsInstance(registry.planner(), PlannerEngine)
         self.assertIsInstance(registry.tester(), TesterEngine)
-        self.assertIsInstance(registry.final_review(), FinalReviewEngine)
-        self.assertIsInstance(registry.synthesizer(), SynthesizerEngine)
 
     def test_unknown_engine_raises_key_error(self) -> None:
         with self.assertRaises(KeyError):

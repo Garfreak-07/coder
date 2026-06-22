@@ -6,7 +6,7 @@ from .config import RuntimeConfig
 
 
 def create_chat_model(config: RuntimeConfig) -> ChatOpenAI:
-    """Create the chat model used by planner/reviewer nodes.
+    """Create the chat model used by AgentGraph engines.
 
     Keep this intentionally small: many model vendors expose an
     OpenAI-compatible API, so one adapter covers a lot of ground without

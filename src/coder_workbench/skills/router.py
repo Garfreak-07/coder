@@ -117,11 +117,9 @@ def _role_fit(skill: SkillIndexEntry, role: str) -> float:
     role_text = role.lower()
     if role_text in skill.when_to_use or role_text == skill.category.lower():
         return 1.0
-    if role_text in {"researcher", "research_worker"} and skill.category.lower() == "research":
+    if role_text == "executor" and skill.category.lower() in {"coding", "execution", "research"}:
         return 1.0
-    if role_text in {"writer", "draft_worker"} and skill.category.lower() in {"writing", "drafting"}:
-        return 1.0
-    if role_text in {"tester", "reviewer"} and skill.category.lower() in {"evaluation", "testing"}:
+    if role_text == "tester" and skill.category.lower() in {"evaluation", "testing"}:
         return 1.0
     return 0.3
 

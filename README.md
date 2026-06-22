@@ -3,8 +3,8 @@
 Planner-led local agent workflow workbench for controlled coding tasks.
 
 Coder is built around an AgentGraph runtime where Planner owns global decisions,
-Code Worker performs bounded implementation work, Tester returns evidence, and
-the runtime passes compact structured artifacts instead of transcripts.
+Executor performs bounded implementation work, Tester returns evidence, and the
+runtime passes compact structured artifacts instead of transcripts.
 
 The current architecture target is v0.9.7 v1.0 convergence plan / contract freeze:
 
@@ -20,7 +20,7 @@ Ordinary Agent workflow UI
 -> AgentRun
 -> PlannerStrategy
 -> AgentEngineRegistry
--> PlannerEngine / CodeWorkerEngine / TesterEngine / FinalReviewEngine / SynthesizerEngine
+-> PlannerEngine / CodeWorkerEngine / TesterEngine
 -> PlannerInputBundle
 -> PlannerDecision
 -> RunController
@@ -41,10 +41,10 @@ src/coder_workbench/
   budget/            BudgetBroker reservations before model/tool/context work
   coding/            Repo intelligence, PatchService, CommandService, checks
   context/           ContextService, ContextPacketV2 and TokenLedger wiring
-  core/              AgentWorkflowSpec, artifacts, authority, legacy compile
+  core/              AgentWorkflowSpec, artifacts, authority, role cards
   extensions/        Extension manifests, plugin/skill routing and runtime
   observability/     TraceSpan and TraceContext models
-  runtime/           Legacy WorkflowSpec interpreter and run state
+  runtime/           Run event/result/state compatibility models
   runtime_kernel/    RunController, RunGuard, round state, plan fingerprinting
   server/            FastAPI app, storage, live run managers
   server/stores/     Partitioned run events, artifacts, blobs, ledgers, cache
@@ -77,11 +77,10 @@ AgentWorkflowSpec
 -> RunController
 ```
 
-`WorkflowSpec` and `WorkflowRunner` are legacy compatibility paths for old saved
-workflows only. Do not add new product behavior there. Legacy live-run detail
-endpoints return migration responses for AgentGraph runs, and the legacy
-compile-preview product endpoint is quarantined. Normal product execution uses
-AgentGraph.
+The old workflow runtime has been physically removed from product code. Product
+execution does not compile through old workflow schemas, does not run a fallback
+runner, and does not expose old workflow preview endpoints. Normal product
+execution uses AgentGraph directly.
 
 ## Core Artifacts
 
@@ -106,8 +105,8 @@ Coding diagnostics:
 - `debug_finding`
 - `coding_evaluation_report`
 
-Legacy artifacts `plan_artifact`, `patch_artifact`, and `review_artifact` are
-retained only for old `WorkflowSpec` flows.
+Old `plan_artifact`, `patch_artifact`, and `review_artifact` outputs are not
+emitted by product AgentGraph runs.
 
 ## Key Services
 
@@ -116,7 +115,7 @@ retained only for old `WorkflowSpec` flows.
 - `RunController` owns PlannerDecision loop control, max rounds, and repeated
   plan fingerprint guards. It also maps round budget preflight denials into
   blocked run decisions and writes run diagnostics.
-- `BudgetBroker` can dry-run an upcoming round budget before scheduling worker
+- `BudgetBroker` can dry-run an upcoming round budget before scheduling executor
   waves, then reserves model, tool, and context budgets before execution.
   Preflight, reservation, and usage diagnostics are written to run results.
 - `ActionGateway` is the runtime entry point for context construction, patch
@@ -125,22 +124,17 @@ retained only for old `WorkflowSpec` flows.
   types must either be implemented by `ActionGateway` or absent from
   `ACTION_TYPES`. Plugin and MCP actions merge caller risk with registry
   `ToolCapability`; approval-gated or unknown operations are blocked or failed
-  before execution unless explicitly approved. Worker-requested runtime actions
+  before execution unless explicitly approved. Executor-requested runtime actions
   are recorded as `runtime_action` effects and are never silently dropped.
 - `RuntimeProfileCompiler` converts ordinary Agent roles into internal engine,
   context, token, artifact, plugin, skill, memory, repair, and tool policies.
-  Research and draft Agent roles use the knowledge-worker `SynthesizerEngine`
-  fallback until dedicated ResearchWorkerEngine and DraftWorkerEngine packages
-  are installed.
 - `RuntimeProfileCache` avoids recompiling identical workflow/extension/profile
   combinations.
-- `AgentRun` dispatches PlannerOrder, Worker, Tester, FinalReview, Synthesizer,
-  and PlannerDecision work through `AgentEngineRegistry`.
+- `AgentRun` dispatches PlannerOrder, Executor, Tester, and PlannerDecision work
+  through `AgentEngineRegistry`.
 - `PlannerStrategy` provides backend-only local planning modes: `full` uses
-  `PlannerEngine`, `simple` and `single_worker` synthesize valid local
+  `PlannerEngine`, `simple` and `single_executor` synthesize valid local
   Planner artifacts, and `replay` consumes supplied Planner artifacts.
-- `AgentGraphExecutor` is a legacy compatibility adapter and is not constructed
-  by the product `AgentGraphRunner`.
 - `PatchService` owns proposed change validation, risk path blocking, patch
   preview, apply, and rollback behind `ActionGateway`.
 - `CommandService` owns scoped cwd validation, argv-based checks, shell command
@@ -231,17 +225,10 @@ Common development endpoints:
 - `GET /api/v2/extensions/skills`
 - `GET /api/v2/extensions/search`
 
-Legacy `/api/v2/skills/*`, `/api/v2/live-runs`, and old `WorkflowSpec` paths
-remain for compatibility and are marked deprecated where they overlap the
-AgentGraph product path. `/api/v2/live-runs/{run_id}` returns `410 Gone` for
-AgentGraph run ids with `/api/v2/live-agent-runs/{run_id}` migration URLs.
-`/api/v2/agent-workflows/compile` returns `410 Gone`; product clients should use
-`/api/v2/agent-workflows/validate` and `/runtime-profiles` for AgentWorkflow
-inspection. New Agent product behavior should use the AgentGraph and Extensions
-endpoints.
-
-`compile_agent_workflow_legacy_preview()` and `compile_agent_workflow()` remain
-legacy compatibility helpers outside the product server/API path.
+Old workflow create/compile/live-run endpoints are removed from the product API.
+Product clients use `POST /api/v2/live-agent-runs`,
+`POST /api/v2/agent-workflows/validate`, and
+`POST /api/v2/agent-workflows/runtime-profiles`.
 
 ## Testing
 
@@ -269,8 +256,8 @@ Focused architecture boundary tests:
 
 - Keep the ordinary product path Agent-first.
 - User interaction must remain `User <-> Planner` only.
-- Worker, Tester, and Final Tester must not ask the user directly.
-- Product live Agent workflows must not compile into legacy `WorkflowSpec`.
+- Executor and Tester must not ask the user directly.
+- Product live Agent workflows must run through AgentGraph only.
 - New context, patch, command, repair, and validation behavior should enter
   through `ActionGateway`; services such as `ContextService`, `PatchService`,
   and `CommandService` stay behind that boundary.
@@ -281,19 +268,17 @@ Focused architecture boundary tests:
   ordinary UI must not expose planner strategy knobs.
 - New model-output validation and repair behavior should go through
   `ActionGateway` `validate_artifact` and `repair_artifact` actions.
-- New Planner, Tester, FinalReview, Synthesizer, Worker, and PlannerDecision
-  execution behavior should enter through `AgentRun` and
-  `AgentEngineRegistry`; keep `AgentGraphExecutor` as a compatibility adapter
-  only.
+- New Planner, Executor, Tester, and PlannerDecision execution behavior should
+  enter through `AgentRun` and `AgentEngineRegistry`.
 - Coding auto-loop behavior should preserve the path:
   `proposed_changes -> patch_preview -> sandbox_apply/check_result -> DebugFinding -> PlannerDecision`,
   with structured artifact refs carried in `PlannerInputBundle.effects`.
-- Worker artifacts may request low-level runtime actions through
+- Executor artifacts may request low-level runtime actions through
   `requested_actions`; plugin, MCP, and repo-index outputs are recorded as
   `runtime_action` effects with `tool_result_ref` / `output_ref`. Blocked
   plugin/MCP actions preserve `approval_key`, policy, original `ActionSpec`, and
   `work_item_id`; approved replay goes through `ActionGateway` without rerunning
-  the worker model.
+  the executor model.
 - Extensions are globally installed and routed per work item.
 - Ordinary UI should not expose runtime JSON, harness graphs, context policies,
   token budgets, or manual capability checklists.

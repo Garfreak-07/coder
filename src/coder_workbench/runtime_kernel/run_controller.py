@@ -189,7 +189,6 @@ def fingerprint_planner_order(order: PlannerOrder) -> str:
     payload = {
         "round_goal": order.round_goal,
         "work_items": work_items,
-        "final_tester_agent_id": order.plan_graph.final_tester_agent_id,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

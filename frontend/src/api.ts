@@ -1,5 +1,4 @@
 import type {
-  AgentSpec,
   AgentWorkflowValidationResult,
   AgentWorkflowSpec,
   ArtifactDetail,
@@ -257,20 +256,6 @@ export async function saveAgentWorkflow(agentWorkflow: AgentWorkflowSpec): Promi
     body: JSON.stringify(agentWorkflow)
   });
   return payload.agent_workflow;
-}
-
-export async function getAgent(agentId: string): Promise<AgentSpec> {
-  const payload = await requestJson<{ agent: AgentSpec }>(`/api/v2/library/agents/${agentId}`);
-  return payload.agent;
-}
-
-export async function saveAgent(agent: AgentSpec): Promise<AgentSpec> {
-  const payload = await requestJson<{ agent: AgentSpec }>("/api/v2/library/agents", {
-    method: "POST",
-    headers: jsonHeaders,
-    body: JSON.stringify(agent)
-  });
-  return payload.agent;
 }
 
 export async function startLiveAgentRun(input: {
