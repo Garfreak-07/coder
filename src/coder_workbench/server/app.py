@@ -14,12 +14,12 @@ from coder_workbench.core import (
     AgentWorkflowSpec,
     AgentWorkflowValidationError,
     capability_catalog,
-    compile_agent_workflow_legacy_preview,
     compile_runtime_profiles,
     default_planner_led_agent_workflow,
     role_card_catalog,
     validate_agent_workflow_payload,
 )
+from coder_workbench.core.legacy_compile import compile_agent_workflow_legacy_preview
 from coder_workbench.extensions import builtin_plugin_manifests, extension_search
 from coder_workbench.server.agent_manager import AgentGraphRunManager
 from coder_workbench.server.library import LibraryStore

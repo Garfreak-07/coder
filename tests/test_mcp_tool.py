@@ -3,7 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from coder_workbench.core import WorkflowSpec
+from coder_workbench.core.schema import WorkflowSpec
 from coder_workbench.runtime import run_workflow
 
 

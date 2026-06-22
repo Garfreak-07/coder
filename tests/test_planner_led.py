@@ -8,11 +8,10 @@ from unittest.mock import patch
 from coder_workbench.core import (
     AgentWorkflowSpec,
     capability_registry,
-    compile_agent_workflow,
-    compile_agent_workflow_legacy_preview,
     default_planner_led_agent_workflow,
     validate_agent_workflow_payload,
 )
+from coder_workbench.core.legacy_compile import compile_agent_workflow, compile_agent_workflow_legacy_preview
 from coder_workbench.core.artifacts import (
     ArtifactValidationError,
     artifact_summary,

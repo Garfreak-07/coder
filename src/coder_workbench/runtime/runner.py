@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from coder_workbench.core import WorkflowSpec
+from coder_workbench.core.schema import WorkflowSpec
 from coder_workbench.executors import AgentExecutor, DefaultAgentExecutor
 from coder_workbench.runtime.conditions import evaluate_condition
 from coder_workbench.runtime.node_executor import RuntimeNodeExecutor

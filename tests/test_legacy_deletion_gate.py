@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import coder_workbench.server.app as server_app
+import coder_workbench.core as core
 from coder_workbench.server.app import create_app
 
 
@@ -112,6 +113,21 @@ class LegacyDeletionGateTests(unittest.TestCase):
         ]:
             with self.subTest(token=token):
                 self.assertNotIn(token, app_source)
+
+    def test_core_public_api_does_not_export_legacy_runtime_symbols(self) -> None:
+        for symbol in [
+            "compile_agent_workflow",
+            "compile_agent_workflow_legacy_preview",
+            "WorkflowSpec",
+            "load_workflow",
+            "ContextPolicy",
+            "EdgeSpec",
+            "NodeSpec",
+            "PermissionPolicy",
+        ]:
+            with self.subTest(symbol=symbol):
+                self.assertNotIn(symbol, core.__all__)
+                self.assertFalse(hasattr(core, symbol))
 
 
 if __name__ == "__main__":

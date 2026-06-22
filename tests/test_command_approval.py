@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 
-from coder_workbench.core import WorkflowSpec
+from coder_workbench.core.schema import WorkflowSpec
 from coder_workbench.runtime import run_workflow
 from coder_workbench.server.manager import RunManager
 from coder_workbench.server.storage import RunStore

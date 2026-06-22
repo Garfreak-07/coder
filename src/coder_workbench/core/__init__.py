@@ -32,16 +32,7 @@ from .archetypes import (
     role_card_for_id,
     role_card_registry,
 )
-from .legacy_compile import compile_agent_workflow, compile_agent_workflow_legacy_preview
-from .schema import (
-    AgentSpec,
-    ContextPolicy,
-    EdgeSpec,
-    NodeSpec,
-    PermissionPolicy,
-    WorkflowSpec,
-    load_workflow,
-)
+from .schema import AgentSpec
 
 __all__ = [
     "AgentWorkflowAgent",
@@ -57,11 +48,6 @@ __all__ = [
     "CapabilitySpec",
     "RoleCardSpec",
     "AgentSpec",
-    "ContextPolicy",
-    "EdgeSpec",
-    "NodeSpec",
-    "PermissionPolicy",
-    "WorkflowSpec",
     "AUTHORITY_PROFILES",
     "AgentAuthorityProfile",
     "assert_valid_agent_workflow",
@@ -69,13 +55,10 @@ __all__ = [
     "authority_profile_for_agent",
     "capability_catalog",
     "capability_registry",
-    "compile_agent_workflow",
-    "compile_agent_workflow_legacy_preview",
     "compile_agent_runtime_profile",
     "compile_runtime_profiles",
     "default_capabilities_for_role",
     "default_planner_led_agent_workflow",
-    "load_workflow",
     "role_card_catalog",
     "role_card_for_id",
     "role_card_registry",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from coder_workbench.core import AgentSpec, NodeSpec, WorkflowSpec
+from coder_workbench.core.schema import AgentSpec, NodeSpec, WorkflowSpec
 from coder_workbench.executors import AgentExecutor
 from coder_workbench.runtime.artifact_recorder import record_agent_artifact
 from coder_workbench.runtime.conditions import evaluate_condition

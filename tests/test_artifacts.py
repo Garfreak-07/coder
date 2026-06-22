@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from coder_workbench.core import WorkflowSpec
+from coder_workbench.core.schema import WorkflowSpec
 from coder_workbench.core.artifacts import artifact_summary, validate_artifact
 from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.runtime import RunEvent, RunResult

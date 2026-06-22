@@ -7,7 +7,7 @@ from threading import Lock, Thread
 from typing import Any, Literal
 from uuid import uuid4
 
-from coder_workbench.core import WorkflowSpec
+from coder_workbench.core.schema import WorkflowSpec
 from coder_workbench.runtime import RunEvent, RunResult, run_workflow
 from coder_workbench.server.storage import RunStore
 

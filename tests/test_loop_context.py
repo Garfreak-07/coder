@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from typing import Any
 
-from coder_workbench.core import WorkflowSpec
+from coder_workbench.core.schema import WorkflowSpec
 from coder_workbench.runtime import run_workflow
 from coder_workbench.runtime.runner import WorkflowRunner
 

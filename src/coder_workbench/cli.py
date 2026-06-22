@@ -7,7 +7,7 @@ from pprint import pprint
 
 from dotenv import load_dotenv
 
-from coder_workbench.core import load_workflow
+from coder_workbench.core.schema import load_workflow
 from coder_workbench.runtime import run_workflow
 from coder_workbench.tools.filesystem import resolve_existing_dir
 

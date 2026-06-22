@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from coder_workbench.core import WorkflowSpec
+from coder_workbench.core.schema import WorkflowSpec
 from coder_workbench.core.preflight import validate_workflow_preflight
 from coder_workbench.server.settings import ProviderSettingsStore, provider_status, workflow_provider_status
 
