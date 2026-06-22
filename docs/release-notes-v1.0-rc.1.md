@@ -44,6 +44,8 @@ v1.0-rc.1 -> 938aac3 test: lock legacy isolation gate
 - Failed check/debug evidence drives Planner replan before finish.
 - Product live AgentGraph does not compile or run legacy `WorkflowSpec` /
   `WorkflowRunner` paths.
+- Product server and UI no longer expose legacy runtime create/edit/execute
+  paths; stored AgentGraph run read APIs remain available for evidence review.
 - Legacy endpoints remain explicit compatibility paths and are marked
   deprecated.
 
@@ -68,7 +70,8 @@ The following are intentionally excluded from v1.0:
 
 ## Validation
 
-Release validation run from `F:\bbb\coder` after publishing `v1.0-rc.1`:
+Release validation run from `F:\bbb\coder` after publishing `v1.0-rc.1`
+and completing the first legacy deletion pass:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests
@@ -80,6 +83,12 @@ npm.cmd run build
 
 Results:
 
-- `unittest discover -s tests`: 262 tests OK.
+- `unittest discover -s tests`: 268 tests OK.
 - `compileall src tests`: OK.
 - `npm.cmd run build`: OK.
+- Local API smoke: `POST /api/v2/live-agent-runs` completed the default
+  Planner-led AgentGraph path, returned a `stored_run_id`, and the stored run
+  was readable through `/api/v2/runs/{run_id}`, `/events?cursor=0`, and
+  `/artifacts/{artifact_id}`.
+- Legacy live-run detail for the AgentGraph run returned `410` with migration
+  links to `/api/v2/live-agent-runs/{run_id}`.
