@@ -14,7 +14,7 @@ Current services:
 - `ArtifactRepairService`: one-shot JSON artifact repair implementation kept
   behind `ActionGateway`.
 
-In v0.9.5 these services sit behind `ActionGateway`:
+In v0.9.6 these services sit behind `ActionGateway`:
 
 ```text
 AgentGraphRunner / AgentEngine
@@ -22,6 +22,7 @@ AgentGraphRunner / AgentEngine
 -> ActionGateway
 -> BudgetBroker reservation
 -> ContextService / PatchService / CommandService / ArtifactRepairService
+-> ExtensionRuntime / ToolRegistry capability policy
 ```
 
 Agent Engines receive prepared context and return artifacts. Patch/check effects
@@ -47,6 +48,9 @@ execution_result.proposed_changes
 -> sandbox_apply artifact/ref
 -> ActionGateway run_command_sandbox
 -> check_result artifact/ref
+execution_result.requested_actions
+-> ActionGateway call_plugin/call_mcp/repo_index
+-> runtime_action tool_result_ref/output_ref
 -> DebugFinding on failed check
 -> PlannerInputBundle.effects
 -> PlannerDecision continue/replan or ask_human
@@ -57,7 +61,7 @@ time and converted into Planner interrupts. Sandbox actions use `sandbox_root`
 when provided; otherwise they are marked `sandbox_unavailable` and fall back to
 the repo-root compatibility path with normal approval behavior.
 
-## v0.9.5 Boundary
+## v0.9.6 Boundary
 
 - Ordinary users see coding capabilities through Agents and workflow edges, not
   kernel services.
@@ -65,7 +69,10 @@ the repo-root compatibility path with normal approval behavior.
 - `BudgetBroker` reserves context, command, patch, and model resources before
   execution.
 - `ActionGateway` fronts all kernel service access from product runtime paths,
-  including model artifact validation and repair.
+  including model artifact validation, repair, plugin, MCP, and repo-index
+  runtime actions.
+- Plugin and MCP actions use registry `ToolCapability` to derive risk,
+  permissions, and approval requirements before execution.
 - `AgentRun` and `AgentEngineRegistry` own Planner, Worker, Tester,
   FinalReview, Synthesizer, and PlannerDecision execution.
 - Partitioned stores separate metadata, results, patch previews, command output

@@ -15,7 +15,7 @@ removed only after product references are gone and tests protect the boundary.
 7. Move or delete legacy modules once no product tests or endpoints depend on
    them.
 
-## Current v0.9.5 Boundary
+## Current v0.9.6 Boundary
 
 `compile_agent_workflow_legacy_preview()` is the explicit compiler for advanced
 preview and migration/debug only. `compile_agent_workflow()` remains a
@@ -30,7 +30,7 @@ AgentWorkflowSpec
 -> AgentRun
 -> AgentEngineRegistry
 -> ActionGateway
--> plugin / MCP / repo intelligence action boundary
+-> ToolCapability-enforced plugin / MCP / repo intelligence action boundary
 -> PlannerDecision
 ```
 
@@ -47,7 +47,9 @@ deprecated=true
 
 `/api/v2/live-runs` remains as a compatibility endpoint and is marked
 `deprecated=true`. Product AgentGraph runs use `/api/v2/live-agent-runs`, and
-creation responses return `live-agent-runs` event/result URLs.
+creation responses return `live-agent-runs` event/result URLs. Legacy
+`/api/v2/live-runs/{run_id}` and `/events` return `410 Gone` for AgentGraph run
+ids with migration URLs.
 
 ## Legacy Artifacts
 
@@ -66,7 +68,7 @@ The next deletion pass should migrate tests that still intentionally exercise
 legacy artifacts, then remove legacy artifact production from non-preview
 paths.
 
-## v0.9.5 Boundary Rules
+## v0.9.6 Boundary Rules
 
 - Ordinary user workflows remain AgentGraph-first.
 - `RunController` replaces inline PlannerDecision loop handling.
@@ -76,10 +78,13 @@ paths.
   services.
 - Declared `ActionSpec` action types must be implemented by `ActionGateway`;
   direct `load_skill` is not a product runtime action.
+- Plugin and MCP execution must read registry `ToolCapability` before runtime
+  dispatch; unknown or approval-gated operations must not execute silently.
 - `AgentRun` and `AgentEngineRegistry` own product Agent execution;
   `AgentGraphExecutor` is a compatibility adapter only.
-- Coding auto-loop effects keep patch preview, sandbox apply, check result, and
-  DebugFinding artifact refs in `PlannerInputBundle.effects`.
+- Coding auto-loop effects keep patch preview, sandbox apply, check result,
+  requested runtime action, and DebugFinding artifact refs in
+  `PlannerInputBundle.effects`.
 - Partitioned stores are the explicit write path for metadata, results, events,
   artifacts, blobs, ledgers, contexts, tool results, live runs, extensions, and
   cache data.

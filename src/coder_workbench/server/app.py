@@ -659,20 +659,14 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             live = agent_manager.get(run_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="live run not found") from exc
-        return {
-            "id": live.id,
-            "workflow_id": live.agent_workflow.id,
-            "runtime_type": "agent_graph",
-            "deprecated": True,
-            "repo_root": live.repo_root,
-            "request": live.request,
-            "status": live.status,
-            "events": [event.model_dump(mode="json") for event in live.events],
-            "result": live.result.model_dump(mode="json") if live.result else None,
-            "stored_run_id": live.stored_run_id,
-            "error": live.error,
-            "approval_required": False,
-        }
+        raise HTTPException(
+            status_code=410,
+            detail={
+                "message": f"AgentGraph live runs moved to /api/v2/live-agent-runs/{live.id}",
+                "result_url": f"/api/v2/live-agent-runs/{live.id}",
+                "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
+            },
+        )
 
     @app.get("/api/v2/runs/{run_id}/events")
     def stream_events(
@@ -773,10 +767,17 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             stream = manager.stream
         except KeyError:
             try:
-                agent_manager.get(run_id)
+                live = agent_manager.get(run_id)
             except KeyError as exc:
                 raise HTTPException(status_code=404, detail="live run not found") from exc
-            stream = agent_manager.stream
+            raise HTTPException(
+                status_code=410,
+                detail={
+                    "message": f"AgentGraph live run events moved to /api/v2/live-agent-runs/{live.id}/events",
+                    "result_url": f"/api/v2/live-agent-runs/{live.id}",
+                    "events_url": f"/api/v2/live-agent-runs/{live.id}/events",
+                },
+            )
 
         def event_stream():
             for event in stream(run_id):

@@ -158,6 +158,7 @@ class ExecutionResultArtifact(PlannerArtifactBase, OptionalMergeIndexedArtifact)
     status: ExecutionStatus
     summary: str
     proposed_changes: list[dict[str, Any]] = Field(default_factory=list)
+    requested_actions: list[dict[str, Any]] = Field(default_factory=list)
     changed_files: list[str] = Field(default_factory=list)
     created_files: list[str] = Field(default_factory=list)
     deleted_files: list[str] = Field(default_factory=list)
@@ -332,6 +333,7 @@ def planner_artifact_summary(artifact: dict) -> dict:
             "status": artifact.get("status"),
             "summary": artifact.get("summary"),
             "proposed_changes": len(artifact.get("proposed_changes", [])),
+            "requested_actions": len(artifact.get("requested_actions", [])),
             "changed_files": artifact.get("changed_files", []),
             "unexpected_issues": len(artifact.get("unexpected_issues", [])),
             "blocker_type": artifact.get("blocker_type"),

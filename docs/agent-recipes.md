@@ -39,13 +39,14 @@ Planner remains the only Agent that can ask the user or decide global
 `continue`, `ask_human`, `finish`, and `stop` outcomes. `RunController` enforces
 that loop boundary after each `PlannerDecision`.
 
-## v0.9.5 Boundary
+## v0.9.6 Boundary
 
 - Ordinary users define Agent intent; runtime profiles remain internal.
 - `RunController` owns round continuation after Planner decisions.
 - `BudgetBroker` controls resource reservations implied by compiled profiles.
 - `ActionGateway` is where profile tool/context policies become runtime action
-  requests.
+  requests. Plugin and MCP actions still resolve through registry
+  `ToolCapability` before execution.
 - `AgentRun` and `AgentEngineRegistry` own Planner, Worker, Tester,
   FinalReview, Synthesizer, and PlannerDecision execution behind compiled
   profile engine ids.

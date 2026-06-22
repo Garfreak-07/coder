@@ -6,6 +6,9 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+from coder_workbench.actions import ActionResult
+from coder_workbench.agent_graph.cache import GraphRunCache
+from coder_workbench.agent_graph.effects import apply_hidden_effects
 from coder_workbench.agent_graph.runner import AgentGraphRunner
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, PlannerInputBundle, PlannerOrder, TestRecord, WorkItem
 from coder_workbench.core import default_planner_led_agent_workflow
@@ -131,6 +134,76 @@ class AgentGraphEffectsTests(unittest.TestCase):
         self.assertEqual(result.data["planner_input_bundle"]["plan_status"], "interrupted")
         self.assertEqual(result.data["planner_input_bundle"]["interrupts"][0]["blocker_type"], "risk_boundary")
 
+    def test_requested_plugin_action_becomes_hidden_effect(self) -> None:
+        cache = GraphRunCache(round=1)
+        cache.record_execution(
+            ExecutionRecord(
+                work_item_id="executor-work",
+                merge_index=1,
+                agent_id="executor",
+                status="completed",
+                execution_summary="Needs project index.",
+                execution_result_ref="execution_result_executor-work",
+                artifact_payload={
+                    "artifact_type": "execution_result",
+                    "status": "completed",
+                    "summary": "Needs project index.",
+                    "requested_actions": [
+                        {"action_type": "call_plugin", "operation_id": "project_index", "args": {"max_files": 10}}
+                    ],
+                },
+            )
+        )
+
+        class FakeGateway:
+            def run(self, spec, *, run_context):
+                return ActionResult(
+                    status="ok",
+                    summary=f"{spec.input['operation_id']} ok",
+                    payload={"operation": {"status": "completed", "result": {"ok": True}}},
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            records = apply_hidden_effects(
+                agent_workflow=default_planner_led_agent_workflow(),
+                cache=cache,
+                repo_root=tmp,
+                scopes=[],
+                data={"run_id": "run", "preapprove_all": True},
+                action_gateway=FakeGateway(),
+            )
+
+        effect = next(record for record in records if record["effect_type"] == "runtime_action")
+        self.assertEqual(effect["status"], "ok")
+        self.assertEqual(effect["operation_id"], "project_index")
+        self.assertEqual(effect["output_ref"], "tool_result_round_1_1")
+        self.assertIn("tool_result_round_1_1", cache.hidden_effect_outputs)
+
+    def test_requested_plugin_action_enters_planner_input_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "README.md").write_text("sample\n", encoding="utf-8")
+            result = AgentGraphRunner(
+                default_planner_led_agent_workflow(),
+                executor=EffectSourceExecutor(
+                    requested_actions=[
+                        {
+                            "action_type": "call_plugin",
+                            "operation_id": "project_index",
+                            "args": {"max_files": 10},
+                        }
+                    ],
+                ),
+            ).run("Index the project.", tmp)
+
+        effect = result.data["planner_input_bundle"]["effects"][0]
+        output_ref = effect["output_ref"]
+
+        self.assertEqual(effect["effect_type"], "runtime_action")
+        self.assertEqual(effect["operation_id"], "project_index")
+        self.assertEqual(effect["tool_result_ref"], output_ref)
+        self.assertIn(output_ref, result.data["graph_run_cache"]["hidden_effect_outputs"])
+        self.assertEqual(result.artifacts[output_ref]["artifact_type"], "hidden_effect")
+
 
 class EffectSourceExecutor:
     def __init__(
@@ -138,9 +211,11 @@ class EffectSourceExecutor:
         *,
         proposed_changes: list[dict[str, Any]] | None = None,
         check_commands: list[str] | None = None,
+        requested_actions: list[dict[str, Any]] | None = None,
     ) -> None:
         self.proposed_changes = proposed_changes or []
         self.check_commands = check_commands or []
+        self.requested_actions = requested_actions or []
 
     def create_planner_order(self, request: str, *, emit=None) -> PlannerOrder:
         return PlannerOrder.model_validate(
@@ -179,6 +254,7 @@ class EffectSourceExecutor:
             "status": "completed",
             "summary": "Execution produced validated effect inputs.",
             "proposed_changes": self.proposed_changes,
+            "requested_actions": self.requested_actions,
         }
         return ExecutionRecord(
             work_item_id=item.work_item_id,

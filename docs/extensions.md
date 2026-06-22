@@ -21,9 +21,12 @@ External-effect operations require preview and approval metadata. Runtime
 execution should enter through `ActionGateway`, which reserves with
 `BudgetBroker` before dispatching to services or extension runtimes.
 
-`call_plugin` and `call_mcp` enter through `ActionGateway`. Permissioned or
-medium/high-risk extension operations are blocked before execution unless an
-approval is present.
+`call_plugin` and `call_mcp` enter through `ActionGateway`. Their effective
+policy is derived from registry `ToolCapability` plus caller-provided
+`ActionSpec` risk. Permissioned, medium/high-risk, approval-gated, or unknown
+extension operations are blocked before execution unless an approval is
+present. `call_mcp` uses the registry `mcp_call` capability even when the
+specific MCP tool name is supplied by the request.
 
 ## Skills
 
@@ -52,7 +55,7 @@ New product endpoints:
 Existing `/api/v2/skills/*` endpoints remain temporary compatibility aliases.
 Legacy `WorkflowSpec` paths must not become new extension integration points.
 
-## v0.9.5 Boundary
+## v0.9.6 Boundary
 
 - Ordinary users still manage Agents, workflows, plugins, and skills.
 - `RunController` owns Planner loop continuation; extensions do not decide
@@ -60,6 +63,11 @@ Legacy `WorkflowSpec` paths must not become new extension integration points.
 - `BudgetBroker` reserves extension, context, tool, and model-call budgets
   before execution.
 - `ActionGateway` is the entry point for extension-backed runtime actions.
+- `ToolCapability` is the source of truth for plugin/MCP risk, permissions, and
+  approval requirements.
+- Worker artifacts can request plugin, MCP, or repo-index operations through
+  `requested_actions`; their outputs are recorded as `runtime_action` hidden
+  effects with `tool_result_ref` / `output_ref`.
 - `AgentRun` and `AgentEngineRegistry` are the execution entry point for
   AgentEngine packages.
 - Extension metadata and cache files live behind partitioned extension/cache

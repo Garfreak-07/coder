@@ -71,6 +71,13 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("CommandService", effects_source)
         self.assertIn("ActionGateway", effects_source)
 
+    def test_runner_delegates_wave_concurrency_to_wave_executor(self) -> None:
+        runner_source = inspect.getsource(__import__("coder_workbench.agent_graph.runner", fromlist=["_"]))
+
+        self.assertIn("WaveExecutor", runner_source)
+        self.assertNotIn("ThreadPoolExecutor", runner_source)
+        self.assertNotIn("as_completed", runner_source)
+
     def test_product_action_types_are_gateway_closed(self) -> None:
         gateway_source = inspect.getsource(ActionGateway.run)
 
@@ -416,6 +423,30 @@ class ArchitectureBoundaryTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["deprecated"])
+
+    def test_legacy_live_run_get_does_not_return_agent_graph_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
+            response = client.post(
+                "/api/v2/live-agent-runs",
+                json={
+                    "repo": tmp,
+                    "request": "Run through the product AgentGraph endpoint.",
+                    "agent_workflow": default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True),
+                    "approved": True,
+                },
+            )
+
+            self.assertEqual(response.status_code, 200)
+            run_id = response.json()["run_id"]
+            legacy = client.get(f"/api/v2/live-runs/{run_id}")
+            legacy_events = client.get(f"/api/v2/live-runs/{run_id}/events")
+            _wait_for_live_run(client, run_id)
+
+        self.assertEqual(legacy.status_code, 410)
+        self.assertIn("/api/v2/live-agent-runs/", legacy.json()["detail"]["result_url"])
+        self.assertEqual(legacy_events.status_code, 410)
+        self.assertIn("/api/v2/live-agent-runs/", legacy_events.json()["detail"]["events_url"])
 
     def test_agent_graph_product_artifacts_do_not_emit_legacy_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

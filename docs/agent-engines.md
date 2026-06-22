@@ -52,13 +52,15 @@ Model calls inside the default AgentGraph engines reserve model budget before
 invocation when a real model is configured. Mock-mode execution does not consume
 model-call budget.
 
-## v0.9.5 Boundary
+## v0.9.6 Boundary
 
 - Ordinary users choose Agents; engine graphs remain hidden runtime internals.
 - `RunController` controls whether engine output can lead to another round.
 - `BudgetBroker` gates model calls and low-level engine actions.
 - `ActionGateway` is the approved bridge from engine/runtime intent to context,
-  patch, sandbox apply/check, command, artifact validation, and repair services.
+  patch, sandbox apply/check, command, plugin, MCP, artifact validation, and
+  repair services. Registry `ToolCapability` is enforced before plugin/MCP
+  dispatch.
 - `AgentRun` is the only product facade for Planner, Worker, Tester,
   FinalReview, Synthesizer, and PlannerDecision execution.
 - Partitioned stores write engine metadata, results, events, artifacts, blobs,

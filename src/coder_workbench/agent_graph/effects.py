@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from coder_workbench.actions import ActionGateway, ActionSpec, RunContext
+from coder_workbench.actions import ActionGateway, ActionSpec, RunContext, action_completed_payload
 from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.cache import GraphRunCache
 from coder_workbench.core import AgentWorkflowSpec
@@ -21,6 +21,63 @@ def apply_hidden_effects(
     records: list[dict[str, Any]] = []
     records.extend(_handle_patch_previews(agent_workflow, cache, repo_root, scopes, data, gateway))
     records.extend(_handle_optional_check_commands(agent_workflow, cache, repo_root, scopes, data, gateway))
+    records.extend(_handle_requested_runtime_actions(agent_workflow, cache, repo_root, scopes, data, gateway))
+    return records
+
+
+def _handle_requested_runtime_actions(
+    agent_workflow: AgentWorkflowSpec,
+    cache: GraphRunCache,
+    repo_root: str,
+    scopes: list[str],
+    data: dict[str, Any],
+    action_gateway: ActionGateway,
+) -> list[dict[str, Any]]:
+    requests = _requested_runtime_actions_from_artifacts(cache)
+    if not requests:
+        return []
+
+    records: list[dict[str, Any]] = []
+    for index, request in enumerate(requests, start=1):
+        action_type = str(request.get("action_type") or "call_plugin")
+        if action_type not in {"call_plugin", "call_mcp", "repo_index"}:
+            continue
+
+        action_spec = ActionSpec(
+            action_id=f"{action_type}:{cache.round}:{index}",
+            action_type=action_type,
+            input=dict(request),
+            risk_level=str(request.get("risk_level") or "low"),  # type: ignore[arg-type]
+            requires_permission=bool(request.get("requires_permission")),
+        )
+        action_run_context = RunContext(
+            run_id=str(data.get("run_id") or "agent-graph"),
+            repo_root=repo_root,
+            scopes=scopes,
+            data=data,
+        )
+        action = action_gateway.run(
+            action_spec,
+            run_context=action_run_context,
+        )
+
+        output_ref = graph_artifact_id("tool_result", "round", cache.round, index)
+        record = {
+            "effect_type": "runtime_action",
+            "action_type": action_type,
+            "status": action.status,
+            "work_item_id": request.get("work_item_id"),
+            "artifact_ref": output_ref,
+            "output_ref": output_ref,
+            "tool_result_ref": output_ref,
+            "requires_planner_replan": action.status != "ok",
+            "reason": action.summary,
+            "error_code": action.error_code,
+            "operation_id": request.get("operation_id") or request.get("mcp_operation_id"),
+            "action": action_completed_payload(action_spec, action),
+        }
+        cache.record_hidden_effect(record, output=action.payload)
+        records.append(record)
     return records
 
 
@@ -40,23 +97,25 @@ def _handle_optional_check_commands(
 
     records: list[dict[str, Any]] = []
     for index, command_request in enumerate(commands, start=1):
+        action_spec = ActionSpec(
+            action_id=f"run_command:{cache.round}:{index}",
+            action_type="run_command_sandbox",
+            input={
+                "command": str(command_request["command"]),
+                "cwd": str(command_request.get("cwd") or "."),
+                "timeout_seconds": int(command_request.get("timeout_seconds") or 120),
+            },
+        )
+        action_run_context = RunContext(
+            run_id=str(data.get("run_id") or "agent-graph"),
+            repo_root=repo_root,
+            sandbox_root=_sandbox_root_from_data(data),
+            scopes=scopes,
+            data=data,
+        )
         action = action_gateway.run(
-            ActionSpec(
-                action_id=f"run_command:{cache.round}:{index}",
-                action_type="run_command_sandbox",
-                input={
-                    "command": str(command_request["command"]),
-                    "cwd": str(command_request.get("cwd") or "."),
-                    "timeout_seconds": int(command_request.get("timeout_seconds") or 120),
-                },
-            ),
-            run_context=RunContext(
-                run_id=str(data.get("run_id") or "agent-graph"),
-                repo_root=repo_root,
-                sandbox_root=_sandbox_root_from_data(data),
-                scopes=scopes,
-                data=data,
-            ),
+            action_spec,
+            run_context=action_run_context,
         )
         result = dict(action.payload.get("result") or {})
         check_artifact_ref = graph_artifact_id("check_result", "round", cache.round, index)
@@ -73,6 +132,7 @@ def _handle_optional_check_commands(
                 "command": command_request["command"],
                 "approval_key": result.get("approval_key"),
                 "reason": result.get("message") or result.get("output"),
+                "action": action_completed_payload(action_spec, action),
             }
             cache.record_hidden_effect(record, output=result)
             records.append(record)
@@ -90,6 +150,7 @@ def _handle_optional_check_commands(
             "reason": action.summary,
             "passed": bool(result.get("passed")),
             "returncode": result.get("returncode"),
+            "action": action_completed_payload(action_spec, action),
         }
         cache.record_hidden_effect(record, output=result)
         records.append(record)
@@ -110,18 +171,20 @@ def _handle_patch_previews(
     if not changes:
         return []
 
+    action_spec = ActionSpec(
+        action_id=f"propose_patch:{cache.round}",
+        action_type="propose_patch",
+        input={"changes": changes},
+    )
+    action_run_context = RunContext(
+        run_id=str(data.get("run_id") or "agent-graph"),
+        repo_root=repo_root,
+        scopes=scopes,
+        data=data,
+    )
     action = action_gateway.run(
-        ActionSpec(
-            action_id=f"propose_patch:{cache.round}",
-            action_type="propose_patch",
-            input={"changes": changes},
-        ),
-        run_context=RunContext(
-            run_id=str(data.get("run_id") or "agent-graph"),
-            repo_root=repo_root,
-            scopes=scopes,
-            data=data,
-        ),
+        action_spec,
+        run_context=action_run_context,
     )
     preview = dict(action.payload.get("preview") or {})
     if action.status == "failed":
@@ -136,6 +199,7 @@ def _handle_patch_previews(
             "requires_planner_replan": True,
             "reason": action.summary,
             "error_code": action.error_code,
+            "action": action_completed_payload(action_spec, action),
         }
         cache.record_hidden_effect(record, output={"status": "failed", "message": action.summary, "error_code": action.error_code})
         return [record]
@@ -154,6 +218,7 @@ def _handle_patch_previews(
             "requires_planner_replan": True,
             "reason": str(preview.get("message") or "Proposed change targets a risk path."),
             "errors": list(preview.get("risk_errors") or []),
+            "action": action_completed_payload(action_spec, action),
         }
         cache.record_hidden_effect(record, output=preview)
         cache.record_interrupt(
@@ -185,24 +250,27 @@ def _handle_patch_previews(
         "requires_approval": True,
         "requires_planner_replan": False,
         "reason": action.summary,
+        "action": action_completed_payload(action_spec, action),
     }
     cache.record_hidden_effect(record, output=preview)
     records = [record]
     sandbox_root = _sandbox_root_from_data(data)
     if sandbox_root is not None:
+        apply_spec = ActionSpec(
+            action_id=f"apply_patch_sandbox:{cache.round}",
+            action_type="apply_patch_sandbox",
+            input={"patch": preview},
+        )
+        apply_run_context = RunContext(
+            run_id=str(data.get("run_id") or "agent-graph"),
+            repo_root=repo_root,
+            sandbox_root=sandbox_root,
+            scopes=scopes,
+            data=data,
+        )
         action = action_gateway.run(
-            ActionSpec(
-                action_id=f"apply_patch_sandbox:{cache.round}",
-                action_type="apply_patch_sandbox",
-                input={"patch": preview},
-            ),
-            run_context=RunContext(
-                run_id=str(data.get("run_id") or "agent-graph"),
-                repo_root=repo_root,
-                sandbox_root=sandbox_root,
-                scopes=scopes,
-                data=data,
-            ),
+            apply_spec,
+            run_context=apply_run_context,
         )
         result = dict(action.payload.get("result") or {})
         apply_ref = graph_artifact_id("sandbox_apply", cache.round)
@@ -218,6 +286,7 @@ def _handle_patch_previews(
             "sandbox_unavailable": action.payload.get("sandbox_unavailable", False),
             "requires_planner_replan": result.get("status") != "applied",
             "reason": action.summary,
+            "action": action_completed_payload(apply_spec, action),
         }
         cache.record_hidden_effect(apply_record, output=result)
         records.append(apply_record)
@@ -244,6 +313,22 @@ def _requested_patch_changes_from_artifacts(cache: GraphRunCache) -> list[dict[s
             change.setdefault("work_item_id", artifact.get("work_item_id") or record.work_item_id)
             changes.append(change)
     return changes
+
+
+def _requested_runtime_actions_from_artifacts(cache: GraphRunCache) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for record in cache.execution_cache.values():
+        artifact = record.artifact_payload or {}
+        raw = artifact.get("requested_actions")
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            payload = dict(item)
+            payload.setdefault("work_item_id", artifact.get("work_item_id") or record.work_item_id)
+            actions.append(payload)
+    return actions
 
 
 def _requested_check_commands(value: Any) -> list[dict[str, Any]]:

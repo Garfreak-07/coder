@@ -11,6 +11,7 @@ from coder_workbench.coding import build_repo_intelligence
 from coder_workbench.coding.command_service import CommandService
 from coder_workbench.coding.patch_service import PatchService
 from coder_workbench.extensions import ExtensionRuntime
+from coder_workbench.extensions.policy import merge_extension_policy
 from coder_workbench.skills import SkillIndex, estimate_tokens
 
 
@@ -331,7 +332,18 @@ class ActionGateway:
         if not reservation.approved:
             return _budget_blocked(reservation)
 
-        if _requires_action_approval(spec) and not _action_is_approved(spec, run_context, operation_id):
+        runtime = self.extension_runtime_factory()
+        capability = runtime.capability(operation_id) if hasattr(runtime, "capability") else None
+        policy = merge_extension_policy(
+            operation_id=operation_id,
+            capability=capability,
+            spec_risk_level=spec.risk_level,
+            spec_requires_permission=spec.requires_permission,
+            input_requires_permission=bool(spec.input.get("requires_permission")),
+            input_requires_approval=bool(spec.input.get("requires_approval")),
+        )
+
+        if policy.requires_approval and not _action_is_approved(spec, run_context, operation_id, policy.risk_level):
             released = self.budget_broker.release(reservation.reservation_id)
             return ActionResult(
                 status="blocked",
@@ -340,21 +352,36 @@ class ActionGateway:
                 payload={
                     "reservation": released.model_dump(mode="json"),
                     "operation_id": operation_id,
-                    "approval_key": _approval_key(spec, operation_id),
+                    "approval_key": _approval_key(spec, operation_id, policy.risk_level),
+                    "policy": policy.as_dict(),
                 },
             )
 
-        runtime = self.extension_runtime_factory()
-        result = runtime.execute_plugin_operation(
-            operation_id,
-            dict(spec.input.get("args") or {}),
-            {
-                "run_id": run_context.run_id,
-                "repo_root": str(run_context.repo_root),
-                "scopes": run_context.active_scopes,
-                "data": run_context.mutable_data,
-            },
-        )
+        try:
+            result = runtime.execute_plugin_operation(
+                operation_id,
+                dict(spec.input.get("args") or {}),
+                {
+                    "run_id": run_context.run_id,
+                    "repo_root": str(run_context.repo_root),
+                    "scopes": run_context.active_scopes,
+                    "data": run_context.mutable_data,
+                },
+            )
+        except ValueError as exc:
+            if str(exc).startswith("Unknown tool:"):
+                released = self.budget_broker.release(reservation.reservation_id)
+                return ActionResult(
+                    status="failed",
+                    summary=str(exc),
+                    error_code="plugin_unknown_operation",
+                    payload={
+                        "reservation": released.model_dump(mode="json"),
+                        "operation_id": operation_id,
+                        "policy": policy.as_dict(),
+                    },
+                )
+            raise
         self.budget_broker.commit(reservation.reservation_id, actual_tool_calls=1)
 
         status_value = str(result.get("status") or "")
@@ -371,6 +398,7 @@ class ActionGateway:
             payload={
                 "reservation": reservation.model_dump(mode="json"),
                 "operation": result,
+                "policy": policy.as_dict(),
             },
         )
 
@@ -379,13 +407,12 @@ class ActionGateway:
             update={
                 "action_type": "call_plugin",
                 "input": {
-                    **spec.input,
-                    "operation_id": str(
-                        spec.input.get("operation_id")
-                        or spec.input.get("mcp_operation_id")
-                        or ""
-                    ),
+                    "operation_id": "mcp_call",
+                    "args": dict(spec.input.get("args") or spec.input),
+                    "approved": spec.input.get("approved", False),
                     "requires_permission": spec.input.get("requires_permission", True),
+                    "requires_approval": spec.input.get("requires_approval", True),
+                    **({"approval_key": spec.input["approval_key"]} if "approval_key" in spec.input else {}),
                 },
             }
         )
@@ -397,6 +424,15 @@ class ActionGateway:
                     "error_code": "mcp_operation_id_required",
                 }
             )
+        if result.error_code == "plugin_requires_approval":
+            return result.model_copy(
+                update={
+                    "summary": "MCP operation requires approval.",
+                    "error_code": "mcp_requires_approval",
+                }
+            )
+        if result.error_code == "plugin_unknown_operation":
+            return result.model_copy(update={"error_code": "mcp_unknown_operation"})
         return result
 
     def _validate_artifact(self, spec: ActionSpec) -> ActionResult:
@@ -445,27 +481,18 @@ def _action_root(run_context: RunContext, *, sandbox: bool) -> tuple[Path, bool]
     return Path(run_context.repo_root), bool(sandbox)
 
 
-def _requires_action_approval(spec: ActionSpec) -> bool:
-    return bool(
-        spec.requires_permission
-        or spec.risk_level in {"medium", "high"}
-        or spec.input.get("requires_permission")
-        or spec.input.get("requires_approval")
-    )
-
-
-def _action_is_approved(spec: ActionSpec, run_context: RunContext, operation_id: str) -> bool:
+def _action_is_approved(spec: ActionSpec, run_context: RunContext, operation_id: str, risk_level: str | None = None) -> bool:
     if bool(spec.input.get("approved")):
         return True
     data = run_context.mutable_data
     if data.get("preapprove_all"):
         return True
     approvals = data.get("plugin_approvals", {})
-    return isinstance(approvals, dict) and approvals.get(_approval_key(spec, operation_id)) is True
+    return isinstance(approvals, dict) and approvals.get(_approval_key(spec, operation_id, risk_level)) is True
 
 
-def _approval_key(spec: ActionSpec, operation_id: str) -> str:
-    return str(spec.input.get("approval_key") or f"plugin:{operation_id}:{spec.risk_level}")
+def _approval_key(spec: ActionSpec, operation_id: str, risk_level: str | None = None) -> str:
+    return str(spec.input.get("approval_key") or f"plugin:{operation_id}:{risk_level or spec.risk_level}")
 
 
 def _estimate_context_tokens(spec: ActionSpec, run_context: RunContext, skill_index: SkillIndex) -> int:

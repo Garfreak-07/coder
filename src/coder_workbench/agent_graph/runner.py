@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from coder_workbench.actions import ActionGateway, ActionSpec, RunContext
+from coder_workbench.actions import (
+    ActionGateway,
+    ActionSpec,
+    RunContext,
+    action_completed_payload,
+    action_started_payload,
+)
 from coder_workbench.agent_graph.artifacts import AgentGraphArtifactRecorder, graph_artifact_id
 from coder_workbench.agent_graph.agent_run import AgentRun
 from coder_workbench.agent_graph.cache import GraphRunCache
@@ -19,7 +24,7 @@ from coder_workbench.agent_graph.interruption import build_graph_interrupt, shou
 from coder_workbench.agent_graph.memory import PlannerMemoryStore
 from coder_workbench.agent_graph.merge import build_planner_input_bundle, build_round_summary
 from coder_workbench.agent_graph.round_budget import evaluate_round_budget_preflight
-from coder_workbench.agent_graph.scheduler import AgentGraphScheduler, ReadyWave
+from coder_workbench.agent_graph.scheduler import AgentGraphScheduler
 from coder_workbench.agent_graph.schema import (
     FinalTestRecord,
     ExecutionRecord,
@@ -30,6 +35,7 @@ from coder_workbench.agent_graph.schema import (
     WorkItemOutcome,
 )
 from coder_workbench.agent_graph.validation import assert_valid_planner_order
+from coder_workbench.agent_graph.wave_executor import WaveExecutor
 from coder_workbench.core import (
     AgentWorkflowSpec,
     AgentWorkflowValidationError,
@@ -588,7 +594,7 @@ class AgentGraphRunner:
                     parent_span=wave_span,
                 )
                 task_contexts.append({"item": item, "envelope": envelope})
-            outcomes = self._run_wave(wave, task_contexts)
+            outcomes = WaveExecutor(self._build_work_item_outcome).run_wave(wave, task_contexts)
             for outcome in outcomes:
                 execution = cache.record_execution(outcome.execution)
                 execution_artifact = self._record_execution_artifact(recorder, cache.round, execution)
@@ -944,47 +950,47 @@ class AgentGraphRunner:
             work_item_id=item.work_item_id,
             action_type="build_context",
         )
+        action_spec = ActionSpec(
+            action_id=f"build_context:{cache.round}:{item.work_item_id}",
+            action_type="build_context",
+        )
+        action_run_context = RunContext(
+            run_id=run_id or self.agent_workflow.id,
+            repo_root=repo_root,
+            scopes=_scopes_from_data(data),
+            data=data,
+            cache=cache,
+            item=item,
+            planner_order_ref=planner_order_ref,
+            upstream_refs=upstream_refs,
+            user_request=request,
+            role=self._agent_role(item.assignee_agent_id),
+            skill_index=skill_index,
+            skill_store_root=skill_store_root,
+            repo_intelligence=repo_intelligence,
+            artifact_type=self._work_artifact_type(item.assignee_agent_id),
+            emit=emit,
+        )
         emit(
             "action.started",
             "ActionGateway build_context started",
+            **action_started_payload(action_spec, action_run_context),
             round=cache.round,
             work_item_id=item.work_item_id,
-            action_type="build_context",
             _span=action_span,
         )
         action_result = self.action_gateway.run(
-            ActionSpec(
-                action_id=f"build_context:{cache.round}:{item.work_item_id}",
-                action_type="build_context",
-            ),
-            run_context=RunContext(
-                run_id=run_id or self.agent_workflow.id,
-                repo_root=repo_root,
-                scopes=_scopes_from_data(data),
-                data=data,
-                cache=cache,
-                item=item,
-                planner_order_ref=planner_order_ref,
-                upstream_refs=upstream_refs,
-                user_request=request,
-                role=self._agent_role(item.assignee_agent_id),
-                skill_index=skill_index,
-                skill_store_root=skill_store_root,
-                repo_intelligence=repo_intelligence,
-                artifact_type=self._work_artifact_type(item.assignee_agent_id),
-                emit=emit,
-            ),
+            action_spec,
+            run_context=action_run_context,
         )
         if action_result.status != "ok":
             trace_context.finish_span(action_span, "blocked" if action_result.status == "blocked" else "failed")
             emit(
                 "action.blocked" if action_result.status == "blocked" else "action.failed",
                 action_result.summary,
+                **action_completed_payload(action_spec, action_result),
                 round=cache.round,
                 work_item_id=item.work_item_id,
-                action_type="build_context",
-                status=action_result.status,
-                error_code=action_result.error_code,
                 _span=action_span,
             )
             raise AgentGraphRuntimeError(
@@ -995,10 +1001,9 @@ class AgentGraphRunner:
         emit(
             "action.completed",
             "ActionGateway build_context completed",
+            **action_completed_payload(action_spec, action_result),
             round=cache.round,
             work_item_id=item.work_item_id,
-            action_type="build_context",
-            status=action_result.status,
             token_used=action_result.token_used,
             _span=action_span,
         )
@@ -1075,34 +1080,6 @@ class AgentGraphRunner:
                 profile = authority_profile_for_agent(agent, primary_planner_id=self.agent_workflow.primary_planner_id)
                 return "synthesis_artifact" if profile.authority == "synthesizer" else "execution_result"
         return "execution_result"
-
-    def _run_wave(self, wave: ReadyWave, task_contexts: list[dict[str, Any]]) -> list[WorkItemOutcome]:
-        outcomes: list[WorkItemOutcome] = []
-        if not wave.items:
-            return outcomes
-        with ThreadPoolExecutor(max_workers=max(1, len(wave.items))) as pool:
-            futures = {pool.submit(self._build_work_item_outcome, context): context for context in task_contexts}
-            for future in as_completed(futures):
-                item = futures[future]["item"]
-                try:
-                    outcomes.append(future.result())
-                except Exception as exc:  # pragma: no cover - defensive boundary
-                    outcomes.append(
-                        WorkItemOutcome(
-                            work_item_id=item.work_item_id,
-                            merge_index=item.merge_index,
-                            execution=ExecutionRecord(
-                                work_item_id=item.work_item_id,
-                                merge_index=item.merge_index,
-                                agent_id=item.assignee_agent_id,
-                                status="failed",
-                                execution_summary=f"Work item failed: {exc}",
-                                execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
-                            ),
-                            tests=[],
-                        )
-                    )
-        return outcomes
 
     def _build_work_item_outcome(self, context: dict[str, Any]) -> WorkItemOutcome:
         item = context["item"]
@@ -1315,7 +1292,12 @@ class AgentGraphRunner:
         }
         for output_ref, output in cache.hidden_effect_outputs.items():
             effect = effect_by_ref.get(output_ref, {})
-            tool = "propose_patch" if effect.get("effect_type") == "modify_files" else "run_check"
+            if effect.get("effect_type") == "modify_files":
+                tool = "propose_patch"
+            elif effect.get("effect_type") == "runtime_action":
+                tool = str(effect.get("operation_id") or effect.get("action_type") or "runtime_action")
+            else:
+                tool = "run_check"
             emit(
                 "tool.result",
                 f"Hidden effect output {output_ref} recorded",

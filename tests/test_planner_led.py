@@ -470,17 +470,20 @@ class AgentWorkflowApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             run_id = response.json()["run_id"]
             final_status = response.json()["status"]
-            detail = client.get(f"/api/v2/live-runs/{run_id}").json()
+            detail = client.get(f"/api/v2/live-agent-runs/{run_id}").json()
             for _ in range(50):
                 if final_status not in {"queued", "running"}:
                     break
                 time.sleep(0.02)
-                detail = client.get(f"/api/v2/live-runs/{run_id}").json()
+                detail = client.get(f"/api/v2/live-agent-runs/{run_id}").json()
                 final_status = detail["status"]
+            legacy = client.get(f"/api/v2/live-runs/{run_id}")
             self.assertEqual(final_status, "completed")
             self.assertEqual(detail["runtime_type"], "agent_graph")
             self.assertIn("agent_graph.run.completed", {event["type"] for event in detail["events"]})
             self.assertNotIn("compiled_workflow", detail["result"]["data"])
+            self.assertEqual(legacy.status_code, 410)
+            self.assertIn("/api/v2/live-agent-runs/", legacy.json()["detail"]["result_url"])
 
 if __name__ == "__main__":
     unittest.main()

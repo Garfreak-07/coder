@@ -11,6 +11,11 @@ class ExtensionRuntime:
     def __init__(self, *, registry: Any | None = None) -> None:
         self.registry = registry or default_tool_registry()
 
+    def capability(self, operation_id: str) -> Any | None:
+        if hasattr(self.registry, "capability"):
+            return self.registry.capability(operation_id)
+        return None
+
     def execute_plugin_operation(
         self,
         operation_id: str,

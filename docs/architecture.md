@@ -31,7 +31,7 @@ PlannerInputBundle -> PlannerDecision -> RunController
 Legacy `WorkflowSpec` remains only as a compatibility and advanced preview
 boundary. Product live Agent workflows use `AgentGraphRunner`.
 
-## v0.9.5 Control Plane
+## v0.9.6 Control Plane
 
 `RunController` owns global continuation decisions after each
 `PlannerDecision`. It enforces max rounds and plan fingerprint loop guards
@@ -49,10 +49,13 @@ run result data.
 - sandbox/local command checks
 - artifact validation and repair
 
-v0.9.5 closes declared runtime actions. `ActionGateway` handlers cover every
+v0.9.6 closes declared runtime actions and capability enforcement.
+`ActionGateway` handlers cover every
 `ActionSpec` action type in the product runtime. Skills continue to load through
 `ContextService` / `build_context`; direct `load_skill` is intentionally not a
-public runtime action.
+public runtime action. Plugin and MCP operations merge caller-provided risk with
+registry `ToolCapability`; approval-gated or unknown operations are blocked
+before runtime execution unless explicitly approved.
 
 `BudgetBroker` reserves model, tool, and context budgets before those actions
 run. Reservation diagnostics are written alongside `TokenLedger`, which remains
@@ -71,9 +74,17 @@ proposed_changes -> patch_preview -> sandbox_apply/check_result -> DebugFinding
 -> PlannerInputBundle -> PlannerDecision -> next RunController decision
 ```
 
-Patch preview, sandbox apply, sandbox check, and DebugFinding records carry
-structured artifact refs in `PlannerInputBundle.effects`, so Planner replan
-prompts can cite raw failed-check output instead of summaries only.
+Patch preview, sandbox apply, sandbox check, requested runtime actions, and
+DebugFinding records carry structured artifact refs in
+`PlannerInputBundle.effects`, so Planner replan prompts can cite raw
+failed-check or tool output instead of summaries only.
+
+`WaveExecutor` owns worker wave concurrency. `AgentGraphRunner` prepares task
+contexts and handles outcomes, but does not own `ThreadPoolExecutor` details.
+
+Action events use helper-built envelopes for `action.started` and
+`action.completed` / `action.blocked` / `action.failed`; hidden effects also
+store the same completion payload in each effect record.
 
 Run events carry trace fields in their payloads:
 
@@ -91,4 +102,6 @@ stores instead of owning primary object file writes directly.
 Legacy `WorkflowSpec` endpoints remain compatibility-only. Preview compilers
 return `runtime_type=legacy_preview`, and `/api/v2/live-runs` is deprecated in
 favor of `/api/v2/live-agent-runs` for product AgentGraph execution. Live
-AgentGraph creation returns `live-agent-runs` event and result URLs.
+AgentGraph creation returns `live-agent-runs` event and result URLs. Legacy
+`/api/v2/live-runs/{run_id}` and `/events` return `410 Gone` for AgentGraph run
+ids with migration URLs instead of returning AgentGraph payloads.

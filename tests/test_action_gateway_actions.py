@@ -100,6 +100,62 @@ class ActionGatewayActionClosureTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertTrue(result.payload["reservation"]["released"])
 
+    def test_plugin_capability_requires_approval_even_when_spec_is_low_risk(self) -> None:
+        calls: list[str] = []
+
+        class FakeExtensionRuntime:
+            class Capability:
+                risk_level = "high"
+                permissions = ("edit_files",)
+                requires_approval = True
+
+            def capability(self, operation_id):
+                return self.Capability()
+
+            def execute_plugin_operation(self, operation_id, args, runtime_context):
+                calls.append(operation_id)
+                return {"operation_id": operation_id, "status": "completed", "result": {}}
+
+        gateway = ActionGateway(extension_runtime_factory=lambda: FakeExtensionRuntime())
+        result = gateway.run(
+            ActionSpec(
+                action_id="plugin",
+                action_type="call_plugin",
+                input={"operation_id": "apply_patch"},
+                risk_level="low",
+                requires_permission=False,
+            ),
+            run_context=RunContext(run_id="run", repo_root="."),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.error_code, "plugin_requires_approval")
+        self.assertEqual(calls, [])
+        self.assertEqual(result.payload["policy"]["risk_level"], "high")
+        self.assertEqual(result.payload["policy"]["permissions"], ["edit_files"])
+
+    def test_unknown_plugin_operation_requires_approval_before_execution(self) -> None:
+        class FakeExtensionRuntime:
+            def capability(self, operation_id):
+                return None
+
+            def execute_plugin_operation(self, operation_id, args, runtime_context):
+                raise AssertionError("should not execute unknown op before approval")
+
+        gateway = ActionGateway(extension_runtime_factory=lambda: FakeExtensionRuntime())
+        result = gateway.run(
+            ActionSpec(
+                action_id="plugin",
+                action_type="call_plugin",
+                input={"operation_id": "unknown.op"},
+            ),
+            run_context=RunContext(run_id="run", repo_root="."),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.error_code, "plugin_requires_approval")
+        self.assertFalse(result.payload["policy"]["known_operation"])
+
     def test_action_gateway_calls_plugin_runtime_when_approved(self) -> None:
         calls: list[str] = []
 
@@ -127,6 +183,7 @@ class ActionGatewayActionClosureTests(unittest.TestCase):
         self.assertEqual(result.status, "ok")
         self.assertEqual(calls, ["safe.op"])
         self.assertEqual(result.payload["operation"]["result"]["args"], {"x": 1})
+        self.assertIn("policy", result.payload)
 
     def test_call_mcp_uses_extension_runtime_boundary(self) -> None:
         calls: list[str] = []
@@ -148,7 +205,41 @@ class ActionGatewayActionClosureTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, "ok")
-        self.assertEqual(calls, ["mcp.fs.read"])
+        self.assertEqual(calls, ["mcp_call"])
+
+    def test_call_mcp_reads_mcp_call_capability_before_execution(self) -> None:
+        calls: list[str] = []
+        capability_queries: list[str] = []
+
+        class FakeExtensionRuntime:
+            class Capability:
+                risk_level = "high"
+                permissions = ("run_commands",)
+                requires_approval = True
+
+            def capability(self, operation_id):
+                capability_queries.append(operation_id)
+                return self.Capability()
+
+            def execute_plugin_operation(self, operation_id, args, runtime_context):
+                calls.append(operation_id)
+                return {"operation_id": operation_id, "status": "completed", "result": {"ok": True}}
+
+        gateway = ActionGateway(extension_runtime_factory=lambda: FakeExtensionRuntime())
+        result = gateway.run(
+            ActionSpec(
+                action_id="mcp",
+                action_type="call_mcp",
+                input={"server_command": "fake-mcp", "tool_name": "read_file"},
+            ),
+            run_context=RunContext(run_id="run", repo_root="."),
+        )
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.error_code, "mcp_requires_approval")
+        self.assertEqual(calls, [])
+        self.assertEqual(capability_queries, ["mcp_call"])
+        self.assertEqual(result.payload["policy"]["risk_level"], "high")
 
 
 class FakePatchService:
