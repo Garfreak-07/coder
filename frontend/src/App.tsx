@@ -14,7 +14,6 @@ import {
 } from "@xyflow/react";
 import {
   deleteRun,
-  getAgentRuntimeProfiles,
   getAgentWorkflow,
   getDefaultAgentWorkflow,
   getLibrary,
@@ -25,6 +24,7 @@ import {
   rollbackPatch,
   saveAgentWorkflow,
   startLiveAgentRun,
+  submitPlannerResponse,
   subscribeRunEvents,
   validateAgentWorkflow
 } from "./api";
@@ -84,6 +84,8 @@ export function App() {
   const [scopesText, setScopesText] = useState("");
   const [request, setRequest] = useState("Inspect this project and propose the next safe step.");
   const [approved, setApproved] = useState(false);
+  const [plannerResponse, setPlannerResponse] = useState("");
+  const [plannerResponseLoading, setPlannerResponseLoading] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [eventCursor, setEventCursor] = useState(0);
   const [eventHasMore, setEventHasMore] = useState(false);
@@ -93,7 +95,6 @@ export function App() {
   const [historyStatusFilter, setHistoryStatusFilter] = useState("all");
   const [newAgentRoleCard, setNewAgentRoleCard] = useState("do_work");
   const [newAgentName, setNewAgentName] = useState("");
-  const [runtimeProfiles, setRuntimeProfiles] = useState<Record<string, unknown>[] | null>(null);
   const {
     capabilities,
     runHistory,
@@ -236,7 +237,6 @@ export function App() {
     const clean = cloneAgentWorkflow(next);
     setAgentWorkflow(clean);
     setJsonText(formatJson(clean));
-    setRuntimeProfiles(null);
     renderWorkflowCanvas(clean);
     setSelectedAgentWorkflowId(clean.agents[0]?.id ?? null);
     setSelectedAgentWorkflowEdgeId(null);
@@ -247,7 +247,6 @@ export function App() {
     setAgentWorkflow(next);
     setJsonText(formatJson(next));
     setAgentWorkflowValidation(null);
-    setRuntimeProfiles(null);
     renderWorkflowCanvas(next);
   }
 
@@ -259,17 +258,6 @@ export function App() {
         agent.id === current.primary_planner_id ? { ...agent, model_tier: modelTier } : agent
       )
     }));
-  }
-
-  async function refreshRuntimeProfiles() {
-    setStatus("Compiling runtime profiles...");
-    try {
-      const profiles = await getAgentRuntimeProfiles(agentWorkflow);
-      setRuntimeProfiles(profiles);
-      setStatus(`Compiled ${profiles.length} runtime profile(s).`);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    }
   }
 
   function useTemplateCard(template: AgentWorkflowTemplateCard) {
@@ -582,6 +570,27 @@ export function App() {
     }
   }
 
+  async function submitPlannerHumanResponse() {
+    const liveDetail = selectedRunKind === "live" ? (selectedRunDetail as LiveRunDetail | null) : null;
+    const runId = liveDetail?.id ?? activeRunId;
+    const response = plannerResponse.trim();
+    if (!runId || !response) return;
+    setPlannerResponseLoading(true);
+    setStatus(`Sending Planner response for ${runId}...`);
+    try {
+      const resumed = await submitPlannerResponse(runId, { response, data: { source: "planner_chat" } });
+      setPlannerResponse("");
+      setActiveRunId(resumed.run_id);
+      setSelectedRunKind("live");
+      setStatus(`Planner response accepted for ${resumed.run_id}: ${resumed.status}`);
+      subscribeToRun(resumed.run_id, resumed.events_url);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPlannerResponseLoading(false);
+    }
+  }
+
   async function deleteStoredRun(runId: string) {
     if (!window.confirm(`Delete stored run ${runId}? This also removes blobs no other run references.`)) {
       return;
@@ -676,48 +685,7 @@ export function App() {
         </section>
 
         <section className="panel">
-          <div className="panel-title">{t.run.title}</div>
-          <label>
-            {t.run.repo}
-            <input value={repo} onChange={(event) => setRepo(event.target.value)} />
-          </label>
-          <label>
-            {t.run.scopes}
-            <textarea
-              placeholder={t.run.scopesPlaceholder}
-              value={scopesText}
-              onChange={(event) => setScopesText(event.target.value)}
-              rows={3}
-            />
-          </label>
-          <label>
-            {t.run.request}
-            <textarea value={request} onChange={(event) => setRequest(event.target.value)} rows={4} />
-          </label>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} />
-            {t.run.preApprove}
-          </label>
-          <button onClick={() => runWorkflow()} disabled={runLoading}>
-            {runLoading ? "Starting..." : t.run.start}
-          </button>
-        </section>
-
-        <section className="panel">
-          <div className="panel-title">Provider Settings</div>
-          <ProviderSettingsPanel
-            form={providerForm}
-            settings={providerSettings}
-            status={providerStatus}
-            onChange={updateProviderForm}
-            onSave={persistProviderSettings}
-            onRefresh={refreshProviderInfo}
-            onTest={runProviderTest}
-          />
-        </section>
-
-        <section className="panel">
-          <div className="panel-title">{t.runtime.title}</div>
+          <div className="panel-title">System Status</div>
           <button onClick={refreshRuntimeInfo}>{t.runtime.refresh}</button>
           <div className="summary-grid">
             <span>{health?.status ?? t.runtime.unknown}</span>
@@ -765,6 +733,64 @@ export function App() {
       </aside>
 
       <main className="workspace">
+        <section className="planner-chat-panel">
+          <div className="planner-chat-header">
+            <div>
+              <div className="panel-title">Planner Chat</div>
+              <div className="muted">Only the Planner talks to the user. Workers and Testers return evidence.</div>
+            </div>
+            <div className="run-state-strip">
+              <span>{selectedRunDetail ? `${selectedRunKind}: ${runStatusLabel(selectedRunDetail, selectedRunKind)}` : "No run selected"}</span>
+              {activeRunId && <code>{activeRunId.slice(0, 8)}</code>}
+            </div>
+          </div>
+          <div className="planner-chat-grid">
+            <label>
+              {t.run.repo}
+              <input value={repo} onChange={(event) => setRepo(event.target.value)} />
+            </label>
+            <label>
+              {t.run.scopes}
+              <textarea
+                placeholder={t.run.scopesPlaceholder}
+                value={scopesText}
+                onChange={(event) => setScopesText(event.target.value)}
+                rows={2}
+              />
+            </label>
+            <label className="planner-request-field">
+              {t.run.request}
+              <textarea value={request} onChange={(event) => setRequest(event.target.value)} rows={5} />
+            </label>
+            <div className="planner-run-actions">
+              <label className="checkbox-row">
+                <input type="checkbox" checked={approved} onChange={(event) => setApproved(event.target.checked)} />
+                {t.run.preApprove}
+              </label>
+              <button onClick={() => runWorkflow()} disabled={runLoading}>
+                {runLoading ? "Starting..." : "Send to Planner"}
+              </button>
+            </div>
+          </div>
+          {isWaitingForPlannerHumanResponse(selectedRunDetail, selectedRunKind) && (
+            <div className="planner-response-box">
+              <div>
+                <div className="panel-subtitle">Planner needs your response</div>
+                <div className="muted">{plannerPromptText(selectedRunDetail)}</div>
+              </div>
+              <textarea
+                value={plannerResponse}
+                onChange={(event) => setPlannerResponse(event.target.value)}
+                rows={3}
+                placeholder="Reply to the Planner..."
+              />
+              <button onClick={submitPlannerHumanResponse} disabled={plannerResponseLoading || !plannerResponse.trim()}>
+                {plannerResponseLoading ? "Sending..." : "Send Planner response"}
+              </button>
+            </div>
+          )}
+        </section>
+
         <section className="canvas-panel">
           <div className="toolbar">
             <div>
@@ -871,18 +897,7 @@ export function App() {
           </div>
           <AgentWorkflowValidationPanel result={agentWorkflowValidation} />
           <details className="json-details">
-            <summary>Runtime Profiles (Advanced)</summary>
-            <div className="button-row">
-              <button onClick={() => void refreshRuntimeProfiles()}>Compile Runtime Profiles</button>
-            </div>
-            {runtimeProfiles ? (
-              <pre>{JSON.stringify(runtimeProfiles, null, 2)}</pre>
-            ) : (
-              <div className="muted">No runtime profiles loaded.</div>
-            )}
-          </details>
-          <details className="json-details">
-            <summary>AgentWorkflowSpec JSON (Advanced)</summary>
+            <summary>Agent workflow import/export (Advanced)</summary>
             <div className="button-row">
               <button onClick={applyJson}>{t.json.apply}</button>
               <button onClick={persistWorkflow}>{t.json.save}</button>
@@ -902,6 +917,45 @@ export function App() {
       </main>
 
       <aside className="inspector">
+        <section className="panel events-panel">
+          <div className="panel-title">Run Evidence</div>
+          <RunDetailCard
+            detail={selectedRunDetail}
+            kind={selectedRunKind}
+            activeRunId={activeRunId}
+            onAttach={(runId) => openLiveRun(runId, true)}
+            onOpenStored={(runId) => openStoredRun(runId)}
+            onDeleteStored={(runId) => deleteStoredRun(runId)}
+          />
+          <RunSummary
+            events={events}
+          />
+          <RunEvidenceCards events={events} />
+          <PatchPanel
+            events={events}
+            runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
+            repo={repo}
+            scopes={linesToList(scopesText)}
+            onStatus={setStatus}
+          />
+          {events.length === 0 ? (
+            <div className="muted">{t.events.empty}</div>
+          ) : (
+            <details className="event-log-details">
+              <summary>Advanced event log</summary>
+              <EventReplayList
+                events={events}
+                runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
+              />
+            </details>
+          )}
+          {selectedRunKind === "stored" && eventHasMore && (
+            <button onClick={loadMoreStoredEvents} disabled={eventsLoadingMore}>
+              {eventsLoadingMore ? "Loading events..." : "Load more events"}
+            </button>
+          )}
+        </section>
+
         <section className="panel">
           <div className="panel-title">Agent Inspector</div>
           {selectedAgentWorkflowAgent ? (
@@ -983,40 +1037,6 @@ export function App() {
           </>
         </section>
 
-        <section className="panel events-panel">
-          <div className="panel-title">{t.events.title}</div>
-          <RunDetailCard
-            detail={selectedRunDetail}
-            kind={selectedRunKind}
-            activeRunId={activeRunId}
-            onAttach={(runId) => openLiveRun(runId, true)}
-            onOpenStored={(runId) => openStoredRun(runId)}
-            onDeleteStored={(runId) => deleteStoredRun(runId)}
-          />
-          <RunSummary
-            events={events}
-          />
-          <PatchPanel
-            events={events}
-            runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
-            repo={repo}
-            scopes={linesToList(scopesText)}
-            onStatus={setStatus}
-          />
-          {events.length === 0 ? (
-            <div className="muted">{t.events.empty}</div>
-          ) : (
-            <EventReplayList
-              events={events}
-              runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
-            />
-          )}
-          {selectedRunKind === "stored" && eventHasMore && (
-            <button onClick={loadMoreStoredEvents} disabled={eventsLoadingMore}>
-              {eventsLoadingMore ? "Loading events..." : "Load more events"}
-            </button>
-          )}
-        </section>
       </aside>
       </>
       ) : activeSection === "skills" ? (
@@ -1128,10 +1148,37 @@ export function App() {
 }
 
 function sectionLabel(section: AppSection): string {
-  if (section === "workflows") return "Workflows";
+  if (section === "workflows") return "Workbench";
   if (section === "skills") return "Extensions";
   if (section === "runs") return "Runs";
   return "Settings";
+}
+
+function runStatusLabel(detail: StoredRunDetail | LiveRunDetail, kind: "live" | "stored" | null): string {
+  if (kind === "stored" && "result" in detail) return detail.result?.status ?? "unknown";
+  return (detail as LiveRunDetail).status ?? "unknown";
+}
+
+function isWaitingForPlannerHumanResponse(
+  detail: StoredRunDetail | LiveRunDetail | null,
+  kind: "live" | "stored" | null
+): boolean {
+  if (!detail || kind !== "live") return false;
+  const live = detail as LiveRunDetail;
+  return live.status === "blocked" && live.result?.status_code === "planner_ask_human";
+}
+
+function plannerPromptText(detail: StoredRunDetail | LiveRunDetail | null): string {
+  if (!detail || !("result" in detail) || !detail.result) return "The Planner is waiting for your response.";
+  const checkpoint = objectValue(detail.result.resume_checkpoint);
+  const checkpointData = objectValue(checkpoint?.data);
+  const resultData = objectValue(detail.result.data);
+  return String(
+    checkpointData?.planner_human_prompt ??
+      resultData?.planner_human_prompt ??
+      detail.result.status_reason ??
+      "The Planner is waiting for your response."
+  );
 }
 
 function plannerStrengthFromTier(tier: AgentModelTier | string): PlannerStrength {
@@ -1144,6 +1191,183 @@ function modelTierForPlannerStrength(strength: PlannerStrength): AgentModelTier 
   if (strength === "fast") return "economy";
   if (strength === "balanced") return "standard";
   return "best";
+}
+
+const evidenceArtifactTypes = new Set([
+  "planner_order",
+  "execution_result",
+  "test_result",
+  "planner_decision",
+  "round_summary",
+  "patch_preview",
+  "sandbox_apply",
+  "check_result",
+  "debug_finding",
+  "runtime_action"
+]);
+
+function RunEvidenceCards({ events }: { events: RunEvent[] }) {
+  const artifactCards = events
+    .filter((event) => event.type === "artifact.produced")
+    .map((event) => evidenceFromArtifactEvent(event))
+    .filter((item): item is EvidenceCardModel => item !== null);
+  const toolCards = [
+    evidenceFromToolResult("patch_preview", "Patch Preview", latestToolResult(events, "propose_patch") ?? latestToolResult(events, "dry_patch")),
+    evidenceFromToolResult("sandbox_apply", "Sandbox Apply", latestToolResult(events, "apply_patch")),
+    evidenceFromToolResult("check_result", "Check Result", latestToolResult(events, "check"))
+  ].filter((item): item is EvidenceCardModel => item !== null);
+  const cards = dedupeEvidenceCards([...artifactCards, ...toolCards]).slice(-12);
+
+  if (events.length === 0) return null;
+  if (cards.length === 0) {
+    return (
+      <div className="evidence-empty">
+        <div className="panel-subtitle">Evidence</div>
+        <div className="muted">No Planner-facing artifacts yet. Evidence cards appear as the run progresses.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="evidence-card-list">
+      {cards.map((card) => (
+        <article className={`evidence-card evidence-${statusClass(card.status)}`} key={card.key}>
+          <div className="evidence-card-heading">
+            <strong>{card.title}</strong>
+            <span>{card.status}</span>
+          </div>
+          {card.summary && <p>{card.summary}</p>}
+          <div className="summary-grid">
+            {card.round && <span>round {card.round}</span>}
+            {card.nextAction && <span>next: {card.nextAction}</span>}
+            {card.needsPlanner && <span>needs Planner</span>}
+            {card.ref && <span>{card.ref}</span>}
+          </div>
+          {card.files.length > 0 && <InlineTextList title="Files" values={card.files} />}
+          {card.commands.length > 0 && <InlineTextList title="Commands / checks" values={card.commands} />}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+interface EvidenceCardModel {
+  key: string;
+  title: string;
+  status: string;
+  summary: string;
+  round: string | null;
+  nextAction: string | null;
+  needsPlanner: boolean;
+  files: string[];
+  commands: string[];
+  ref: string | null;
+}
+
+function evidenceFromArtifactEvent(event: RunEvent): EvidenceCardModel | null {
+  const payload = objectValue(event.payload);
+  const artifactType = String(payload?.artifact_type ?? "");
+  if (!evidenceArtifactTypes.has(artifactType)) return null;
+  const summary = objectValue(payload?.summary) ?? payload ?? {};
+  const title = evidenceTitle(artifactType);
+  return {
+    key: `${artifactType}-${String(payload?.artifact_id ?? event.id ?? title)}`,
+    title,
+    status: evidenceStatus(summary, artifactType),
+    summary: evidenceSummary(summary, event.message ?? ""),
+    round: valueString(summary.round),
+    nextAction: valueString(summary.next_action),
+    needsPlanner: Boolean(summary.needs_planner_decision),
+    files: evidenceFiles(summary),
+    commands: evidenceCommands(summary),
+    ref: valueString(payload?.artifact_id)
+  };
+}
+
+function evidenceFromToolResult(key: string, title: string, result: Record<string, unknown> | null): EvidenceCardModel | null {
+  if (!result) return null;
+  return {
+    key,
+    title,
+    status: evidenceStatus(result, key),
+    summary: evidenceSummary(result, ""),
+    round: valueString(result.round),
+    nextAction: null,
+    needsPlanner: Boolean(result.needs_planner_decision),
+    files: evidenceFiles(result),
+    commands: evidenceCommands(result),
+    ref: valueString(result.output_ref ?? result.tool_result_id)
+  };
+}
+
+function dedupeEvidenceCards(cards: EvidenceCardModel[]): EvidenceCardModel[] {
+  const seen = new Set<string>();
+  return cards.filter((card) => {
+    if (seen.has(card.key)) return false;
+    seen.add(card.key);
+    return true;
+  });
+}
+
+function evidenceTitle(type: string): string {
+  return type
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function evidenceStatus(value: Record<string, unknown>, fallback: string): string {
+  if (typeof value.status === "string") return value.status;
+  if (typeof value.result_status === "string") return value.result_status;
+  if (typeof value.next_action === "string") return value.next_action;
+  if (typeof value.passed === "boolean") return value.passed ? "passed" : "not passed";
+  return fallback;
+}
+
+function evidenceSummary(value: Record<string, unknown>, fallback: string): string {
+  for (const key of ["summary", "reason", "round_goal", "message", "compressed_summary"]) {
+    if (typeof value[key] === "string" && value[key]) return String(value[key]);
+  }
+  return fallback;
+}
+
+function evidenceFiles(value: Record<string, unknown>): string[] {
+  const direct = stringList(value.changed_files);
+  if (direct.length > 0) return direct;
+  const files = objectList(value.files).map((file) => String(file.path ?? file.name ?? ""));
+  if (files.length > 0) return files.filter(Boolean);
+  return objectList(value.proposed_changes).map((file) => String(file.path ?? "")).filter(Boolean);
+}
+
+function evidenceCommands(value: Record<string, unknown>): string[] {
+  return [
+    value.command,
+    value.check_command,
+    value.suggested_check_command,
+    value.argv ? JSON.stringify(value.argv) : null
+  ]
+    .filter((item): item is string => typeof item === "string" && item.length > 0)
+    .slice(0, 4);
+}
+
+function valueString(value: unknown): string | null {
+  if (typeof value === "string" && value) return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return null;
+}
+
+function InlineTextList({ title, values }: { title: string; values: string[] }) {
+  return (
+    <div className="inline-text-list">
+      <span>{title}</span>
+      <div>
+        {values.slice(0, 5).map((value) => (
+          <code key={value}>{value}</code>
+        ))}
+        {values.length > 5 && <code>+{values.length - 5} more</code>}
+      </div>
+    </div>
+  );
 }
 
 function PatchPanel({

@@ -17,6 +17,8 @@ class ProductUISurfaceTests(unittest.TestCase):
             "runtimeJsonText",
             "showAdvancedRuntime",
             "compileLegacyRuntimePreview",
+            "Compile Runtime Profiles",
+            "AgentWorkflowSpec JSON",
             "startLiveRun",
             "getLiveRun",
             "saveWorkflow",
@@ -26,6 +28,19 @@ class ProductUISurfaceTests(unittest.TestCase):
                 self.assertNotIn(token, source)
 
         self.assertIsNone(re.search(r"(?<!Agent)\bWorkflowSpec\b", source))
+
+    def test_workbench_app_centers_planner_chat_and_run_evidence(self) -> None:
+        source = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+        for token in [
+            "Planner Chat",
+            "Send to Planner",
+            "Run Evidence",
+            "Advanced event log",
+            "submitPlannerResponse",
+        ]:
+            with self.subTest(token=token):
+                self.assertIn(token, source)
 
     def test_frontend_api_does_not_call_legacy_runtime_endpoints(self) -> None:
         source = (ROOT / "frontend" / "src" / "api.ts").read_text(encoding="utf-8")
@@ -37,6 +52,15 @@ class ProductUISurfaceTests(unittest.TestCase):
         ]:
             with self.subTest(token=token):
                 self.assertNotIn(token, source)
+
+    def test_visible_frontend_copy_does_not_reference_legacy_runtime(self) -> None:
+        for relative_path in [
+            Path("frontend/src/App.tsx"),
+            Path("frontend/src/i18n.ts"),
+        ]:
+            source = (ROOT / relative_path).read_text(encoding="utf-8").lower()
+            with self.subTest(path=str(relative_path)):
+                self.assertNotIn("legacy runtime", source)
 
 
 if __name__ == "__main__":

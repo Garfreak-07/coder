@@ -11,7 +11,7 @@ export const enUS = {
     defaultCodingName: "Planner-led Default Workflow",
     defaultCodingPurpose: "Planner decides, Code Worker acts, Tester returns evidence, and only structured handoff data is passed.",
     blankName: "Blank Advanced Workflow",
-    blankPurpose: "Start/end only. Useful for legacy runtime editing or JSON import.",
+    blankPurpose: "Start with a minimal Planner-led AgentGraph and add agents as needed.",
     useTemplate: "Use Template",
     agents: "Agents",
     tools: "Tools",
