@@ -27,17 +27,35 @@ class ProductUISurfaceTests(unittest.TestCase):
                 self.assertNotIn(token, source)
 
     def test_workbench_app_centers_planner_chat_and_run_evidence(self) -> None:
-        source = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+        sources = "\n".join(
+            [
+                (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8"),
+                (ROOT / "frontend" / "src" / "components" / "AppSidebar.tsx").read_text(encoding="utf-8"),
+                (ROOT / "frontend" / "src" / "features" / "planner-chat" / "PlannerChatPage.tsx").read_text(
+                    encoding="utf-8"
+                ),
+            ]
+        )
 
         for token in [
             "Planner Chat",
-            "Send to Planner",
-            "Run Evidence",
+            "Message the Planner",
+            "Planner strength",
+            "Run settings",
             "Event log",
             "submitPlannerResponse",
         ]:
             with self.subTest(token=token):
-                self.assertIn(token, source)
+                self.assertIn(token, sources)
+
+    def test_app_uses_left_sidebar_not_top_navigation(self) -> None:
+        app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+        sidebar = (ROOT / "frontend" / "src" / "components" / "AppSidebar.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("<AppSidebar", app)
+        self.assertIn('<nav className="side-nav"', sidebar)
+        self.assertNotIn("top-nav", app)
+        self.assertNotIn("Workbench", sidebar)
 
     def test_visible_frontend_copy_does_not_reference_legacy_runtime(self) -> None:
         for relative_path in [

@@ -7,10 +7,20 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend" / "src"
-WORKBENCH_SURFACES = [
-    FRONTEND / "App.tsx",
-    FRONTEND / "workflowGraph.ts",
-    FRONTEND / "runEvents.tsx",
+APP = FRONTEND / "App.tsx"
+APP_SIDEBAR = FRONTEND / "components" / "AppSidebar.tsx"
+PLANNER_CHAT_PAGE = FRONTEND / "features" / "planner-chat" / "PlannerChatPage.tsx"
+AGENT_WORKFLOW_PAGE = FRONTEND / "features" / "agent-workflow" / "AgentWorkflowPage.tsx"
+WORKFLOW_SELECTOR = FRONTEND / "features" / "agent-workflow" / "WorkflowSelector.tsx"
+WORKFLOW_STRUCTURE_PANEL = FRONTEND / "features" / "agent-workflow" / "WorkflowStructurePanel.tsx"
+
+PRODUCT_SURFACES = [
+    APP,
+    APP_SIDEBAR,
+    PLANNER_CHAT_PAGE,
+    AGENT_WORKFLOW_PAGE,
+    WORKFLOW_SELECTOR,
+    WORKFLOW_STRUCTURE_PANEL,
 ]
 
 
@@ -36,7 +46,7 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
         self.assertNotIn("can ask user", source)
 
     def test_removed_workbench_components_are_not_referenced(self) -> None:
-        source = (FRONTEND / "App.tsx").read_text(encoding="utf-8")
+        source = APP.read_text(encoding="utf-8")
 
         for token in [
             "AgentWorkflowAgentInspector",
@@ -55,15 +65,31 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
         self.assertFalse((FRONTEND / "features" / "agent-workflow" / "AgentWorkflowAgentInspector.tsx").exists())
         self.assertFalse((FRONTEND / "features" / "agent-workflow" / "AgentWorkflowEdgeInspector.tsx").exists())
 
-    def test_planner_delete_is_disabled_in_workbench(self) -> None:
-        source = (FRONTEND / "App.tsx").read_text(encoding="utf-8")
+    def test_split_app_sections_are_declared_and_chat_is_default(self) -> None:
+        sidebar = APP_SIDEBAR.read_text(encoding="utf-8")
+        app = APP.read_text(encoding="utf-8")
 
-        self.assertRegex(source, re.compile(r"agent\.id === agentWorkflow\.primary_planner_id"))
-        self.assertNotIn("Runtime profiles are compiled internally", source)
-        self.assertNotIn("capabilities={", source)
+        self.assertIn('["chat", "workflow", "extensions", "runs", "settings"]', sidebar)
+        for label in ["Planner Chat", "Agent Workflow", "Extensions", "Runs", "Settings"]:
+            with self.subTest(label=label):
+                self.assertIn(label, sidebar)
 
-    def test_removed_words_are_absent_from_user_visible_workbench_surfaces(self) -> None:
+        self.assertIn('useState<AppSection>("chat")', app)
+        self.assertIn("<PlannerChatPage", app)
+        self.assertIn("<AgentWorkflowPage", app)
+
+    def test_planner_delete_is_disabled_in_workflow_structure(self) -> None:
+        app = APP.read_text(encoding="utf-8")
+        panel = WORKFLOW_STRUCTURE_PANEL.read_text(encoding="utf-8")
+
+        self.assertRegex(panel, re.compile(r"agent\.id !== workflow\.primary_planner_id"))
+        self.assertIn("Primary Planner cannot be deleted.", app)
+        self.assertNotIn("Runtime profiles are compiled internally", app)
+        self.assertNotIn("capabilities={", app)
+
+    def test_removed_words_are_absent_from_split_product_surfaces(self) -> None:
         forbidden = [
+            "Workflow Library",
             "Start From Template",
             "System Status",
             "Agent Inspector",
@@ -83,15 +109,72 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
             "Runtime Role",
             "raw capabilities",
             "legacy runtime preview",
+            "Only Planner can ask the user",
+            "Executors return execution results",
+            "Testers return evidence",
+            "Planner reviews every round",
         ]
         offenders: list[str] = []
-        for path in WORKBENCH_SURFACES:
+        for path in PRODUCT_SURFACES:
             source = path.read_text(encoding="utf-8")
             for word in forbidden:
                 if word in source:
                     offenders.append(f"{path.relative_to(ROOT)} contains {word!r}")
 
         self.assertEqual(offenders, [])
+
+    def test_agent_workflow_page_toolbar_minimap_and_controls(self) -> None:
+        source = AGENT_WORKFLOW_PAGE.read_text(encoding="utf-8")
+
+        for token in ["Save", "Save As", "Import", "Export"]:
+            with self.subTest(token=token):
+                self.assertIn(token, source)
+
+        self.assertIn('className="workflow-minimap"', source)
+        self.assertIn('position="top-left"', source)
+        self.assertIn("width: 120", source)
+        self.assertIn("height: 80", source)
+        self.assertNotRegex(source, re.compile(r"\bControls\b"))
+
+    def test_workflow_selector_uses_saved_agent_workflows(self) -> None:
+        workflow_page = AGENT_WORKFLOW_PAGE.read_text(encoding="utf-8")
+        selector = WORKFLOW_SELECTOR.read_text(encoding="utf-8")
+
+        self.assertIn("library.agent_workflows", workflow_page)
+        self.assertIn("AgentWorkflowSummary", selector)
+        self.assertIn("<select", selector)
+        self.assertIn("agents /", selector)
+        self.assertNotIn("Refresh", selector)
+
+    def test_planner_strength_selector_lives_in_chat_composer(self) -> None:
+        chat = PLANNER_CHAT_PAGE.read_text(encoding="utf-8")
+        workflow = AGENT_WORKFLOW_PAGE.read_text(encoding="utf-8")
+
+        self.assertIn("Planner strength", chat)
+        self.assertIn("composer-footer", chat)
+        self.assertNotIn("Planner strength", workflow)
+        self.assertNotIn("plannerStrength", workflow)
+
+    def test_save_as_and_import_collisions_create_new_workflow_ids(self) -> None:
+        app = APP.read_text(encoding="utf-8")
+
+        self.assertIn("persistWorkflowAsCopy", app)
+        self.assertIn("uniqueWorkflowId", app)
+        self.assertIn("Date.now()", app)
+        self.assertIn("Saved new Agent workflow", app)
+        self.assertIn("idExists", app)
+        self.assertIn("Imported as new Agent workflow", app)
+        self.assertRegex(app, re.compile(r"id:\s*idExists\s*\?\s*`\$\{rawId\}-\$\{Date\.now\(\)\}`"))
+
+    def test_workflow_structure_panel_hides_edge_advanced_options(self) -> None:
+        panel = WORKFLOW_STRUCTURE_PANEL.read_text(encoding="utf-8")
+
+        self.assertIn("Agent type", panel)
+        self.assertIn("Add Connection", panel)
+        self.assertIn("Connections", panel)
+        self.assertNotIn("Edge label", panel)
+        self.assertNotIn("loop checkbox", panel)
+        self.assertNotIn("handoff inferred", panel)
 
 
 if __name__ == "__main__":

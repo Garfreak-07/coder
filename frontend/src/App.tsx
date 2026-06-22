@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Background,
-  MiniMap,
-  ReactFlow,
   applyEdgeChanges,
   applyNodeChanges,
   type Connection,
@@ -28,8 +25,10 @@ import {
   validateAgentWorkflow
 } from "./api";
 import { defaultPlannerLedAgentWorkflow } from "./examples";
+import { AppSidebar, type AppSection } from "./components/AppSidebar";
 import { ProviderSettingsPanel } from "./components/ProviderSettingsPanel";
-import { AgentWorkflowValidationPanel } from "./features/agent-workflow/AgentWorkflowValidationPanel";
+import { AgentWorkflowPage } from "./features/agent-workflow/AgentWorkflowPage";
+import { PlannerChatPage, type PlannerStrength } from "./features/planner-chat/PlannerChatPage";
 import { SkillsPanel } from "./features/skills/SkillsPanel";
 import { useProviderSettings } from "./hooks/useProviderSettings";
 import { useRuntimeInfo } from "./hooks/useRuntimeInfo";
@@ -60,12 +59,9 @@ import type {
 
 const t = enUS;
 const initialAgentWorkflow = cloneAgentWorkflow(defaultPlannerLedAgentWorkflow);
-const appSections = ["workflows", "skills", "runs", "settings"] as const;
-type AppSection = (typeof appSections)[number];
-type PlannerStrength = "fast" | "balanced" | "strong";
 
 export function App() {
-  const [activeSection, setActiveSection] = useState<AppSection>("workflows");
+  const [activeSection, setActiveSection] = useState<AppSection>("chat");
   const [library, setLibrary] = useState<LibraryIndex>({ agents: [], agent_workflows: [] });
   const [agentWorkflow, setAgentWorkflow] = useState<AgentWorkflowSpec>(() => cloneAgentWorkflow(initialAgentWorkflow));
   const [agentWorkflowValidation, setAgentWorkflowValidation] = useState<AgentWorkflowValidationResult | null>(null);
@@ -77,6 +73,7 @@ export function App() {
   const [repo, setRepo] = useState(".");
   const [scopesText, setScopesText] = useState("");
   const [request, setRequest] = useState("Inspect this project and propose the next safe step.");
+  const [submittedRequest, setSubmittedRequest] = useState("");
   const [plannerResponse, setPlannerResponse] = useState("");
   const [plannerResponseLoading, setPlannerResponseLoading] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -162,6 +159,7 @@ export function App() {
       setEventsLoadingMore(false);
       setRepo(detail.repo_root);
       setRequest(detail.request);
+      setSubmittedRequest(detail.request);
       setStatus(
         eventPage.has_more
           ? `Stored run ${runId}: ${detail.result.status} (${eventPage.events.length}+ events)`
@@ -215,6 +213,7 @@ export function App() {
       setEventsLoadingMore(false);
       setRepo(detail.repo_root);
       setRequest(detail.request);
+      setSubmittedRequest(detail.request);
       setStatus(`Live run ${runId}: ${detail.status}`);
       if (attach || detail.status === "queued" || detail.status === "running") {
         subscribeToRun(detail.id, liveEventsUrl(detail));
@@ -295,6 +294,28 @@ export function App() {
     }
   }
 
+  async function persistWorkflowAsCopy() {
+    try {
+      const workflow = normalizeAgentWorkflow({
+        ...agentWorkflow,
+        id: uniqueWorkflowId(agentWorkflow.name || agentWorkflow.id)
+      });
+      const validation = await validateAgentWorkflow(workflow);
+      setAgentWorkflowValidation(validation);
+      if (validation.status === "error") {
+        setCurrentAgentWorkflow(workflow);
+        setStatus("Save As blocked by Agent workflow validation errors.");
+        return;
+      }
+      const saved = await saveAgentWorkflow(workflow);
+      setCurrentAgentWorkflow(saved);
+      refreshLibrary();
+      setStatus(`Saved new Agent workflow ${saved.id}`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function exportWorkflow() {
     const workflow = normalizeAgentWorkflow(agentWorkflow);
     downloadJson(`${workflow.id || "agent-workflow"}.json`, workflow);
@@ -306,10 +327,23 @@ export function App() {
     file
       .text()
       .then(async (text) => {
-        const parsed = normalizeAgentWorkflow(JSON.parse(text) as AgentWorkflowSpec);
+        const raw = JSON.parse(text) as AgentWorkflowSpec;
+        const rawId = String(raw.id ?? "imported-workflow");
+        const idExists = library.agent_workflows.some((workflow) => workflow.id === rawId);
+        const parsed = normalizeAgentWorkflow({
+          ...raw,
+          id: idExists ? `${rawId}-${Date.now()}` : rawId
+        });
         setCurrentAgentWorkflow(parsed);
         const validation = await validateAgentWorkflow(parsed);
         setAgentWorkflowValidation(validation);
+        if (validation.status !== "error") {
+          const saved = await saveAgentWorkflow(parsed);
+          setCurrentAgentWorkflow(saved);
+          refreshLibrary();
+          setStatus(idExists ? `Imported as new Agent workflow ${saved.id}` : `Imported Agent workflow ${saved.id}`);
+          return;
+        }
         setStatus(
           validation.status === "error"
             ? `Imported Agent workflow ${parsed.id} with validation errors`
@@ -504,6 +538,8 @@ export function App() {
   }
 
   async function runWorkflow() {
+    const requestText = request.trim();
+    if (!requestText) return;
     setRunLoading(true);
     setStatus("Validating Agent workflow...");
     try {
@@ -522,9 +558,11 @@ export function App() {
       setEventsLoadingMore(false);
       setActiveRunId(null);
       setStatus("Starting Agent workflow run...");
+      setSubmittedRequest(requestText);
+      setRequest("");
       const run = await startLiveAgentRun({
         repo,
-        request,
+        request: requestText,
         agent_workflow: workflow,
         approved: false,
         scopes
@@ -605,328 +643,111 @@ export function App() {
     return `/api/v2/live-agent-runs/${detail.id}/events`;
   }
 
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div>
-          <div className="eyebrow">{t.app.eyebrow}</div>
-          <h1>{t.app.title}</h1>
-        </div>
-        <nav className="top-nav" aria-label="Primary">
-          {appSections.map((section) => (
-            <button
-              className={activeSection === section ? "selected" : ""}
-              key={section}
-              onClick={() => setActiveSection(section)}
-            >
-              {sectionLabel(section)}
-            </button>
-          ))}
-        </nav>
-        <div className="status">{status}</div>
-      </header>
-
-      {activeSection === "workflows" ? (
-      <>
-      <aside className="sidebar">
-        <section className="panel">
-          <div className="panel-title">Workflow Library</div>
-          <button onClick={loadDefaultAgentWorkflow}>{t.library.loadExample}</button>
-          <div className="list workflow-library-list">
-            {library.agent_workflows.length === 0 ? (
-              <div className="muted">{t.library.empty}</div>
-            ) : (
-              library.agent_workflows.map((item) => (
-                <button className="list-item" key={item.id} onClick={() => loadAgentWorkflow(item.id)}>
-                  <span>{item.name ?? item.id}</span>
-                  <small>{item.agents} agents / {item.edges} edges / {item.max_auto_rounds ?? 3} rounds</small>
-                </button>
-              ))
-            )}
-          </div>
-        </section>
-      </aside>
-
-      <main className="workspace">
-        <section className="planner-chat-panel">
-          <div className="planner-chat-header">
-            <div>
-              <div className="panel-title">Planner Chat</div>
-              <div className="muted">Only the Planner talks to the user. Executors and Testers return evidence.</div>
-            </div>
-            <div className="run-state-strip">
-              <span>{selectedRunDetail ? `${selectedRunKind}: ${runStatusLabel(selectedRunDetail, selectedRunKind)}` : "No run selected"}</span>
-              {activeRunId && <code>{activeRunId.slice(0, 8)}</code>}
-            </div>
-          </div>
-          <div className="planner-chat-grid">
-            <label>
-              {t.run.repo}
-              <input value={repo} onChange={(event) => setRepo(event.target.value)} />
-            </label>
-            <label className="planner-request-field">
-              {t.run.request}
-              <textarea value={request} onChange={(event) => setRequest(event.target.value)} rows={5} />
-            </label>
-            <div className="planner-run-actions">
-              <button onClick={() => runWorkflow()} disabled={runLoading}>
-                {runLoading ? "Starting..." : "Send to Planner"}
-              </button>
-            </div>
-          </div>
-          <details className="scope-details">
-            <summary>Limit edit scope</summary>
-            <label>
-              Optional, one repository-relative path per line.
-              <textarea
-                placeholder={t.run.scopesPlaceholder}
-                value={scopesText}
-                onChange={(event) => setScopesText(event.target.value)}
-                rows={2}
-              />
-            </label>
-          </details>
-          {isWaitingForPlannerHumanResponse(selectedRunDetail, selectedRunKind) && (
-            <div className="planner-response-box">
-              <div>
-                <div className="panel-subtitle">Planner needs your response</div>
-                <div className="muted">{plannerPromptText(selectedRunDetail)}</div>
-              </div>
-              <textarea
-                value={plannerResponse}
-                onChange={(event) => setPlannerResponse(event.target.value)}
-                rows={3}
-                placeholder="Reply to the Planner..."
-              />
-              <button onClick={submitPlannerHumanResponse} disabled={plannerResponseLoading || !plannerResponse.trim()}>
-                {plannerResponseLoading ? "Sending..." : "Send Planner response"}
-              </button>
-            </div>
-          )}
-        </section>
-
-        <section className="canvas-panel">
-          <div className="toolbar">
-            <div>
-              <strong>{agentWorkflow.name}</strong>
-              <span>{agentWorkflow.agents.length} agents / {agentWorkflow.edges.length} connections</span>
-            </div>
-            <div className="node-add-controls">
-            </div>
-          </div>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onAgentNodesChange}
-            onEdgesChange={onAgentEdgesChange}
-            onConnect={onAgentConnect}
-            nodesConnectable
-            deleteKeyCode="Backspace"
-            onNodeClick={(_, node) => {
-              setSelectedAgentWorkflowId(node.id);
-              setSelectedAgentWorkflowEdgeId(null);
-            }}
-            onEdgeClick={(_, edge) => {
-              setSelectedAgentWorkflowEdgeId(edge.id);
-              setSelectedAgentWorkflowId(null);
-            }}
-            fitView
-          >
-            <Background />
-            <MiniMap className="workflow-minimap" position="top-left" />
-          </ReactFlow>
-        </section>
-
-        <section className="editor-panel agent-workflow-panel">
-          <div className="workflow-panel-heading">
-            <div className="panel-title">Agent Workflow</div>
-            <div className="button-row">
-              <button onClick={persistWorkflow}>{t.json.save}</button>
-              <label className="file-button">
-                {t.json.import}
-                <input
-                  type="file"
-                  accept="application/json,.json"
-                  onChange={(event) => importWorkflow(event.target.files?.[0] ?? null)}
-                />
-              </label>
-              <button onClick={exportWorkflow}>{t.json.export}</button>
-            </div>
-          </div>
-          <div className="agent-workflow-settings">
-            <label>
-              Workflow Name
-              <input
-                value={agentWorkflow.name}
-                onChange={(event) => updateAgentWorkflow((current) => ({ ...current, name: event.target.value }))}
-              />
-            </label>
-            <label>
-              Max Auto Rounds
-              <input
-                type="number"
-                min={1}
-                max={20}
-                value={agentWorkflow.loop_policy.max_auto_rounds}
-                onChange={(event) =>
-                  updateAgentWorkflow((current) => ({
-                    ...current,
-                    loop_policy: { ...current.loop_policy, max_auto_rounds: Number(event.target.value) }
-                  }))
-                }
-              />
-            </label>
-            <label>
-              Planner Strength
-              <select
-                value={plannerStrengthFromTier(primaryPlannerAgent?.model_tier ?? "best")}
-                onChange={(event) => updatePlannerStrength(event.target.value as PlannerStrength)}
-              >
-                <option value="fast">Fast</option>
-                <option value="balanced">Balanced</option>
-                <option value="strong">Strong</option>
-              </select>
-            </label>
-          </div>
-          <div className="summary-grid agent-policy-summary">
-            <span>Only Planner can ask the user</span>
-            <span>Executors return execution results</span>
-            <span>Testers return evidence</span>
-            <span>Planner reviews every round</span>
-          </div>
-          <AgentWorkflowValidationPanel result={agentWorkflowValidation} />
-        </section>
-      </main>
-
-      <aside className="inspector">
-        <section className="panel events-panel">
-          <div className="panel-title">Run Evidence</div>
-          <RunDetailCard
-            detail={selectedRunDetail}
-            kind={selectedRunKind}
-            activeRunId={activeRunId}
-            onAttach={(runId) => openLiveRun(runId, true)}
-            onOpenStored={(runId) => openStoredRun(runId)}
-            onDeleteStored={(runId) => deleteStoredRun(runId)}
-          />
-          <RunSummary
-            events={events}
-          />
-          <RunEvidenceCards events={events} />
-          <PatchPanel
+  const isWaitingForPlannerResponse = isWaitingForPlannerHumanResponse(selectedRunDetail, selectedRunKind);
+  const chatRunStatus = selectedRunDetail
+    ? runStatusLabel(selectedRunDetail, selectedRunKind)
+    : activeRunId
+      ? "running"
+      : "ready";
+  const plannerStrength = plannerStrengthFromTier(primaryPlannerAgent?.model_tier ?? "best");
+  const chatEvidence = (
+    <div className="chat-evidence-stack">
+      <RunSummary events={events} />
+      <RunEvidenceCards events={events} />
+      <PatchPanel
+        events={events}
+        runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
+        repo={repo}
+        scopes={linesToList(scopesText)}
+        onStatus={setStatus}
+      />
+      {events.length > 0 && (
+        <details className="event-log-details">
+          <summary>Event log</summary>
+          <EventReplayList
             events={events}
             runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
-            repo={repo}
-            scopes={linesToList(scopesText)}
-            onStatus={setStatus}
           />
-          {events.length === 0 ? (
-            <div className="muted">{t.events.empty}</div>
-          ) : (
-            <details className="event-log-details">
-              <summary>Event log</summary>
-              <EventReplayList
-                events={events}
-                runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
-              />
-            </details>
-          )}
-          {selectedRunKind === "stored" && eventHasMore && (
-            <button onClick={loadMoreStoredEvents} disabled={eventsLoadingMore}>
-              {eventsLoadingMore ? "Loading events..." : "Load more events"}
-            </button>
-          )}
-        </section>
+        </details>
+      )}
+    </div>
+  );
 
-        <section className="panel workflow-structure-panel">
-          <div className="panel-title">Workflow Structure</div>
-          <div className="add-agent-card">
-            <label>
-              Agent type
-              <select value={newAgentRoleCard} onChange={(event) => setNewAgentRoleCard(event.target.value)}>
-                {availableRoleCards.map((roleCard) => (
-                  <option key={roleCard.id} value={roleCard.id}>
-                    {roleCard.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button disabled={availableRoleCards.length === 0} onClick={addAgentWorkflowAgent}>Add</button>
-          </div>
-          <div className="list compact-list">
-            {agentWorkflow.agents.map((agent) => (
-              <div
-                className={`structure-row ${agent.id === selectedAgentWorkflowId ? "selected" : ""}`}
-                key={agent.id}
-              >
-                <button
-                  className="structure-row-main"
-                  onClick={() => {
-                    setSelectedAgentWorkflowId(agent.id);
-                    setSelectedAgentWorkflowEdgeId(null);
-                  }}
-                >
-                  {agent.name}
-                </button>
-                <button
-                  disabled={agent.id === agentWorkflow.primary_planner_id}
-                  onClick={() => removeAgentWorkflowAgent(agent.id)}
-                >
-                  Delete
-                </button>
-              </div>
-            ))}
-          </div>
-          <div className="panel-subtitle">Add Connection</div>
-          <div className="connection-builder">
-            <label>
-              From
-              <select value={connectionFromValue} onChange={(event) => setConnectionFrom(event.target.value)}>
-                {agentWorkflow.agents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              To
-              <select value={connectionToValue} onChange={(event) => setConnectionTo(event.target.value)}>
-                {agentWorkflow.agents.map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button onClick={addWorkflowConnection}>Add Connection</button>
-          </div>
-          <div className="panel-subtitle">Connections</div>
-          <div className="list compact-list">
-            {agentWorkflow.edges.map((edge, index) => (
-              <div
-                className={`structure-row ${agentEdgeIdFromIndex(index) === selectedAgentWorkflowEdgeId ? "selected" : ""}`}
-                key={`${edge.from}-${edge.to}-${index}`}
-              >
-                <button
-                  className="structure-row-main"
-                  onClick={() => {
-                    setSelectedAgentWorkflowEdgeId(agentEdgeIdFromIndex(index));
-                    setSelectedAgentWorkflowId(null);
-                  }}
-                >
-                  {agentDisplayName(agentWorkflow, edge.from)} -&gt; {agentDisplayName(agentWorkflow, edge.to)}
-                </button>
-                <button onClick={() => removeAgentWorkflowEdge(index)}>Delete</button>
-              </div>
-            ))}
-            {agentWorkflow.edges.length === 0 && <div className="muted">No connections yet.</div>}
-          </div>
-        </section>
+  return (
+    <div className="app-shell">
+      <AppSidebar activeSection={activeSection} status={status} onSectionChange={setActiveSection} />
 
-      </aside>
-      </>
-      ) : activeSection === "skills" ? (
+      {activeSection === "chat" ? (
+        <PlannerChatPage
+          activeRunId={activeRunId}
+          evidence={chatEvidence}
+          isWaitingForPlannerResponse={isWaitingForPlannerResponse}
+          plannerPrompt={plannerPromptText(selectedRunDetail)}
+          plannerResponse={plannerResponse}
+          plannerResponseLoading={plannerResponseLoading}
+          repo={repo}
+          request={request}
+          runLoading={runLoading}
+          runStatus={chatRunStatus}
+          scopesText={scopesText}
+          submittedRequest={submittedRequest}
+          plannerStrength={plannerStrength}
+          onPlannerResponseChange={setPlannerResponse}
+          onRepoChange={setRepo}
+          onRequestChange={setRequest}
+          onScopesTextChange={setScopesText}
+          onPlannerStrengthChange={updatePlannerStrength}
+          onSubmitPlannerResponse={submitPlannerHumanResponse}
+          onSubmitRequest={runWorkflow}
+        />
+      ) : activeSection === "workflow" ? (
+        <AgentWorkflowPage
+          agentWorkflow={agentWorkflow}
+          availableRoleCards={availableRoleCards}
+          connectionFrom={connectionFromValue}
+          connectionTo={connectionToValue}
+          edges={edges}
+          library={library}
+          newAgentRoleCard={newAgentRoleCard}
+          nodes={nodes}
+          selectedAgentId={selectedAgentWorkflowId}
+          selectedEdgeId={selectedAgentWorkflowEdgeId}
+          validation={agentWorkflowValidation}
+          onAddAgent={addAgentWorkflowAgent}
+          onAddConnection={addWorkflowConnection}
+          onConnectionFromChange={setConnectionFrom}
+          onConnectionToChange={setConnectionTo}
+          onDeleteAgent={removeAgentWorkflowAgent}
+          onDeleteConnection={removeAgentWorkflowEdge}
+          onEdgeClick={(edgeId) => {
+            setSelectedAgentWorkflowEdgeId(edgeId);
+            setSelectedAgentWorkflowId(null);
+          }}
+          onEdgesChange={onAgentEdgesChange}
+          onExport={exportWorkflow}
+          onImport={importWorkflow}
+          onLoadDefault={loadDefaultAgentWorkflow}
+          onMaxRoundsChange={(rounds) =>
+            updateAgentWorkflow((current) => ({
+              ...current,
+              loop_policy: { ...current.loop_policy, max_auto_rounds: rounds }
+            }))
+          }
+          onNodeClick={(nodeId) => {
+            setSelectedAgentWorkflowId(nodeId);
+            setSelectedAgentWorkflowEdgeId(null);
+          }}
+          onNodesChange={onAgentNodesChange}
+          onConnect={onAgentConnect}
+          onRoleCardChange={setNewAgentRoleCard}
+          onSave={persistWorkflow}
+          onSaveAs={persistWorkflowAsCopy}
+          onSelectWorkflow={(workflowId) => {
+            if (workflowId) loadAgentWorkflow(workflowId);
+          }}
+          onWorkflowNameChange={(name) => updateAgentWorkflow((current) => ({ ...current, name }))}
+        />
+      ) : activeSection === "extensions" ? (
         <main className="page-main">
           <SkillsPanel onStatus={setStatus} />
         </main>
@@ -1034,13 +855,6 @@ export function App() {
   );
 }
 
-function sectionLabel(section: AppSection): string {
-  if (section === "workflows") return "Workbench";
-  if (section === "skills") return "Extensions";
-  if (section === "runs") return "Runs";
-  return "Settings";
-}
-
 function runStatusLabel(detail: StoredRunDetail | LiveRunDetail, kind: "live" | "stored" | null): string {
   if (kind === "stored" && "result" in detail) return detail.result?.status ?? "unknown";
   return (detail as LiveRunDetail).status ?? "unknown";
@@ -1078,6 +892,15 @@ function modelTierForPlannerStrength(strength: PlannerStrength): AgentModelTier 
   if (strength === "fast") return "economy";
   if (strength === "balanced") return "standard";
   return "best";
+}
+
+function uniqueWorkflowId(name: string): string {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${slug || "agent-workflow"}-${Date.now()}`;
 }
 
 function resolveAgentSelectValue(workflow: AgentWorkflowSpec, preferredId: string, fallbackIndex: number): string {

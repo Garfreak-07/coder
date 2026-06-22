@@ -18,17 +18,22 @@ runtime passes structured artifacts instead of transcript-sized context.
 
 ## Current Product Surface
 
-The Workbench is focused on the core Planner-led flow:
+The app uses a ChatGPT-style left sidebar and keeps chat separate from workflow
+editing:
 
-- `Workbench`: load an Agent workflow, send a request to the Planner, inspect
-  run evidence, and edit only the basic Agent workflow shape.
+- `Planner Chat`: send a request to the Planner, continue `ask_human` replies
+  in the same composer, and inspect run status, evidence, patches, checks, and
+  event logs.
+- `Agent Workflow`: load saved Agent workflows, load the default workflow, edit
+  the basic Planner -> Executor -> Tester shape, save, save as a new copy,
+  import, and export.
 - `Extensions`: manage installed plugins and skills.
 - `Runs`: inspect live and stored AgentGraph runs.
 - `Settings`: configure the local model provider.
 
-The ordinary Workbench does not expose runtime JSON editors, agent inspectors,
-manual edge labels, engine settings, harness controls, or legacy runtime
-previews.
+The ordinary product UI does not expose runtime JSON editors, workflow IDs,
+agent inspectors, manual edge labels, engine settings, harness controls, or
+legacy runtime previews.
 
 ## Repository Layout
 

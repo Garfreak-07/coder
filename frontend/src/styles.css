@@ -67,36 +67,58 @@ label {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 280px minmax(640px, 1fr) 320px;
-  grid-template-rows: 72px calc(100vh - 72px);
+  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-rows: 100vh;
   min-height: 100vh;
 }
 
-.topbar {
-  align-items: center;
-  border-bottom: 1px solid #202938;
-  display: flex;
-  grid-column: 1 / 4;
-  justify-content: space-between;
-  padding: 12px 18px;
+.app-sidebar {
+  background: #101826;
+  border-right: 1px solid #202938;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 0;
+  padding: 14px;
 }
 
-.topbar h1 {
+.sidebar-brand h1 {
+  color: #f8fafc;
   font-size: 22px;
-  margin: 0;
+  margin: 4px 0 0;
 }
 
-.top-nav {
-  display: flex;
+.side-nav {
+  align-content: start;
+  display: grid;
   gap: 8px;
+  margin-top: 22px;
 }
 
-.top-nav button,
+.side-nav button {
+  background: transparent;
+  border-color: transparent;
+  justify-content: start;
+  text-align: left;
+}
+
+.side-nav button.selected {
+  background: #172033;
+  border-color: #334155;
+  color: #e0f2fe;
+}
+
+.sidebar-status {
+  color: #7b8797;
+  font-size: 12px;
+  line-height: 1.4;
+  max-height: 96px;
+  overflow: hidden;
+}
+
 .skill-tabs button {
   background: #101826;
 }
 
-.top-nav button.selected,
 .skill-tabs button.selected {
   border-color: #38bdf8;
   color: #e0f2fe;
@@ -117,38 +139,9 @@ label {
   white-space: nowrap;
 }
 
-.sidebar,
-.inspector,
-.workspace {
-  min-height: 0;
-}
-
-.sidebar,
-.inspector {
-  border-right: 1px solid #202938;
-  display: grid;
-  gap: 12px;
-  overflow: auto;
-  padding: 12px;
-}
-
-.inspector {
-  border-left: 1px solid #202938;
-  border-right: 0;
-}
-
-.workspace {
-  display: grid;
-  gap: 12px;
-  grid-template-rows: auto minmax(320px, 1fr) 300px;
-  overflow: hidden;
-  padding: 12px;
-}
-
 .page-main {
   display: grid;
   gap: 12px;
-  grid-column: 1 / 4;
   min-height: 0;
   overflow: auto;
   padding: 12px;
@@ -221,84 +214,193 @@ label {
   font-size: 12px;
 }
 
-.planner-chat-panel {
-  background: #151c27;
-  border: 1px solid #202938;
-  border-radius: 14px;
+.chat-page {
   display: grid;
-  gap: 12px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-thread {
+  display: grid;
+  gap: 16px;
+  overflow: auto;
+  padding: 32px min(7vw, 88px) 24px;
+}
+
+.chat-empty {
+  align-self: center;
+  color: #aeb8c7;
+  justify-self: center;
+  max-width: 620px;
+  text-align: center;
+}
+
+.chat-empty h2 {
+  color: #f8fafc;
+  font-size: 30px;
+  margin: 0 0 10px;
+}
+
+.chat-empty p,
+.chat-message p {
+  line-height: 1.5;
+  margin: 0;
+}
+
+.chat-message {
+  display: grid;
+  gap: 8px;
+  max-width: 900px;
+  width: 100%;
+}
+
+.user-message {
+  justify-self: end;
+  max-width: 720px;
+}
+
+.planner-message {
+  justify-self: start;
+}
+
+.message-role {
+  color: #7b8797;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.user-message p,
+.message-card {
+  background: #151c27;
+  border: 1px solid #263244;
+  border-radius: 14px;
+  color: #e5e7eb;
   padding: 12px;
 }
 
-.planner-chat-header {
-  align-items: start;
-  display: flex;
-  gap: 16px;
-  justify-content: space-between;
-}
-
-.run-state-strip {
+.message-status {
   align-items: center;
-  background: #101826;
-  border: 1px solid #263244;
-  border-radius: 10px;
   color: #aeb8c7;
   display: flex;
-  flex-wrap: wrap;
-  font-size: 12px;
   gap: 8px;
-  justify-content: flex-end;
-  max-width: 320px;
-  padding: 8px;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
 
-.planner-chat-grid {
-  align-items: end;
+.chat-evidence-stack {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(180px, 0.7fr) minmax(260px, 1.5fr) auto;
 }
 
-.planner-request-field {
-  min-width: 0;
-}
-
-.planner-run-actions {
-  align-content: end;
+.chat-composer {
   display: grid;
   gap: 8px;
-  min-width: 150px;
+  margin: 0 auto;
+  max-width: 920px;
+  padding: 0 20px 22px;
+  width: 100%;
 }
 
-.planner-response-box {
-  background: #101826;
-  border: 1px solid #2563eb;
-  border-radius: 12px;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(180px, 0.8fr) minmax(240px, 1.2fr) auto;
-  padding: 10px;
+.run-settings-popover {
+  justify-self: start;
 }
 
-.planner-response-box button {
-  align-self: end;
-}
-
-.scope-details {
-  background: #101826;
-  border: 1px solid #263244;
-  border-radius: 10px;
-  padding: 10px;
-}
-
-.scope-details summary {
+.run-settings-popover summary {
   color: #93c5fd;
   cursor: pointer;
   font-size: 12px;
 }
 
-.scope-details label {
-  margin-top: 10px;
+.run-settings-grid {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 12px;
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 10px;
+  width: min(760px, calc(100vw - 320px));
+}
+
+.composer-shell {
+  background: #151c27;
+  border: 1px solid #334155;
+  border-radius: 16px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.composer-shell textarea {
+  background: transparent;
+  border: 0;
+  min-height: 92px;
+  padding: 4px;
+}
+
+.composer-shell textarea:focus {
+  outline: none;
+}
+
+.composer-footer {
+  align-items: end;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.strength-control {
+  max-width: 180px;
+}
+
+.workflow-page {
+  display: grid;
+  gap: 12px;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  padding: 18px;
+}
+
+.workflow-page-header,
+.workflow-controls-row {
+  align-items: end;
+  display: grid;
+  gap: 12px;
+}
+
+.workflow-page-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.workflow-page-header h2 {
+  color: #f8fafc;
+  font-size: 24px;
+  margin: 0;
+}
+
+.workflow-controls-row {
+  grid-template-columns: minmax(320px, 1.4fr) minmax(220px, 0.8fr) minmax(160px, 0.4fr);
+}
+
+.workflow-selector {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(260px, 1fr) auto;
+}
+
+.workflow-editor-layout {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 3fr) minmax(280px, 1fr);
+  min-height: 0;
+}
+
+.workflow-canvas-panel {
+  min-height: 0;
 }
 
 .button-row {
@@ -346,11 +448,6 @@ label {
   overflow: auto;
 }
 
-.workflow-library-list {
-  max-height: calc(100vh - 170px);
-  overflow-y: auto;
-}
-
 .history-filters {
   display: grid;
   gap: 8px;
@@ -378,19 +475,6 @@ label {
 
 .file-button input {
   display: none;
-}
-
-.json-editor {
-  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
-  font-size: 12px;
-  height: 100%;
-  min-height: 0;
-  resize: none;
-}
-
-.agent-editor {
-  border-top: 1px solid #202938;
-  padding-top: 10px;
 }
 
 .workflow-node {
@@ -974,73 +1058,6 @@ label {
   white-space: pre-wrap;
 }
 
-.agent-workflow-panel {
-  grid-template-rows: auto auto auto;
-  overflow: auto;
-}
-
-.workflow-panel-heading {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-}
-
-.agent-workflow-settings {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.agent-description-field {
-  grid-column: 1 / -1;
-}
-
-.agent-policy-summary {
-  background: #101826;
-  border: 1px solid #263244;
-  border-radius: 10px;
-  padding: 8px;
-}
-
-.json-details {
-  display: grid;
-  gap: 8px;
-  min-height: 0;
-}
-
-.json-details summary {
-  color: #93c5fd;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.json-details[open] {
-  border-top: 1px solid #263244;
-  padding-top: 8px;
-}
-
-.json-details[open] .json-editor {
-  min-height: 180px;
-}
-
-.json-details pre {
-  background: #07111f;
-  border-radius: 8px;
-  color: #d1d5db;
-  font-size: 11px;
-  margin: 8px 0 0;
-  max-height: 280px;
-  overflow: auto;
-  padding: 8px;
-  white-space: pre-wrap;
-}
-
-.advanced-toggle {
-  color: #cbd5e1;
-}
-
 .agent-workflow-node {
   border-color: #60a5fa;
   min-width: 180px;
@@ -1064,13 +1081,25 @@ label {
 }
 
 .workflow-minimap {
-  height: 82px;
-  width: 124px;
+  background: rgba(15, 23, 42, 0.78) !important;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  box-shadow: none !important;
+  height: 80px !important;
+  opacity: 0.82;
+  overflow: hidden;
+  width: 120px !important;
 }
 
 .workflow-structure-panel {
   align-content: start;
+  background: #151c27;
+  border: 1px solid #202938;
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
   overflow: auto;
+  padding: 12px;
 }
 
 .connection-builder {
@@ -1159,47 +1188,52 @@ label {
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto auto;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
-  .topbar,
-  .page-main {
-    grid-column: 1;
+  .app-sidebar {
+    grid-template-rows: auto auto auto;
   }
 
-  .topbar {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 10px;
+  .side-nav {
+    display: flex;
+    flex-wrap: wrap;
   }
 
-  .status {
-    max-width: 100%;
-    white-space: normal;
+  .sidebar-status {
+    max-height: none;
   }
 
-  .sidebar,
-  .workspace,
-  .inspector {
-    grid-column: 1;
+  .page-main,
+  .chat-page,
+  .workflow-page {
+    min-height: 0;
   }
 
-  .workspace {
-    grid-template-rows: auto minmax(320px, 50vh) auto;
+  .chat-thread {
+    padding: 20px;
   }
 
+  .run-settings-grid {
+    width: calc(100vw - 40px);
+  }
+
+  .workflow-page-header,
+  .workflow-controls-row,
+  .workflow-selector,
+  .workflow-editor-layout,
   .page-grid,
   .skill-registry-row {
     grid-template-columns: 1fr;
   }
 
-  .planner-chat-header {
-    display: grid;
+  .workflow-editor-layout {
+    grid-template-rows: minmax(320px, 52vh) auto;
   }
 
-  .planner-chat-grid,
-  .planner-response-box,
-  .agent-workflow-settings {
+  .composer-footer {
+    align-items: stretch;
+    display: grid;
     grid-template-columns: 1fr;
   }
 }
