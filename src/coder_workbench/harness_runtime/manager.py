@@ -6,6 +6,7 @@ from typing import Any
 
 from .contracts import CONVERSATION_HARNESS_ID, TASK_EXECUTION_HARNESS_ID, HarnessMode, harness_contract_for_id
 from .fallback_provider import InternalFallbackProvider
+from .openhands_provider import OpenHandsRuntimeProvider
 from .profiles import (
     INTERNAL_FALLBACK_PROVIDER_ID,
     OPENHANDS_PROVIDER_ID,
@@ -26,7 +27,7 @@ class HarnessRuntimeManager:
         providers: list[HarnessProvider] | None = None,
     ) -> None:
         self.profiles = profiles or default_harness_runtime_profiles()
-        installed = providers or [InternalFallbackProvider()]
+        installed = providers or [OpenHandsRuntimeProvider(), InternalFallbackProvider()]
         self.providers = {provider.provider_id: provider for provider in installed}
 
     def run(self, request: HarnessRunRequest, *, emit: Any | None = None) -> HarnessRunResult:
@@ -136,11 +137,16 @@ class HarnessRuntimeManager:
             raise ValueError(f"profile {request.profile.id!r} mode does not match request mode {request.mode!r}")
 
     def _provider_for_profile(self, profile: HarnessRuntimeProfile) -> HarnessProvider:
+        if profile.provider_id == OPENHANDS_PROVIDER_ID and not _openhands_enabled():
+            return self._fallback_provider(profile)
+
         provider = self.providers.get(profile.provider_id)
         if provider is not None and provider.is_available():
-            if profile.provider_id != OPENHANDS_PROVIDER_ID or _openhands_enabled():
-                return provider
+            return provider
 
+        return self._fallback_provider(profile)
+
+    def _fallback_provider(self, profile: HarnessRuntimeProfile) -> HarnessProvider:
         fallback = self.providers.get(INTERNAL_FALLBACK_PROVIDER_ID)
         if fallback is not None and fallback.is_available():
             return fallback

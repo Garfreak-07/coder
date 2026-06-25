@@ -11,6 +11,7 @@ from .contracts import (
 from .manager import HarnessRuntimeManager
 from .artifact_projector import ArtifactProjectionError, ArtifactProjector
 from .native_events import NativeRuntimeEvent
+from .openhands_provider import OpenHandsRuntimeProvider
 from .profiles import (
     DEFAULT_HARNESS_RUNTIME_PROFILES,
     HarnessBindings,
@@ -39,6 +40,7 @@ __all__ = [
     "ArtifactProjector",
     "NativeRuntimeEvent",
     "NativeRuntimeStore",
+    "OpenHandsRuntimeProvider",
     "TASK_EXECUTION_HARNESS",
     "TASK_EXECUTION_HARNESS_ID",
     "default_harness_runtime_profiles",

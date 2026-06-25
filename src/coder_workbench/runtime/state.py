@@ -94,6 +94,9 @@ EventType = Literal[
     "agent_graph.run.heartbeat",
     "harness_runtime.fallback.legacy",
     "harness_runtime.fallback.unconfigured",
+    "harness_runtime.openhands.started",
+    "harness_runtime.openhands.completed",
+    "harness_runtime.openhands.failed",
 ]
 
 
