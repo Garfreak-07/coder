@@ -4,14 +4,14 @@ from typing import Any
 
 from coder_workbench.actions import ActionGateway, ActionSpec, RunContext, RuntimeActionRecord, action_completed_payload
 from coder_workbench.agent_graph.artifacts import graph_artifact_id
-from coder_workbench.agent_graph.cache import GraphRunCache
+from coder_workbench.agent_graph.round_working_set import RoundWorkingSet
 from coder_workbench.core import AgentWorkflowSpec
 
 
 def apply_hidden_effects(
     *,
     agent_workflow: AgentWorkflowSpec,
-    cache: GraphRunCache,
+    cache: RoundWorkingSet,
     repo_root: str,
     scopes: list[str],
     data: dict[str, Any],
@@ -27,7 +27,7 @@ def apply_hidden_effects(
 
 def replay_approved_runtime_actions(
     *,
-    cache: GraphRunCache,
+    cache: RoundWorkingSet,
     repo_root: str,
     scopes: list[str],
     data: dict[str, Any],
@@ -75,7 +75,7 @@ def replay_approved_runtime_actions(
 
 def _handle_requested_runtime_actions(
     agent_workflow: AgentWorkflowSpec,
-    cache: GraphRunCache,
+    cache: RoundWorkingSet,
     repo_root: str,
     scopes: list[str],
     data: dict[str, Any],
@@ -122,7 +122,7 @@ def _handle_requested_runtime_actions(
 
 def _handle_optional_check_commands(
     agent_workflow: AgentWorkflowSpec,
-    cache: GraphRunCache,
+    cache: RoundWorkingSet,
     repo_root: str,
     scopes: list[str],
     data: dict[str, Any],
@@ -198,7 +198,7 @@ def _handle_optional_check_commands(
 
 def _handle_patch_previews(
     agent_workflow: AgentWorkflowSpec,
-    cache: GraphRunCache,
+    cache: RoundWorkingSet,
     repo_root: str,
     scopes: list[str],
     data: dict[str, Any],
@@ -332,7 +332,7 @@ def _handle_patch_previews(
     return records
 
 
-def _requested_check_commands_from_artifacts(cache: GraphRunCache) -> list[dict[str, Any]]:
+def _requested_check_commands_from_artifacts(cache: RoundWorkingSet) -> list[dict[str, Any]]:
     commands: list[dict[str, Any]] = []
     for record in cache.execution_cache.values():
         artifact = record.artifact_payload or {}
@@ -345,7 +345,7 @@ def _requested_check_commands_from_artifacts(cache: GraphRunCache) -> list[dict[
     return commands
 
 
-def _requested_patch_changes_from_artifacts(cache: GraphRunCache) -> list[dict[str, Any]]:
+def _requested_patch_changes_from_artifacts(cache: RoundWorkingSet) -> list[dict[str, Any]]:
     changes: list[dict[str, Any]] = []
     for record in cache.execution_cache.values():
         artifact = record.artifact_payload or {}
@@ -355,7 +355,7 @@ def _requested_patch_changes_from_artifacts(cache: GraphRunCache) -> list[dict[s
     return changes
 
 
-def _requested_runtime_actions_from_artifacts(cache: GraphRunCache) -> list[dict[str, Any]]:
+def _requested_runtime_actions_from_artifacts(cache: RoundWorkingSet) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     for record in cache.execution_cache.values():
         artifact = record.artifact_payload or {}

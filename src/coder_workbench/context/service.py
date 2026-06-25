@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from coder_workbench.agent_graph.cache import GraphRunCache
+from coder_workbench.agent_graph.round_working_set import RoundWorkingSet
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, WorkItem
 from coder_workbench.coding import build_coding_context_packet
 from coder_workbench.context.budget import ContextBudget, context_compaction_enabled
@@ -37,7 +37,7 @@ class ContextService:
     def build_for_work_item(
         self,
         *,
-        cache: GraphRunCache,
+        cache: RoundWorkingSet,
         item: WorkItem,
         planner_order_ref: str,
         upstream_refs: list[str],

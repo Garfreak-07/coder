@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from coder_workbench.agent_graph.cache import GraphRunCache
+from coder_workbench.agent_graph.round_working_set import RoundWorkingSet
 from coder_workbench.agent_graph.schema import (
     PlanRunSummary,
     PlanStatus,
@@ -12,8 +12,8 @@ from coder_workbench.agent_graph.schema import (
 )
 
 
-def build_planner_input_bundle(cache: GraphRunCache) -> PlannerInputBundle:
-    # GraphRunCache.execution_cache entries are normalized before bundle and summary construction.
+def build_planner_input_bundle(cache: RoundWorkingSet) -> PlannerInputBundle:
+    # RoundWorkingSet.execution_cache entries are normalized before bundle and summary construction.
     planner_order_ref = cache.plan_cache.planner_order_ref if cache.plan_cache else "planner_order_unknown"
     items = [
         PlannerInputBundleItem(
@@ -42,7 +42,7 @@ def build_planner_input_bundle(cache: GraphRunCache) -> PlannerInputBundle:
     )
 
 
-def build_round_summary(cache: GraphRunCache) -> PlanRunSummary:
+def build_round_summary(cache: RoundWorkingSet) -> PlanRunSummary:
     planner_order_ref = cache.plan_cache.planner_order_ref if cache.plan_cache else "planner_order_unknown"
     bundle = build_planner_input_bundle(cache)
     ordered_state = [
@@ -82,7 +82,7 @@ def _remaining_work(bundle: PlannerInputBundle, ordered_state: list[RoundSummary
     return remaining
 
 
-def _plan_status(items: list[PlannerInputBundleItem], cache: GraphRunCache) -> PlanStatus:
+def _plan_status(items: list[PlannerInputBundleItem], cache: RoundWorkingSet) -> PlanStatus:
     if cache.interrupts:
         return "interrupted"
     if not items:

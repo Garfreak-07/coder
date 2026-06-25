@@ -15,7 +15,7 @@ from coder_workbench.actions import (
 )
 from coder_workbench.agent_graph.artifacts import AgentGraphArtifactRecorder, graph_artifact_id
 from coder_workbench.agent_graph.agent_run import AgentRun
-from coder_workbench.agent_graph.cache import GraphRunCache
+from coder_workbench.agent_graph.round_working_set import RoundWorkingSet
 from coder_workbench.agent_graph.context import upstream_refs_for_item
 from coder_workbench.agent_graph.effects import apply_hidden_effects
 from coder_workbench.agent_graph.evaluation import (
@@ -87,7 +87,7 @@ class AgentGraphRunner:
     """AgentWorkflow runtime boundary.
 
     This runner executes AgentWorkflowSpec directly through AgentGraph data
-    flow: PlannerOrder, GraphRunCache, AgentRun, and PlannerDecision.
+    flow: PlannerOrder, RoundWorkingSet, AgentRun, and PlannerDecision.
     """
 
     def __init__(
@@ -576,7 +576,7 @@ class AgentGraphRunner:
             _span=round_span,
         )
 
-        cache = GraphRunCache(round=round_number, skill_index=skill_index.model_dump(mode="json"))
+        cache = RoundWorkingSet(round=round_number, skill_index=skill_index.model_dump(mode="json"))
         repo_intelligence = _repo_intelligence_from_data_or_repo(data, repo_root)
         planner_order = (
             self._planner_order_from_initial_data(data)
@@ -1150,7 +1150,7 @@ class AgentGraphRunner:
 
     def _start_work_item(
         self,
-        cache: GraphRunCache,
+        cache: RoundWorkingSet,
         item: Any,
         planner_order_ref: str,
         emit: Any,
@@ -1374,7 +1374,7 @@ class AgentGraphRunner:
 
     def _normalize_execution_record(
         self,
-        cache: GraphRunCache,
+        cache: RoundWorkingSet,
         round_number: int,
         execution: ExecutionRecord,
     ) -> ExecutionRecord:
@@ -1435,7 +1435,7 @@ class AgentGraphRunner:
 
     def _record_debug_findings(
         self,
-        cache: GraphRunCache,
+        cache: RoundWorkingSet,
         recorder: AgentGraphArtifactRecorder,
         repo_root: str,
         emit: Any,
@@ -1487,7 +1487,7 @@ class AgentGraphRunner:
 
     def _record_debug_finding(
         self,
-        cache: GraphRunCache,
+        cache: RoundWorkingSet,
         recorder: AgentGraphArtifactRecorder,
         finding: dict[str, Any],
         emit: Any,
@@ -1520,7 +1520,7 @@ class AgentGraphRunner:
 
     def _record_hidden_effect_artifacts(
         self,
-        cache: GraphRunCache,
+        cache: RoundWorkingSet,
         recorder: AgentGraphArtifactRecorder,
         effects: list[dict[str, Any]],
     ) -> None:
@@ -1534,7 +1534,7 @@ class AgentGraphRunner:
 
     def _emit_hidden_effect_outputs(
         self,
-        cache: GraphRunCache,
+        cache: RoundWorkingSet,
         effects: list[dict[str, Any]],
         emit: Any,
     ) -> None:
