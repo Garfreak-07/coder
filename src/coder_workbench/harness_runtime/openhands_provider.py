@@ -8,9 +8,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from .contracts import harness_contract_for_id
 from .native_events import NativeRuntimeEvent
 from .profiles import OPENHANDS_PROVIDER_ID
 from .runtime_context import HarnessRunRequest, HarnessRunResult
+from .sandbox import SandboxPreparationError, collect_workspace_changes, prepare_sandbox_workspace
 from .store import NativeRuntimeStore
 
 
@@ -85,56 +87,94 @@ class OpenHandsRuntimeProvider:
                 refs=[selected_event.event_id],
             )
 
-        workspace = self._workspace_for_request(request)
-        if workspace is None:
+        contract = harness_contract_for_id(request.contract_id)
+        try:
+            sandbox_context = prepare_sandbox_workspace(
+                contract=contract,
+                profile=request.profile,
+                context=request.context,
+            )
+        except SandboxPreparationError as exc:
             return self._failed(
                 request,
                 emit=emit,
                 code="openhands_sandbox_unavailable",
-                message="Task Execution Harness requires sandbox_root for OpenHands execution.",
+                message=str(exc),
                 native_type="sandbox.unavailable",
                 status="blocked",
                 refs=[selected_event.event_id],
             )
 
-        started_event = self._record_event(
-            request,
-            native_type="conversation.started",
-            status="running",
-            summary="OpenHands conversation started.",
-            payload={
-                "mode": request.mode,
-                "workspace": str(workspace),
-                "tools": self._tool_names_for_request(request, sdk),
-                "model": credentials["model"],
-                "base_url_configured": bool(credentials["base_url"]),
-            },
-        )
-        prompt = _prompt_for_request(request)
         try:
-            tools = self._tools_for_request(request, sdk)
-            llm = sdk.LLM(
-                model=credentials["model"],
-                api_key=credentials["api_key"],
-                base_url=credentials["base_url"],
-            )
-            agent = sdk.Agent(llm=llm, tools=tools)
-            conversation = sdk.Conversation(agent=agent, workspace=str(workspace))
-            conversation.send_message(prompt)
-            run_output = conversation.run()
-        except Exception as exc:
+            with sandbox_context as sandbox:
+                workspace = sandbox.path
+                sandbox_event = self._record_event(
+                    request,
+                    native_type="sandbox.prepared",
+                    status="completed",
+                    summary="Sandbox workspace prepared.",
+                    payload={
+                        "mode": request.mode,
+                        "workspace_mode": sandbox.workspace_mode,
+                        "temporary": sandbox.temporary,
+                        "workspace": str(workspace),
+                    },
+                )
+                started_event = self._record_event(
+                    request,
+                    native_type="conversation.started",
+                    status="running",
+                    summary="OpenHands conversation started.",
+                    payload={
+                        "mode": request.mode,
+                        "workspace": str(workspace),
+                        "tools": self._tool_names_for_request(request, sdk),
+                        "model": credentials["model"],
+                        "base_url_configured": bool(credentials["base_url"]),
+                    },
+                )
+                prompt = _prompt_for_request(request)
+                try:
+                    tools = self._tools_for_request(request, sdk)
+                    llm = sdk.LLM(
+                        model=credentials["model"],
+                        api_key=credentials["api_key"],
+                        base_url=credentials["base_url"],
+                    )
+                    agent = sdk.Agent(llm=llm, tools=tools)
+                    conversation = sdk.Conversation(agent=agent, workspace=str(workspace))
+                    conversation.send_message(prompt)
+                    run_output = conversation.run()
+                except Exception as exc:
+                    return self._failed(
+                        request,
+                        emit=emit,
+                        code="openhands_run_failed",
+                        message=f"OpenHands conversation failed: {exc}",
+                        native_type="conversation.failed",
+                        refs=[selected_event.event_id, sandbox_event.event_id, started_event.event_id],
+                        payload={"error_type": type(exc).__name__, "message": str(exc)},
+                    )
+
+                summary = _summarize_run_output(run_output)
+                facts = _merge_runtime_facts(
+                    _runtime_facts(run_output),
+                    self._sandbox_facts(request, sandbox),
+                )
+                facts["native_event_refs"] = _dedupe(
+                    [sandbox_event.event_id, started_event.event_id, *facts["native_event_refs"]]
+                )
+        except SandboxPreparationError as exc:
             return self._failed(
                 request,
                 emit=emit,
-                code="openhands_run_failed",
-                message=f"OpenHands conversation failed: {exc}",
-                native_type="conversation.failed",
-                refs=[selected_event.event_id, started_event.event_id],
-                payload={"error_type": type(exc).__name__, "message": str(exc)},
+                code="openhands_sandbox_unavailable",
+                message=str(exc),
+                native_type="sandbox.unavailable",
+                status="blocked",
+                refs=[selected_event.event_id],
             )
 
-        summary = _summarize_run_output(run_output)
-        facts = _runtime_facts(run_output)
         completed_event = self._record_event(
             request,
             native_type="conversation.completed",
@@ -152,7 +192,7 @@ class OpenHandsRuntimeProvider:
                 "evidence_refs": facts["evidence_refs"],
             },
         )
-        refs = [selected_event.event_id, started_event.event_id, completed_event.event_id]
+        refs = [selected_event.event_id, *facts["native_event_refs"], completed_event.event_id]
         evidence_refs = _dedupe([*refs, *facts["evidence_refs"]])
         self._emit(
             emit,
@@ -221,6 +261,46 @@ class OpenHandsRuntimeProvider:
 
     def _tools_for_request(self, request: HarnessRunRequest, sdk: Any) -> list[Any]:
         return [sdk.Tool(name=name) for name in self._tool_names_for_request(request, sdk)]
+
+    def _sandbox_facts(self, request: HarnessRunRequest, sandbox: Any) -> dict[str, list[str]]:
+        facts = _empty_runtime_facts()
+        if request.mode != "task_execution":
+            return facts
+        changes = collect_workspace_changes(sandbox)
+        facts["changed_files"] = list(changes["changed_files"])
+        facts["created_files"] = list(changes["created_files"])
+        facts["deleted_files"] = list(changes["deleted_files"])
+        has_changes = bool(facts["changed_files"] or facts["created_files"] or facts["deleted_files"])
+        diff_text = str(changes.get("diff") or "")
+        if request.profile.sandbox_policy.get("collect_diff_refs", True) and diff_text:
+            diff_event = self._record_event(
+                request,
+                native_type="sandbox.diff",
+                status="completed",
+                summary="Sandbox workspace diff collected.",
+                payload=diff_text,
+            )
+            facts["diff_refs"].append(diff_event.payload_ref or diff_event.event_id)
+            facts["native_event_refs"].append(diff_event.event_id)
+        if has_changes and request.profile.sandbox_policy.get("collect_log_refs", True):
+            log_event = self._record_event(
+                request,
+                native_type="sandbox.summary",
+                status="completed",
+                summary="Sandbox workspace summary collected.",
+                payload={
+                    "workspace_mode": sandbox.workspace_mode,
+                    "temporary": sandbox.temporary,
+                    "changed_files": facts["changed_files"],
+                    "created_files": facts["created_files"],
+                    "deleted_files": facts["deleted_files"],
+                    "diff_refs": facts["diff_refs"],
+                },
+            )
+            facts["log_refs"].append(log_event.payload_ref or log_event.event_id)
+            facts["native_event_refs"].append(log_event.event_id)
+        facts["evidence_refs"] = _dedupe([*facts["diff_refs"], *facts["log_refs"]])
+        return facts
 
     def _failed(
         self,
@@ -526,7 +606,28 @@ def _runtime_facts(run_output: Any) -> dict[str, list[str]]:
         "diff_refs": _string_list_fact(run_output, "diff_refs", "patch_refs"),
         "log_refs": _string_list_fact(run_output, "log_refs"),
         "evidence_refs": _string_list_fact(run_output, "evidence_refs"),
+        "native_event_refs": [],
     }
+
+
+def _empty_runtime_facts() -> dict[str, list[str]]:
+    return {
+        "changed_files": [],
+        "created_files": [],
+        "deleted_files": [],
+        "diff_refs": [],
+        "log_refs": [],
+        "evidence_refs": [],
+        "native_event_refs": [],
+    }
+
+
+def _merge_runtime_facts(*records: dict[str, list[str]]) -> dict[str, list[str]]:
+    merged = _empty_runtime_facts()
+    for record in records:
+        for key in merged:
+            merged[key] = _dedupe([*merged[key], *record.get(key, [])])
+    return merged
 
 
 def _has_runtime_evidence(facts: dict[str, list[str]]) -> bool:

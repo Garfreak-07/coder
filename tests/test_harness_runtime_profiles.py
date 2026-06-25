@@ -95,6 +95,42 @@ class HarnessRuntimeProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cannot run commands"):
             manager.run_workflow_supervisor(context=context, profile_id=unsafe.id)
 
+    def test_manager_rejects_conversation_write_profile(self) -> None:
+        manager = HarnessRuntimeManager()
+        unsafe = manager.profile_for_id("internal-fallback-workflow-supervisor").model_copy(
+            update={"id": "unsafe-conversation-write", "tool_policy": {"write_files": True}, "sandbox_policy": {"workspace": "readonly"}}
+        )
+        manager.profiles[unsafe.id] = unsafe
+        context = HarnessRuntimeContext(
+            run_id="run-1",
+            agent_id="planner",
+            workflow_id="workflow-1",
+            harness_id="conversation-harness",
+            mode="workflow_supervisor",
+            profile_id=unsafe.id,
+        )
+
+        with self.assertRaisesRegex(ValueError, "cannot write files"):
+            manager.run_workflow_supervisor(context=context, profile_id=unsafe.id)
+
+    def test_manager_rejects_planner_temp_worktree_profile(self) -> None:
+        manager = HarnessRuntimeManager()
+        unsafe = manager.profile_for_id("internal-fallback-workflow-supervisor").model_copy(
+            update={"id": "unsafe-planner-workspace", "sandbox_policy": {"workspace": "temp_worktree"}}
+        )
+        manager.profiles[unsafe.id] = unsafe
+        context = HarnessRuntimeContext(
+            run_id="run-1",
+            agent_id="planner",
+            workflow_id="workflow-1",
+            harness_id="conversation-harness",
+            mode="workflow_supervisor",
+            profile_id=unsafe.id,
+        )
+
+        with self.assertRaisesRegex(ValueError, "workspace must be none or readonly"):
+            manager.run_workflow_supervisor(context=context, profile_id=unsafe.id)
+
     def test_manager_rejects_executor_user_chat_profile(self) -> None:
         manager = HarnessRuntimeManager()
         unsafe = manager.profile_for_id("internal-fallback-task-executor").model_copy(
@@ -111,6 +147,46 @@ class HarnessRuntimeProfileTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(ValueError, "cannot talk to the user"):
+            manager.run_task_execution(context=context, profile_id=unsafe.id)
+
+    def test_manager_rejects_executor_publish_profile(self) -> None:
+        manager = HarnessRuntimeManager()
+        unsafe = manager.profile_for_id("internal-fallback-task-executor").model_copy(
+            update={
+                "id": "unsafe-executor-publish",
+                "safety_policy": {"git_push": True, "deploy": True},
+                "sandbox_policy": {"workspace": "temp_worktree"},
+            }
+        )
+        manager.profiles[unsafe.id] = unsafe
+        context = HarnessRuntimeContext(
+            run_id="run-1",
+            agent_id="executor",
+            workflow_id="workflow-1",
+            harness_id="task-execution-harness",
+            mode="task_execution",
+            profile_id=unsafe.id,
+        )
+
+        with self.assertRaisesRegex(ValueError, "cannot push changes"):
+            manager.run_task_execution(context=context, profile_id=unsafe.id)
+
+    def test_manager_rejects_executor_non_isolated_workspace(self) -> None:
+        manager = HarnessRuntimeManager()
+        unsafe = manager.profile_for_id("internal-fallback-task-executor").model_copy(
+            update={"id": "unsafe-executor-workspace", "sandbox_policy": {"workspace": "readonly"}}
+        )
+        manager.profiles[unsafe.id] = unsafe
+        context = HarnessRuntimeContext(
+            run_id="run-1",
+            agent_id="executor",
+            workflow_id="workflow-1",
+            harness_id="task-execution-harness",
+            mode="task_execution",
+            profile_id=unsafe.id,
+        )
+
+        with self.assertRaisesRegex(ValueError, "requires temp_worktree"):
             manager.run_task_execution(context=context, profile_id=unsafe.id)
 
 

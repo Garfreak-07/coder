@@ -106,12 +106,44 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertIn("Do not ask the user", state["conversation"]["prompt"])
         self.assertEqual(
             [event.native_type for event in store.list_events("run-1")],
-            ["provider.selected", "conversation.started", "conversation.completed"],
+            ["provider.selected", "sandbox.prepared", "conversation.started", "conversation.completed"],
         )
 
         projected = ArtifactProjector().project(result)
         self.assertEqual(projected["artifact_type"], "execution_result")
         self.assertEqual(projected["status"], "completed")
+
+    def test_temp_worktree_preserves_original_repo_and_collects_diff_refs(self) -> None:
+        store = NativeRuntimeStore()
+        state: dict[str, Any] = {}
+
+        def mutate_workspace(workspace: Path) -> None:
+            (workspace / "src" / "app.py").write_text("changed\n", encoding="utf-8")
+            (workspace / "src" / "new.py").write_text("new\n", encoding="utf-8")
+
+        provider = OpenHandsRuntimeProvider(
+            native_store=store,
+            sdk_loader=lambda: _fake_sdk(state, on_run=mutate_workspace),
+        )
+
+        with tempfile.TemporaryDirectory() as repo:
+            repo_root = Path(repo)
+            (repo_root / "src").mkdir()
+            (repo_root / "src" / "app.py").write_text("original\n", encoding="utf-8")
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(repo_root=str(repo_root), sandbox_root=None))
+
+            self.assertEqual((repo_root / "src" / "app.py").read_text(encoding="utf-8"), "original\n")
+            self.assertFalse((repo_root / "src" / "new.py").exists())
+
+        self.assertEqual(result.status, "completed")
+        self.assertIn("src/app.py", result.artifact["changed_files"])
+        self.assertIn("src/new.py", result.artifact["created_files"])
+        self.assertTrue(result.diff_refs)
+        self.assertTrue(result.log_refs)
+        self.assertNotEqual(Path(state["conversation"]["workspace"]), repo_root)
+        self.assertFalse(Path(state["conversation"]["workspace"]).exists())
+        self.assertIn("sandbox.diff", [event.native_type for event in store.list_events("run-1")])
 
     def test_openhands_provider_uses_task_tracker_only_for_conversation_modes(self) -> None:
         state: dict[str, Any] = {}
@@ -141,7 +173,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.error["code"], "openhands_run_failed")
         self.assertEqual(
             [event.native_type for event in store.list_events("run-1")],
-            ["provider.selected", "conversation.started", "conversation.failed"],
+            ["provider.selected", "sandbox.prepared", "conversation.started", "conversation.failed"],
         )
 
     def test_openhands_imports_stay_inside_provider(self) -> None:
@@ -227,7 +259,7 @@ def _request() -> HarnessRunRequest:
     )
 
 
-def _task_request(*, sandbox_root: str | None) -> HarnessRunRequest:
+def _task_request(*, sandbox_root: str | None, repo_root: str = "F:\\repo") -> HarnessRunRequest:
     manager = HarnessRuntimeManager()
     return manager._request(
         request_id="request-1",
@@ -241,7 +273,7 @@ def _task_request(*, sandbox_root: str | None) -> HarnessRunRequest:
             harness_id="task-execution-harness",
             mode="task_execution",
             profile_id="openhands-task-executor-default",
-            repo_root="F:\\repo",
+            repo_root=repo_root,
             sandbox_root=sandbox_root,
             context_packet={
                 "hot": {
@@ -260,6 +292,7 @@ def _fake_sdk(
     *,
     run_error: Exception | None = None,
     run_output: Any | None = None,
+    on_run: Any | None = None,
 ) -> Any:
     class FakeLLM:
         def __init__(self, **kwargs: Any) -> None:
@@ -283,6 +316,8 @@ def _fake_sdk(
         def run(self) -> Any:
             if run_error is not None:
                 raise run_error
+            if on_run is not None:
+                on_run(Path(state["conversation"]["workspace"]))
             state["conversation"]["ran"] = True
             return run_output or SimpleNamespace(summary="Fake OpenHands completed.")
 

@@ -22,7 +22,15 @@ from .profiles import (
 )
 from .runtime_context import HarnessRunRequest, HarnessRunResult, HarnessRuntimeContext
 from .safety import SafetyDecision, enforce_harness_safety, evaluate_harness_safety
-from .sandbox import SandboxPolicy, enforce_sandbox_policy, sandbox_policy_for_profile
+from .sandbox import (
+    PreparedSandboxWorkspace,
+    SandboxPolicy,
+    SandboxPreparationError,
+    collect_workspace_changes,
+    enforce_sandbox_policy,
+    prepare_sandbox_workspace,
+    sandbox_policy_for_profile,
+)
 from .store import NativeRuntimeStore
 
 __all__ = [
@@ -43,16 +51,20 @@ __all__ = [
     "NativeRuntimeEvent",
     "NativeRuntimeStore",
     "OpenHandsRuntimeProvider",
+    "PreparedSandboxWorkspace",
     "SafetyDecision",
     "SandboxPolicy",
+    "SandboxPreparationError",
     "TASK_EXECUTION_HARNESS",
     "TASK_EXECUTION_HARNESS_ID",
+    "collect_workspace_changes",
     "default_harness_runtime_profiles",
     "enforce_harness_safety",
     "enforce_sandbox_policy",
     "evaluate_harness_safety",
     "harness_contract_for_id",
     "harness_runtime_profile_for_id",
+    "prepare_sandbox_workspace",
     "resolve_harness_id",
     "sandbox_policy_for_profile",
 ]
