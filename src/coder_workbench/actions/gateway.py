@@ -549,10 +549,15 @@ class ActionGateway:
             sandbox=sandbox and not sandbox_unavailable,
         )
         self.budget_broker.commit(reservation.reservation_id, actual_tool_calls=1)
+        blocked = bool(result.get("blocked")) or str(result.get("status") or "") == "blocked"
+        error_code = None
+        if blocked:
+            message = str(result.get("message") or "")
+            error_code = "command_timeout" if "timed out" in message.lower() else "command_requires_approval"
         return ActionResult(
-            status="blocked" if result.get("blocked") else "ok",
+            status="blocked" if blocked else "ok",
             summary=str(result.get("message") or result.get("output") or "Command completed."),
-            error_code="command_requires_approval" if result.get("blocked") else None,
+            error_code=error_code,
             payload={
                 "reservation": reservation.model_dump(mode="json"),
                 "result": result,

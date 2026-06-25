@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from coder_workbench.agent_harness.action_protocol import HarnessObservation
+from coder_workbench.agent_harness.action_protocol import ActionLifecycleRecord, HarnessObservation
 
 
 class HarnessSession(BaseModel):
@@ -20,6 +20,7 @@ class HarnessSession(BaseModel):
     coding_context_packet: dict[str, Any] = Field(default_factory=dict)
 
     observations: list[HarnessObservation] = Field(default_factory=list)
+    action_lifecycle: list[ActionLifecycleRecord] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
 
     opened_files: list[str] = Field(default_factory=list)

@@ -1,4 +1,4 @@
-from .action_protocol import HarnessActionBatch, HarnessActionRequest, HarnessObservation
+from .action_protocol import ActionLifecycleRecord, HarnessActionBatch, HarnessActionRequest, HarnessObservation
 from .actions import HarnessAction
 from .base import AgentHarness, HarnessResult, HarnessTask
 from .code_worker import CodeWorkerHarness
@@ -46,6 +46,7 @@ from .tool_metadata import ToolCapabilityMetadata, ToolMetadataRegistry
 
 __all__ = [
     "AgentHarness",
+    "ActionLifecycleRecord",
     "ArtifactRepairService",
     "CODE_WORKER_HARNESS",
     "CodeWorkerLoopState",

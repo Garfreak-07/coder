@@ -24,6 +24,28 @@ class HarnessActionBatch(BaseModel):
     actions: list[HarnessActionRequest] = Field(default_factory=list, min_length=1)
 
 
+class ActionLifecycleRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str
+    action_type: str
+    status: Literal[
+        "requested",
+        "allowed",
+        "blocked",
+        "executing",
+        "ok",
+        "failed",
+        "recorded",
+        "cancelled",
+        "skipped",
+    ]
+    turn_count: int
+    summary: str = ""
+    error_code: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class HarnessObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

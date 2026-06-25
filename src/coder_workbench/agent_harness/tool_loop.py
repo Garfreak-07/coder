@@ -12,7 +12,12 @@ from coder_workbench.actions.result_budget import ResultBudget, apply_result_bud
 from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.repair import parse_json_object
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, WorkItem
-from coder_workbench.agent_harness.action_protocol import HarnessActionBatch, HarnessActionRequest, HarnessObservation
+from coder_workbench.agent_harness.action_protocol import (
+    ActionLifecycleRecord,
+    HarnessActionBatch,
+    HarnessActionRequest,
+    HarnessObservation,
+)
 from coder_workbench.agent_harness.artifact_repair_pipeline import ArtifactRepairPipeline, RepairContext
 from coder_workbench.agent_harness.command_workflow import CommandWorkflow
 from coder_workbench.agent_harness.context_preprocessor import CodeWorkerContextPreprocessor
@@ -100,6 +105,14 @@ class CodeWorkerToolLoop:
 
         while state.turn_count < state.max_turns:
             state.turn_count += 1
+            if self._cancel_requested():
+                return self._blocked_result(
+                    state,
+                    item,
+                    envelope,
+                    "CodeWorker tool loop was cancelled before the model call.",
+                    "unknown_error",
+                )
             _emit(
                 self.emit,
                 "code_worker.loop.model_call.started",
@@ -113,6 +126,14 @@ class CodeWorkerToolLoop:
             response = self.model.invoke(self._prompt(prompt, item, envelope, state))
             content = str(getattr(response, "content", response))
             state.last_model_output = content
+            if self._cancel_requested():
+                return self._blocked_result(
+                    state,
+                    item,
+                    envelope,
+                    "CodeWorker tool loop was cancelled after the model call.",
+                    "unknown_error",
+                )
             payload = parse_json_object(content)
             if payload is None:
                 if self._recoverable_model_output_error(state, "Model output was not a JSON object.", "invalid_json"):
@@ -226,6 +247,21 @@ class CodeWorkerToolLoop:
         item: WorkItem,
         envelope: AgentTaskEnvelope,
     ) -> dict[str, Any] | None:
+        for request in requests:
+            self._record_lifecycle(state, request, "requested", request.reason)
+        if self._cancel_requested():
+            self._record_cancelled_actions(
+                state,
+                requests,
+                reason="CodeWorker tool loop was cancelled before action execution.",
+            )
+            return self._blocked_result(
+                state,
+                item,
+                envelope,
+                "CodeWorker tool loop was cancelled before action execution.",
+                "unknown_error",
+            )
         try:
             batches = self.tool_batcher.partition(requests)
         except KeyError as exc:
@@ -256,6 +292,22 @@ class CodeWorkerToolLoop:
                 error_code="unknown_action_type",
             )
             self._record_observation(state, request, observation)
+            self._record_lifecycle(
+                state,
+                request,
+                "skipped",
+                observation.summary,
+                error_code=observation.error_code,
+                evidence_refs=observation.evidence_refs,
+            )
+            self._record_lifecycle(
+                state,
+                request,
+                "recorded",
+                observation.summary,
+                error_code=observation.error_code,
+                evidence_refs=observation.evidence_refs,
+            )
             return self._blocked_result(
                 state,
                 item,
@@ -284,6 +336,14 @@ class CodeWorkerToolLoop:
                     }
                 )
                 self._record_observation(state, workflow_request, patch_decision.observation)
+                self._record_lifecycle(
+                    state,
+                    request,
+                    "blocked",
+                    patch_decision.reason,
+                    error_code=patch_decision.error_code,
+                )
+                self._record_lifecycle(state, request, "recorded", patch_decision.reason)
                 state.transition = {
                     "reason": "patch_requires_reread",
                     "from_action_id": request.action_id,
@@ -310,17 +370,57 @@ class CodeWorkerToolLoop:
                 )
 
             if request.action_type == "return_execution_result":
+                self._emit_action_allowed(state, request)
+                if self._cancel_requested():
+                    self._record_cancelled_actions(
+                        state,
+                        [request],
+                        reason="CodeWorker tool loop was cancelled before finalization.",
+                    )
+                    return self._blocked_result(
+                        state,
+                        item,
+                        envelope,
+                        "CodeWorker tool loop was cancelled before finalization.",
+                        "unknown_error",
+                    )
+                self._record_lifecycle(state, request, "executing", "Finalization started.")
                 final_payload = request.payload.get("artifact")
                 if not isinstance(final_payload, dict):
                     final_payload = dict(request.payload)
                 final_payload["artifact_type"] = "execution_result"
                 final = self._finalize_execution_result(final_payload, state=state, item=item, envelope=envelope)
                 if final is None:
+                    self._record_lifecycle(
+                        state,
+                        request,
+                        "failed",
+                        "Stop gate requested another tool-loop turn.",
+                        error_code="stop_gate_failed",
+                    )
+                    self._record_lifecycle(state, request, "recorded", "Stop gate retry recorded.")
                     return None
+                self._record_lifecycle(state, request, "ok", "Final execution_result accepted.")
+                self._record_lifecycle(state, request, "recorded", "Final execution_result recorded.")
                 return final
 
             assert decision.action_spec is not None
             self._emit_action_allowed(state, request)
+            if self._cancel_requested():
+                remaining = [action for action in requests if action.action_id not in processed_action_ids]
+                self._record_cancelled_actions(
+                    state,
+                    remaining,
+                    reason="CodeWorker tool loop was cancelled before action execution.",
+                )
+                return self._blocked_result(
+                    state,
+                    item,
+                    envelope,
+                    "CodeWorker tool loop was cancelled before action execution.",
+                    "unknown_error",
+                )
+            self._record_lifecycle(state, request, "executing", "Action execution started.")
             result = self.action_gateway.run(decision.action_spec, run_context=self.run_context)
             observation = self._record_action_result(state, request, result)
             if self.patch_workflow.should_auto_inspect(request, observation):
@@ -344,6 +444,7 @@ class CodeWorkerToolLoop:
 
     def _auto_inspect_after_patch(self, state: CodeWorkerLoopState, request: HarnessActionRequest) -> None:
         inspect_request = self.patch_workflow.auto_inspect_request(request)
+        self._record_lifecycle(state, inspect_request, "requested", inspect_request.reason)
         decision = self.tool_gate.decide(inspect_request)
         if not decision.allowed:
             assert decision.observation is not None
@@ -357,6 +458,14 @@ class CodeWorkerToolLoop:
             return
         assert decision.action_spec is not None
         self._emit_action_allowed(state, inspect_request)
+        if self._cancel_requested():
+            self._record_cancelled_actions(
+                state,
+                [inspect_request],
+                reason="CodeWorker tool loop was cancelled before automatic diff inspection.",
+            )
+            return
+        self._record_lifecycle(state, inspect_request, "executing", "Action execution started.")
         result = self.action_gateway.run(decision.action_spec, run_context=self.run_context)
         self._record_action_result(state, inspect_request, result)
 
@@ -384,6 +493,20 @@ class CodeWorkerToolLoop:
         for request, _decision in decisions:
             self._emit_action_allowed(state, request)
 
+        if self._cancel_requested():
+            self._record_cancelled_actions(
+                state,
+                requests,
+                reason="CodeWorker tool loop was cancelled before concurrent action execution.",
+            )
+            return self._blocked_result(
+                state,
+                item,
+                envelope,
+                "CodeWorker tool loop was cancelled before concurrent action execution.",
+                "unknown_error",
+            )
+
         max_workers = min(4, max(1, len(decisions)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [
@@ -394,6 +517,8 @@ class CodeWorkerToolLoop:
                 for request, decision in decisions
                 if decision.action_spec is not None
             ]
+            for request, _future in futures:
+                self._record_lifecycle(state, request, "executing", "Action execution started.")
             for request, future in futures:
                 self._record_action_result(state, request, future.result())
         return None
@@ -407,6 +532,8 @@ class CodeWorkerToolLoop:
         error_code: str | None,
     ) -> None:
         self._record_observation(state, request, observation)
+        self._record_lifecycle(state, request, "blocked", reason, error_code=error_code)
+        self._record_lifecycle(state, request, "recorded", reason, error_code=error_code)
         _emit(
             self.emit,
             "code_worker.loop.action.blocked",
@@ -422,6 +549,7 @@ class CodeWorkerToolLoop:
         )
 
     def _emit_action_allowed(self, state: CodeWorkerLoopState, request: HarnessActionRequest) -> None:
+        self._record_lifecycle(state, request, "allowed", "Action accepted.")
         _emit(
             self.emit,
             "code_worker.loop.action.allowed",
@@ -443,6 +571,22 @@ class CodeWorkerToolLoop:
     ) -> HarnessObservation:
         observation = self._observation_from_result(request, result)
         self._record_observation(state, request, observation)
+        self._record_lifecycle(
+            state,
+            request,
+            observation.status,
+            observation.summary,
+            error_code=observation.error_code,
+            evidence_refs=observation.evidence_refs,
+        )
+        self._record_lifecycle(
+            state,
+            request,
+            "recorded",
+            "Observation recorded.",
+            error_code=observation.error_code,
+            evidence_refs=observation.evidence_refs,
+        )
         _emit(
             self.emit,
             "code_worker.loop.action.executed",
@@ -575,9 +719,57 @@ class CodeWorkerToolLoop:
             summary=summary,
             output_ref=output_ref,
             evidence_refs=_unique(evidence_refs),
-            payload_preview=payload,
-            error_code=error_code,
+                payload_preview=payload,
+                error_code=error_code,
+            )
+
+    def _record_lifecycle(
+        self,
+        state: CodeWorkerLoopState,
+        request: HarnessActionRequest,
+        status: str,
+        summary: str = "",
+        *,
+        error_code: str | None = None,
+        evidence_refs: list[str] | None = None,
+    ) -> None:
+        state.session.action_lifecycle.append(
+            ActionLifecycleRecord(
+                action_id=request.action_id,
+                action_type=request.action_type,
+                status=status,  # type: ignore[arg-type]
+                turn_count=state.turn_count,
+                summary=_bounded_result_summary(
+                    summary,
+                    action_type=request.action_type,
+                    status=status,
+                    output_ref=None,
+                    max_chars=500,
+                ),
+                error_code=error_code,
+                evidence_refs=evidence_refs or [],
+            )
         )
+
+    def _record_cancelled_actions(
+        self,
+        state: CodeWorkerLoopState,
+        requests: list[HarnessActionRequest],
+        *,
+        reason: str,
+    ) -> None:
+        for request in requests:
+            observation = HarnessObservation(
+                action_id=request.action_id,
+                action_type=request.action_type,
+                status="blocked",
+                summary=reason,
+                evidence_refs=[f"harness_observation:{request.action_id}"],
+                error_code="run_cancelled",
+            )
+            self._record_observation(state, request, observation)
+            self._record_lifecycle(state, request, "cancelled", reason, error_code="run_cancelled")
+            self._record_lifecycle(state, request, "recorded", reason, error_code="run_cancelled")
 
     def _externalize_payload_if_large(
         self,
@@ -684,6 +876,14 @@ class CodeWorkerToolLoop:
         item: WorkItem,
         envelope: AgentTaskEnvelope,
     ) -> dict[str, Any] | None:
+        if self._cancel_requested():
+            return self._blocked_result(
+                state,
+                item,
+                envelope,
+                "CodeWorker tool loop was cancelled before finalization.",
+                "unknown_error",
+            )
         state.stop_gate_active = True
         _emit(
             self.emit,
@@ -838,6 +1038,7 @@ class CodeWorkerToolLoop:
                         "summary": observation.summary,
                         "output_ref": observation.output_ref,
                         "error_code": observation.error_code,
+                        "lifecycle_statuses": _lifecycle_statuses(session, observation.action_id),
                     }
                     for observation in session.observations
                     if observation.action_type != "model_step"
@@ -903,7 +1104,10 @@ class CodeWorkerToolLoop:
                 "outputs": session.evidence_refs,
                 "evidence_refs": session.evidence_refs,
                 "requested_actions": [
-                    observation.model_dump(mode="json", exclude_none=True)
+                    {
+                        **observation.model_dump(mode="json", exclude_none=True),
+                        "lifecycle_statuses": _lifecycle_statuses(session, observation.action_id),
+                    }
                     for observation in session.observations
                 ],
                 "attempted_actions": [
@@ -940,6 +1144,17 @@ class CodeWorkerToolLoop:
         )
         return validate_artifact(payload, expected_type="execution_result")
 
+    def _cancel_requested(self) -> bool:
+        data = self.run_context.mutable_data
+        run_control = data.get("run_control")
+        return bool(
+            data.get("cancel_requested")
+            or data.get("cancelled")
+            or data.get("cancellation_requested")
+            or getattr(run_control, "cancel_requested", False)
+            or getattr(run_control, "cancel_requested_event", False)
+        )
+
 
 def _command_check_from_observation(
     request: HarnessActionRequest,
@@ -962,6 +1177,14 @@ def _command_check_from_observation(
         "output_ref": observation.output_ref,
         "evidence_refs": observation.evidence_refs,
     }
+
+
+def _lifecycle_statuses(session: HarnessSession, action_id: str) -> list[str]:
+    return [
+        record.status
+        for record in session.action_lifecycle
+        if record.action_id == action_id
+    ]
 
 
 def _identity_issue(payload: dict[str, Any], item: WorkItem, envelope: AgentTaskEnvelope) -> str:
