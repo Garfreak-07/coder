@@ -212,6 +212,49 @@ class RunStoreTests(unittest.TestCase):
             self.assertNotIn("content", persisted)
             self.assertEqual(store.get_blob(persisted["blob_id"])["content"], content)
 
+    def test_pending_context_packets_are_persisted_as_compact_result_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".coder"
+            store = RunStore(root)
+            packet = {
+                "agent_id": "executor",
+                "work_item_id": "executor-work",
+                "selected_state_keys": ["planning"],
+                "selected_state": {"planning": {"notes": "x" * 1000}},
+                "estimated_input_tokens": 150,
+            }
+            result = RunResult(
+                status="completed",
+                data={"pending_context_packets": {"context-packet-1": packet}},
+                summaries={},
+                events=[
+                    RunEvent(
+                        type="agent.context_packet_v2",
+                        message="context v2",
+                        payload={
+                            "packet_id": "context-packet-1",
+                            "event_type": "agent.context_packet_v2",
+                            "summary": {"agent_id": "executor", "work_item_id": "executor-work"},
+                            "size_chars": 1234,
+                        },
+                    )
+                ],
+                estimated_tokens_used=1,
+                agent_calls=1,
+                tool_calls=0,
+            )
+
+            stored = store.save("workflow-1", "/repo", "inspect", result)
+            loaded = store.get(stored.id, include_events=False)
+            records = loaded.result.data["pending_context_packets"]
+
+            self.assertEqual(store.get_context_packet(stored.id, "context-packet-1"), packet)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["packet_id"], "context-packet-1")
+            self.assertEqual(records[0]["summary"]["agent_id"], "executor")
+            self.assertGreater(records[0]["size_chars"], 0)
+            self.assertNotIn("selected_state", records[0])
+
     def test_run_group_metadata_is_listed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / ".coder"

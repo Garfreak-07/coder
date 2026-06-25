@@ -18,11 +18,13 @@ class DebugFindingReplanTests(unittest.TestCase):
                 "Fix failing check.",
                 tmp,
                 initial_data={"planner_mode": "simple"},
-            )
+        )
 
         self.assertEqual(result.status, "blocked")
-        self.assertEqual(result.status_code, "consecutive_blocked_rounds")
+        self.assertEqual(result.status_code, "planner_blocked")
         self.assertGreaterEqual(executor.execution_calls, 2)
+        self.assertTrue(result.data["blocked_recovery_used"])
+        self.assertEqual(result.data["planner_decision"]["final_status"], "blocked")
         self.assertIn("debug_findings", result.data)
 
 

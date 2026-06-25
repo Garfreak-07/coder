@@ -22,11 +22,13 @@ class AgentRuntimeProfile(BaseModel):
     agent_id: str
     role: str
     engine_id: str
+    harness_id: str | None = None
     context_profile: str
     token_budget: TokenBudget
     allowed_artifacts: list[str] = Field(default_factory=list)
     plugin_policy: dict[str, Any] = Field(default_factory=dict)
     skill_policy: dict[str, Any] = Field(default_factory=dict)
     memory_policy: dict[str, Any] = Field(default_factory=dict)
+    prompt_layers: dict[str, Any] | None = None
     repair_policy: dict[str, Any] = Field(default_factory=dict)
     tool_policy: dict[str, Any] = Field(default_factory=dict)

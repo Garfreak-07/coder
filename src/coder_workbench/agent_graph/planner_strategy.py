@@ -54,7 +54,7 @@ class ReplayPlannerStrategy:
         payload.setdefault("artifact_type", "planner_decision")
         payload.setdefault("round", context.bundle.round if context.bundle is not None else context.round_number)
         action = str(payload.get("next_action") or "")
-        payload.setdefault("task_done", action in {"finish", "stop"})
+        payload.setdefault("task_done", action in {"finish", "stop"} and payload.get("final_status") in {None, "completed"})
         payload.setdefault("reason", "Replay PlannerDecision.")
         return validate_artifact(payload, expected_type="planner_decision")
 
@@ -151,6 +151,12 @@ def _local_decision(
         interrupt.continue_without_human_possible is True
         for interrupt in bundle.interrupts
     )
+    blocked_requires_finish = (
+        has_interrupts
+        or has_blocked_work
+        or has_blocked_check_effects
+        or has_blocked_runtime_actions
+    ) and not can_continue_from_interrupts
     next_action = (
         "continue"
         if can_continue_from_interrupts
@@ -158,10 +164,9 @@ def _local_decision(
         or has_debug_findings
         or has_failed_check_effects
         or has_failed_runtime_actions
-        else "ask_human"
-        if has_interrupts or has_blocked_work or has_blocked_check_effects or has_blocked_runtime_actions
         else "finish"
     )
+    final_status = "blocked" if blocked_requires_finish else None
     reason = (
         "DebugFinding is inside the current RunContract; local PlannerStrategy will replan."
         if has_debug_findings
@@ -188,8 +193,9 @@ def _local_decision(
     payload = {
         "artifact_type": "planner_decision",
         "round": bundle.round,
-        "task_done": next_action == "finish",
+        "task_done": next_action == "finish" and final_status is None,
         "next_action": next_action,
+        "final_status": final_status,
         "risk_level": "medium"
         if has_interrupts
         or has_debug_findings
@@ -198,7 +204,7 @@ def _local_decision(
         or has_blocked_runtime_actions
         or has_failed_runtime_actions
         else "low",
-        "requires_human_confirmation": next_action == "ask_human",
+        "requires_human_confirmation": False,
         "reason": reason,
         "next_round_goal": (
             "Fix debug finding evidence and rerun checks."
@@ -214,11 +220,7 @@ def _local_decision(
             else ""
         ),
         "remaining_auto_rounds": 2 if next_action == "continue" else 0,
-        "human_message": (
-            "Planner needs user input to resolve the blocked work item."
-            if next_action == "ask_human"
-            else None
-        ),
+        "human_message": None,
     }
     return validate_artifact(payload, expected_type="planner_decision")
 

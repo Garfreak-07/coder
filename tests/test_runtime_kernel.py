@@ -27,14 +27,15 @@ def _planner_order(goal: str = "Do work.") -> PlannerOrder:
 
 
 class RunControllerTests(unittest.TestCase):
-    def test_finish_and_ask_human_actions_pass_through(self) -> None:
+    def test_finish_and_legacy_ask_human_actions_normalize(self) -> None:
         controller = RunController(guard=RunGuard(max_rounds=2))
 
         self.assertEqual(controller.evaluate_planner_decision({"next_action": "finish"}).action, "finish")
         decision = controller.evaluate_planner_decision({"next_action": "ask_human", "reason": "Need input."})
 
-        self.assertEqual(decision.action, "ask_human")
-        self.assertEqual(decision.status_code, "planner_ask_human")
+        self.assertEqual(decision.action, "finish")
+        self.assertEqual(decision.final_status, "blocked")
+        self.assertEqual(decision.status_code, "planner_blocked")
 
     def test_continue_within_max_rounds_passes(self) -> None:
         controller = RunController(guard=RunGuard(max_rounds=2))

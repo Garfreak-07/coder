@@ -58,6 +58,15 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("signature(", source)
         self.assertIn("AgentRun", source)
 
+    def test_resume_after_node_is_not_a_normal_runtime_api(self) -> None:
+        runner_source = inspect.getsource(__import__("coder_workbench.agent_graph.runner", fromlist=["_"]))
+        app_source = inspect.getsource(__import__("coder_workbench.server.app", fromlist=["_"]))
+        frontend_source = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+        self.assertNotIn("resume_after_node", runner_source)
+        self.assertNotIn("resume_after_node", app_source)
+        self.assertNotIn("resumeAfter", frontend_source)
+
     def test_agent_graph_low_level_services_route_through_action_gateway(self) -> None:
         runner_source = inspect.getsource(__import__("coder_workbench.agent_graph.runner", fromlist=["_"]))
         effects_source = inspect.getsource(__import__("coder_workbench.agent_graph.effects", fromlist=["_"]))

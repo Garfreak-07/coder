@@ -138,8 +138,8 @@ def context_packet_summary(packet: Any) -> dict[str, Any]:
     allowed_tools = packet.get("allowed_tools")
 
     summary = {
-        "agent_id": agent.get("id"),
-        "agent_name": agent.get("name"),
+        "agent_id": agent.get("id") or packet.get("agent_id"),
+        "agent_name": agent.get("name") or packet.get("agent_name"),
         "work_item_id": packet.get("work_item_id"),
         "artifact_type": packet.get("artifact_type"),
         "node_id": packet.get("node_id"),

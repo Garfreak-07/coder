@@ -6,6 +6,7 @@ from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.repair import parse_json_object
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, WorkItem
 from coder_workbench.agent_harness.execution_loop import ExecutionLoop
+from coder_workbench.agent_harness.execution_verification import ensure_execution_verification
 from coder_workbench.agent_harness.execution_memory import ExecutionRunMemory
 from coder_workbench.agent_harness.repair import ArtifactRepairService
 from coder_workbench.agent_harness.self_check import ExecutorSelfChecker, harness_self_check_enabled
@@ -51,6 +52,7 @@ class CodeWorkerHarness(AgentHarness):
             )
         except ArtifactValidationError:
             payload = _blocked_payload(item, loop_envelope.round, "Executor output failed schema validation after one repair.")
+            payload = ensure_execution_verification(payload)
         if self.enable_self_check:
             checked = ExecutorSelfChecker().check(
                 payload,
@@ -69,7 +71,7 @@ class CodeWorkerHarness(AgentHarness):
                 execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
                 artifact_payload=artifact,
             )
-        artifact = validate_artifact(payload, expected_type="execution_result")
+        artifact = validate_artifact(ensure_execution_verification(payload), expected_type="execution_result")
         return ExecutionRecord(
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,

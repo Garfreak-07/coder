@@ -56,6 +56,8 @@ class ProductUISurfaceTests(unittest.TestCase):
         self.assertIn('<nav className="side-nav"', sidebar)
         self.assertNotIn("top-nav", app)
         self.assertNotIn("Workbench", sidebar)
+        self.assertNotIn('activeSection === "runs"', app)
+        self.assertNotIn(">Runs<", sidebar)
 
     def test_visible_frontend_copy_does_not_reference_legacy_runtime(self) -> None:
         for relative_path in [

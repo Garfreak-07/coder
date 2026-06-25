@@ -10,7 +10,9 @@ class RuntimeProfileClosureTests(unittest.TestCase):
         executor = compiler.compile(AgentRecipe(id="executor", name="Executor", role="executor"))
 
         self.assertEqual(planner.allowed_artifacts, ["run_contract", "planner_order", "planner_decision", "round_summary"])
+        self.assertIsNone(planner.harness_id)
         self.assertEqual(executor.allowed_artifacts, ["execution_result"])
+        self.assertEqual(executor.harness_id, "code-worker-harness")
 
     def test_executor_profile_can_run_commands_for_verification(self) -> None:
         executor = RuntimeProfileCompiler().compile(AgentRecipe(id="executor", name="Executor", role="executor"))

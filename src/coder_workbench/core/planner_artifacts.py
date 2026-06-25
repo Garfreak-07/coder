@@ -9,25 +9,28 @@ RiskLevel = Literal["low", "medium", "high"]
 ExecutionStatus = Literal["completed", "blocked"]
 VerificationStatus = Literal["pass", "fail", "blocked", "skipped"]
 ConfidenceLevel = Literal["low", "medium", "high"]
+FinalReportStatus = Literal["completed", "blocked", "failed", "cancelled"]
 BlockerType = Literal[
-    "technical_blocker",
-    "ambiguity",
-    "scope_boundary",
-    "risk_boundary",
-    "dependency_missing",
-    "context_missing",
-    "plan_conflict",
+    "test_failed",
+    "command_failed",
     "schema_validation_failed",
-    "permission_blocked",
-    "verification_failed",
-    "tool_error",
-    "unsafe_action",
-    "transient_error_exhausted",
     "command_unavailable",
-    "patch_rejected",
-    "out_of_contract",
+    "missing_dependency",
+    "missing_file",
+    "scope_violation",
+    "risk_path_blocked",
+    "permission_boundary",
+    "missing_secret",
+    "network_required",
+    "external_account_required",
+    "timeout",
+    "context_missing",
+    "tool_unavailable",
+    "sandbox_unavailable",
+    "unknown_error",
 ]
-PlannerNextAction = Literal["continue", "ask_human", "finish", "stop"]
+PlannerRecommendation = Literal["replan_once", "finish"]
+PlannerNextAction = Literal["continue", "finish"]
 PlanStatus = Literal["pending", "running", "completed", "blocked", "interrupted"]
 PlannerArtifactType = Literal[
     "run_contract",
@@ -35,6 +38,7 @@ PlannerArtifactType = Literal[
     "execution_result",
     "planner_decision",
     "round_summary",
+    "final_report",
 ]
 
 
@@ -146,6 +150,24 @@ class PlannerOption(BaseModel):
     requires_human: bool = False
 
 
+class RecoveryAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: str
+    result: str
+
+
+class ConstraintBoundary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    within_scope: bool = True
+    requires_secret: bool = False
+    requires_network: bool = False
+    requires_external_account: bool = False
+    requires_destructive_action: bool = False
+    requires_out_of_scope_write: bool = False
+
+
 class VerificationCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -198,12 +220,34 @@ class ExecutionResultArtifact(PlannerArtifactBase, OptionalMergeIndexedArtifact)
     out_of_contract: bool = False
     needs_planner_decision: bool = False
     blocker_type: BlockerType | None = None
+    executor_recovery_exhausted: bool | None = None
+    blocker_reason: str | None = None
+    blocker_fingerprint: str | None = None
+    recovery_attempts: list[RecoveryAttempt] = Field(default_factory=list)
+    planner_recommendation: PlannerRecommendation | None = None
+    replan_goal: str | None = None
+    affected_files: list[str] = Field(default_factory=list)
+    constraint_boundary: ConstraintBoundary | None = None
     planner_question: str | None = None
     candidate_options: list[PlannerOption] = Field(default_factory=list)
     planner_options: list[PlannerOption] = Field(default_factory=list)
     continue_without_human_possible: bool | None = None
     no_op_rationale: str | None = None
     verification: ExecutionVerification
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_blocked_fields(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        blocker_type = data.get("blocker_type")
+        mapped = _legacy_blocker_type(str(blocker_type)) if blocker_type is not None else None
+        if mapped == blocker_type:
+            return data
+        migrated = dict(data)
+        if mapped is not None:
+            migrated["blocker_type"] = mapped
+        return migrated
 
     @model_validator(mode="after")
     def enforce_execution_semantics(self) -> "ExecutionResultArtifact":
@@ -216,6 +260,14 @@ class ExecutionResultArtifact(PlannerArtifactBase, OptionalMergeIndexedArtifact)
         if self.status == "blocked":
             if self.blocker_type is None:
                 raise ValueError("blocked execution_result requires blocker_type")
+            if self.executor_recovery_exhausted is not True:
+                raise ValueError("blocked execution_result requires executor_recovery_exhausted=true")
+            if not self.blocker_reason:
+                raise ValueError("blocked execution_result requires blocker_reason")
+            if self.planner_recommendation is None:
+                raise ValueError("blocked execution_result requires planner_recommendation")
+            if not _has_blocked_next_step_signal(self):
+                raise ValueError("blocked execution_result requires remaining_work, affected_files, or evidence_refs")
             if not _has_blocked_diagnostic(self):
                 raise ValueError("blocked execution_result requires decision-useful diagnostics")
         return self
@@ -226,12 +278,33 @@ class PlannerDecisionArtifact(PlannerArtifactBase):
     round: int = Field(default=1, ge=1)
     task_done: bool
     next_action: PlannerNextAction
+    final_status: FinalReportStatus | None = None
     risk_level: RiskLevel = "low"
     requires_human_confirmation: bool = False
     reason: str
     next_round_goal: str = ""
     remaining_auto_rounds: int = Field(default=0, ge=0, le=20)
     human_message: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_next_action(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        action = data.get("next_action")
+        if action == "stop":
+            migrated = dict(data)
+            migrated["next_action"] = "finish"
+            migrated.setdefault("task_done", True)
+            return migrated
+        if action in {"ask_human", "blocked"}:
+            migrated = dict(data)
+            migrated["next_action"] = "finish"
+            migrated["task_done"] = False
+            migrated.setdefault("final_status", "blocked")
+            migrated["requires_human_confirmation"] = False
+            return migrated
+        return data
 
 
 class RoundSummaryItem(RequiredMergeIndexedArtifact):
@@ -257,12 +330,54 @@ class RoundSummaryArtifact(PlannerArtifactBase):
     remaining_work: list[str] = Field(default_factory=list)
 
 
+class FinalReportCommit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sha: str | None = None
+    message: str | None = None
+
+
+class FinalReportFiles(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    created: list[str] = Field(default_factory=list)
+    modified: list[str] = Field(default_factory=list)
+    deleted: list[str] = Field(default_factory=list)
+
+
+class FinalReportCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    command: str | None = None
+    status: Literal["passed", "failed", "blocked", "skipped", "unknown"]
+    summary: str = ""
+    output_ref: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class FinalReportArtifact(PlannerArtifactBase):
+    artifact_type: Literal["final_report"] = "final_report"
+    status: FinalReportStatus
+    summary: str
+    commit: FinalReportCommit | None = None
+    files: FinalReportFiles = Field(default_factory=FinalReportFiles)
+    checks: list[FinalReportCheck] = Field(default_factory=list)
+    completed: list[str] = Field(default_factory=list)
+    blocked_by: list[str] = Field(default_factory=list)
+    failed_by: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 PLANNER_ARTIFACT_MODELS: dict[str, type[PlannerArtifactBase]] = {
     "run_contract": RunContractArtifact,
     "planner_order": PlannerOrderArtifact,
     "execution_result": ExecutionResultArtifact,
     "planner_decision": PlannerDecisionArtifact,
     "round_summary": RoundSummaryArtifact,
+    "final_report": FinalReportArtifact,
 }
 
 
@@ -314,6 +429,7 @@ def planner_artifact_summary(artifact: dict) -> dict:
             "round": artifact.get("round"),
             "task_done": artifact.get("task_done"),
             "next_action": artifact.get("next_action"),
+            "final_status": artifact.get("final_status"),
             "risk_level": artifact.get("risk_level"),
             "remaining_auto_rounds": artifact.get("remaining_auto_rounds"),
             "reason": artifact.get("reason"),
@@ -329,6 +445,21 @@ def planner_artifact_summary(artifact: dict) -> dict:
             "completed_count": artifact.get("completed_count"),
             "blocked_count": artifact.get("blocked_count"),
             "remaining_work": artifact.get("remaining_work", []),
+        }
+    if artifact_type == "final_report":
+        files = artifact.get("files") or {}
+        return {
+            "status": artifact.get("status"),
+            "summary": artifact.get("summary"),
+            "created_files": files.get("created", []),
+            "modified_files": files.get("modified", []),
+            "deleted_files": files.get("deleted", []),
+            "checks": len(artifact.get("checks", [])),
+            "completed": len(artifact.get("completed", [])),
+            "blocked_by": len(artifact.get("blocked_by", [])),
+            "failed_by": len(artifact.get("failed_by", [])),
+            "warnings": len(artifact.get("warnings", [])),
+            "evidence_refs": len(artifact.get("evidence_refs", [])),
         }
     return {}
 
@@ -364,5 +495,37 @@ def _has_blocked_diagnostic(artifact: ExecutionResultArtifact) -> bool:
             artifact.planner_question,
             artifact.candidate_options,
             artifact.planner_options,
+            artifact.recovery_attempts,
+            artifact.blocker_reason,
         ]
     )
+
+
+def _has_blocked_next_step_signal(artifact: ExecutionResultArtifact) -> bool:
+    return any(
+        [
+            artifact.remaining_work,
+            artifact.verification.remaining_work,
+            artifact.affected_files,
+            artifact.evidence_refs,
+            artifact.verification.evidence_refs,
+        ]
+    )
+
+
+def _legacy_blocker_type(value: str) -> str:
+    return {
+        "technical_blocker": "unknown_error",
+        "verification_failed": "test_failed",
+        "permission_blocked": "permission_boundary",
+        "dependency_missing": "missing_dependency",
+        "tool_error": "tool_unavailable",
+        "out_of_contract": "scope_violation",
+        "scope_boundary": "scope_violation",
+        "risk_boundary": "risk_path_blocked",
+        "unsafe_action": "risk_path_blocked",
+        "patch_rejected": "risk_path_blocked",
+        "transient_error_exhausted": "unknown_error",
+        "ambiguity": "context_missing",
+        "plan_conflict": "unknown_error",
+    }.get(value, value)

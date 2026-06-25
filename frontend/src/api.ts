@@ -359,6 +359,7 @@ export function subscribeRunEvents(url: string, onEvent: (event: RunEvent) => vo
     "planner.input_bundle.created",
     "round_summary.created",
     "planner.decision.produced",
+    "final_report.created",
     "planner.human_prompt",
     "agent_graph.run.completed",
     "agent_graph.run.blocked",

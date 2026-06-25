@@ -17,6 +17,7 @@ ArtifactType = Literal[
     "execution_result",
     "planner_decision",
     "round_summary",
+    "final_report",
 ]
 
 ARTIFACT_MODELS = {

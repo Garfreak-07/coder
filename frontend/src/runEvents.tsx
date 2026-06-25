@@ -526,6 +526,45 @@ function ArtifactPreview({
       </div>
     );
   }
+  if (artifactType === "final_report") {
+    const files = objectValue(artifact.files);
+    const commit = objectValue(artifact.commit);
+    const checks = objectList(artifact.checks).map((check) => {
+      const command = String(check.command ?? "").trim();
+      const summary = String(check.summary ?? "").trim();
+      const prefix = String(check.status ?? "unknown");
+      return [prefix, summary, command].filter(Boolean).join(" - ");
+    });
+    const changedFiles = uniqueStrings([
+      ...stringList(files?.created),
+      ...stringList(files?.modified),
+      ...stringList(files?.deleted)
+    ]);
+    const blockers = uniqueStrings([
+      ...stringList(artifact.blocked_by),
+      ...stringList(artifact.failed_by)
+    ]);
+    return (
+      <div className="artifact-specific">
+        <div className="muted">{String(artifact.summary ?? "")}</div>
+        <KeyValueList
+          items={[
+            ["Status", String(artifact.status ?? "unknown")],
+            ["Commit", String(commit?.sha ?? "none")],
+            ["Files", changedFiles.join(", ") || "none"],
+            ["Checks", String(checks.length)],
+            ["Evidence refs", String(stringList(artifact.evidence_refs).length)]
+          ]}
+        />
+        {checks.length > 0 && <InlineList title="Verification" values={checks} />}
+        {blockers.length > 0 && <InlineList title="Blockers" values={blockers} />}
+        {stringList(artifact.warnings).length > 0 && <InlineList title="Warnings" values={stringList(artifact.warnings)} />}
+        {stringList(artifact.notes).length > 0 && <InlineList title="Notes" values={stringList(artifact.notes)} />}
+        {stringList(artifact.next_steps).length > 0 && <InlineList title="Next steps" values={stringList(artifact.next_steps)} />}
+        {stringList(artifact.evidence_refs).length > 0 && <InlineList title="Evidence" values={stringList(artifact.evidence_refs)} />}
+      </div>
+    );
+  }
   if (artifactType === "plan_artifact") {
     const targetFiles = stringList(artifact.target_files);
     const steps = stringList(artifact.implementation_steps);

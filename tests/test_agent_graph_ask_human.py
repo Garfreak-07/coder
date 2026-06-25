@@ -12,7 +12,7 @@ from coder_workbench.server.app import create_app
 
 
 class AgentGraphAskHumanTests(unittest.TestCase):
-    def test_planner_ask_human_blocks_without_legacy_human_gate(self) -> None:
+    def test_legacy_planner_ask_human_becomes_blocked_final_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = AgentGraphRunner(default_planner_led_agent_workflow()).run(
                 "Ask the user.",
@@ -30,20 +30,16 @@ class AgentGraphAskHumanTests(unittest.TestCase):
             )
 
         self.assertEqual(result.status, "blocked")
-        self.assertEqual(result.status_code, "planner_ask_human")
+        self.assertEqual(result.status_code, "planner_blocked")
         self.assertEqual(result.blocked_node_id, "planner")
-        self.assertIn("planner.human_prompt", {event.type for event in result.events})
+        self.assertNotIn("planner.human_prompt", {event.type for event in result.events})
         self.assertNotIn("approval.required", {event.type for event in result.events})
-        self.assertEqual(result.resume_checkpoint["data"]["planner_human_prompt"], "Confirm the next step?")
-        self.assertEqual(result.resume_checkpoint["checkpoint_version"], 1)
-        self.assertEqual(result.resume_checkpoint["resume_mode"], "planner_response")
-        self.assertEqual(result.resume_checkpoint["phase"], "planner_ask_human")
-        self.assertIn("graph_run_cache", result.resume_checkpoint)
-        self.assertIn("completed_work_item_ids", result.resume_checkpoint)
-        self.assertIn("blocked_work_item_ids", result.resume_checkpoint)
-        self.assertIsInstance(result.resume_checkpoint["event_cursor"], int)
+        self.assertIsNone(result.resume_checkpoint)
+        self.assertEqual(result.data["planner_decision"]["next_action"], "finish")
+        self.assertEqual(result.data["planner_decision"]["final_status"], "blocked")
+        self.assertEqual(result.data["final_report"]["status"], "blocked")
 
-    def test_live_agent_run_accepts_planner_response_and_resumes(self) -> None:
+    def test_live_agent_run_rejects_legacy_planner_response_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
             agent_workflow = default_planner_led_agent_workflow().model_dump(mode="json", by_alias=True)
@@ -72,18 +68,14 @@ class AgentGraphAskHumanTests(unittest.TestCase):
             run_id = response.json()["run_id"]
             detail = _wait_for_status(client, run_id, "blocked")
             self.assertEqual(detail["status"], "blocked")
-            self.assertEqual(detail["result"]["status_code"], "planner_ask_human")
+            self.assertEqual(detail["result"]["status_code"], "planner_blocked")
+            self.assertEqual(detail["result"]["data"]["final_report"]["status"], "blocked")
 
             resume = client.post(
                 f"/api/v2/live-agent-runs/{run_id}/planner-response",
                 json={"response": "Proceed.", "data": {"confirmed": True}},
             )
-            self.assertEqual(resume.status_code, 200)
-            detail = _wait_for_status(client, run_id, "completed")
-
-            self.assertEqual(detail["status"], "completed")
-            self.assertEqual(detail["result"]["data"]["planner_human_response"]["response"], "Proceed.")
-            self.assertEqual(detail["result"]["data"]["planner_decision"]["next_action"], "finish")
+            self.assertEqual(resume.status_code, 409)
 
 
 def _wait_for_status(client: TestClient, run_id: str, expected: str) -> dict:

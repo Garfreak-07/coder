@@ -53,7 +53,6 @@ import type {
   LibraryIndex,
   LiveRunDetail,
   RunEvent,
-  RunSummaryItem,
   StoredRunDetail
 } from "./types";
 
@@ -81,15 +80,10 @@ export function App() {
   const [eventHasMore, setEventHasMore] = useState(false);
   const [eventsLoadingMore, setEventsLoadingMore] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [historyQuery, setHistoryQuery] = useState("");
-  const [historyStatusFilter, setHistoryStatusFilter] = useState("all");
   const [newAgentRoleCard, setNewAgentRoleCard] = useState("executor");
   const [connectionFrom, setConnectionFrom] = useState("planner");
   const [connectionTo, setConnectionTo] = useState("executor");
   const {
-    runHistory,
-    liveRuns,
-    health,
     roleCards,
     refreshRuntimeInfo
   } = useRuntimeInfo(setStatus);
@@ -121,11 +115,6 @@ export function App() {
     () => resolveAgentSelectValue(agentWorkflow, connectionTo, 1),
     [agentWorkflow, connectionTo]
   );
-  const filteredRunHistory = useMemo(
-    () => filterRunHistory(runHistory, historyQuery, historyStatusFilter),
-    [runHistory, historyQuery, historyStatusFilter]
-  );
-
   useEffect(() => {
     refreshLibrary();
     refreshRuntimeInfo();
@@ -628,6 +617,15 @@ export function App() {
           const isDuplicate = Boolean(event.id && current.some((existing) => existing.id === event.id));
           if (!isDuplicate && isTerminalRunEvent(event.type)) {
             source.close();
+            getLiveAgentRun(runId)
+              .then((detail) => {
+                setSelectedRunKind("live");
+                setSelectedRunDetail(detail);
+                setActiveRunId(detail.id);
+                setEvents(detail.events);
+                setStatus(`Live run ${runId}: ${detail.status}`);
+              })
+              .catch((error) => setStatus(error instanceof Error ? error.message : String(error)));
           }
           return upsertEvent(current, event);
         });
@@ -652,6 +650,7 @@ export function App() {
   const plannerStrength = plannerStrengthFromTier(primaryPlannerAgent?.model_tier ?? "best");
   const chatEvidence = (
     <div className="chat-evidence-stack">
+      <RunFinalReport detail={selectedRunDetail} events={events} />
       <RunSummary events={events} />
       <RunEvidenceCards events={events} />
       <PatchPanel
@@ -668,6 +667,14 @@ export function App() {
             events={events}
             runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
           />
+        </details>
+      )}
+      {selectedRunDetail && (
+        <details className="event-log-details">
+          <summary>Debug export</summary>
+          <button onClick={() => exportRunDebug(selectedRunDetail, selectedRunKind, events)}>
+            Export run JSON
+          </button>
         </details>
       )}
     </div>
@@ -751,95 +758,6 @@ export function App() {
         <main className="page-main">
           <SkillsPanel onStatus={setStatus} />
         </main>
-      ) : activeSection === "runs" ? (
-        <main className="page-main page-grid">
-          <section className="panel">
-            <div className="panel-title">{t.runtime.title}</div>
-            <button onClick={refreshRuntimeInfo}>{t.runtime.refresh}</button>
-            <div className="summary-grid">
-              <span>{health?.status ?? t.runtime.unknown}</span>
-              <span>{t.runtime.tools(health?.tools.length ?? 0)}</span>
-              <span>{t.runtime.liveRuns(liveRuns.length)}</span>
-              <span>{t.runtime.storedRuns(runHistory.length)}</span>
-            </div>
-            <div className="panel-subtitle">Live</div>
-            <div className="list compact-list">
-              {liveRuns.map((run) => (
-                <button className="list-item" key={run.id} onClick={() => openLiveRun(run.id)}>
-                  <span>{run.workflow_id}</span>
-                  <small>
-                    {run.status}
-                    {run.status_code ? `:${run.status_code}` : ""} / {run.events} events
-                    {run.turn_index && run.turn_index > 1 ? ` / turn ${run.turn_index}` : ""}
-                  </small>
-                </button>
-              ))}
-              {liveRuns.length === 0 && <div className="muted">{t.runtime.noLiveRuns}</div>}
-            </div>
-            <div className="panel-subtitle">{t.runtime.storedHistory}</div>
-            <div className="history-filters">
-              <input
-                placeholder="Search runs"
-                value={historyQuery}
-                onChange={(event) => setHistoryQuery(event.target.value)}
-              />
-              <select value={historyStatusFilter} onChange={(event) => setHistoryStatusFilter(event.target.value)}>
-                <option value="all">All statuses</option>
-                <option value="completed">Completed</option>
-                <option value="blocked">Blocked</option>
-                <option value="failed">Failed</option>
-              </select>
-            </div>
-            <div className="list compact-list">
-              {filteredRunHistory.map((run) => (
-                <button className="list-item" key={run.id} onClick={() => openStoredRun(run.id)}>
-                  <span>{run.workflow_id}</span>
-                  <small>
-                    {run.status}
-                    {run.status_code ? `:${run.status_code}` : ""} / {run.events} events
-                    {run.turn_index && run.turn_index > 1 ? ` / turn ${run.turn_index}` : ""}
-                  </small>
-                </button>
-              ))}
-              {runHistory.length === 0 && <div className="muted">{t.runtime.noStoredRuns}</div>}
-              {runHistory.length > 0 && filteredRunHistory.length === 0 && <div className="muted">No runs match the filter.</div>}
-            </div>
-          </section>
-          <section className="panel events-panel">
-            <div className="panel-title">{t.events.title}</div>
-            <RunDetailCard
-              detail={selectedRunDetail}
-              kind={selectedRunKind}
-              activeRunId={activeRunId}
-              onAttach={(runId) => openLiveRun(runId, true)}
-              onOpenStored={(runId) => openStoredRun(runId)}
-              onDeleteStored={(runId) => deleteStoredRun(runId)}
-            />
-            <RunSummary
-              events={events}
-            />
-            <PatchPanel
-              events={events}
-              runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
-              repo={repo}
-              scopes={linesToList(scopesText)}
-              onStatus={setStatus}
-            />
-            {events.length === 0 ? (
-              <div className="muted">{t.events.empty}</div>
-            ) : (
-              <EventReplayList
-                events={events}
-                runId={selectedRunKind === "stored" ? selectedRunDetail?.id ?? null : null}
-              />
-            )}
-            {selectedRunKind === "stored" && eventHasMore && (
-              <button onClick={loadMoreStoredEvents} disabled={eventsLoadingMore}>
-                {eventsLoadingMore ? "Loading events..." : "Load more events"}
-              </button>
-            )}
-          </section>
-        </main>
       ) : (
         <main className="page-main page-grid">
           <section className="panel">
@@ -863,6 +781,19 @@ export function App() {
 function runStatusLabel(detail: StoredRunDetail | LiveRunDetail, kind: "live" | "stored" | null): string {
   if (kind === "stored" && "result" in detail) return detail.result?.status ?? "unknown";
   return (detail as LiveRunDetail).status ?? "unknown";
+}
+
+function exportRunDebug(detail: StoredRunDetail | LiveRunDetail, kind: "live" | "stored" | null, events: RunEvent[]) {
+  downloadJson(`coder-run-${detail.id}.json`, {
+    kind,
+    id: detail.id,
+    workflow_id: detail.workflow_id,
+    repo_root: detail.repo_root,
+    request: detail.request,
+    status: runStatusLabel(detail, kind),
+    result: "result" in detail ? detail.result : null,
+    events
+  });
 }
 
 function runContinuity(detail: StoredRunDetail | LiveRunDetail, kind: "live" | "stored" | null): {
@@ -947,7 +878,110 @@ function agentDisplayName(workflow: AgentWorkflowSpec, agentId: string): string 
   return workflow.agents.find((agent) => agent.id === agentId)?.name ?? agentId;
 }
 
+function RunFinalReport({
+  detail,
+  events
+}: {
+  detail: StoredRunDetail | LiveRunDetail | null;
+  events: RunEvent[];
+}) {
+  const report = finalReportFromDetail(detail) ?? finalReportFromEvents(events);
+  if (!report) return null;
+
+  const status = String(report.status ?? "unknown");
+  const commit = objectValue(report.commit);
+  const files = objectValue(report.files);
+  const checks = objectList(report.checks);
+  const warnings = stringList(report.warnings);
+  const notes = stringList(report.notes);
+  const nextSteps = stringList(report.next_steps);
+  const evidence = stringList(report.evidence_refs);
+  const completed = stringList(report.completed);
+  const blockedBy = stringList(report.blocked_by);
+  const failedBy = stringList(report.failed_by);
+  const createdFiles = stringList(files?.created);
+  const modifiedFiles = stringList(files?.modified);
+  const deletedFiles = stringList(files?.deleted);
+  const evidenceCount = evidence.length || Number(report.evidence_count ?? 0);
+  const artifactId = typeof report.artifact_id === "string" ? report.artifact_id : null;
+  const commitSha = typeof commit?.sha === "string" ? commit.sha : null;
+  const commitMessage = typeof commit?.message === "string" ? commit.message : null;
+
+  return (
+    <article className={`final-report-card final-report-${finalReportTone(status)}`}>
+      <div className="final-report-heading">
+        <div>
+          <div className="panel-subtitle">Final report</div>
+          <strong>{status}</strong>
+        </div>
+        {artifactId && <code>{artifactId}</code>}
+      </div>
+      <p>{String(report.summary ?? "")}</p>
+      <div className="summary-grid">
+        {commitSha && <span>commit {commitSha.slice(0, 12)}</span>}
+        {commitMessage && <span>{commitMessage}</span>}
+        <span>{createdFiles.length + modifiedFiles.length + deletedFiles.length} files</span>
+        <span>{checks.length} checks</span>
+        <span>{evidenceCount} evidence refs</span>
+      </div>
+      {completed.length > 0 && <InlineTextList title="Completed" values={completed} />}
+      {(createdFiles.length > 0 || modifiedFiles.length > 0 || deletedFiles.length > 0) && (
+        <div className="final-report-files">
+          {createdFiles.length > 0 && <InlineTextList title="Created" values={createdFiles} />}
+          {modifiedFiles.length > 0 && <InlineTextList title="Modified" values={modifiedFiles} />}
+          {deletedFiles.length > 0 && <InlineTextList title="Deleted" values={deletedFiles} />}
+        </div>
+      )}
+      {checks.length > 0 && (
+        <div className="final-report-checks">
+          <div className="panel-subtitle">Verification</div>
+          {checks.slice(0, 6).map((check, index) => (
+            <div className="final-report-check" key={`${String(check.command ?? "check")}-${index}`}>
+              <span>{String(check.status ?? "unknown")}</span>
+              <strong>{String(check.summary ?? check.command ?? "Check")}</strong>
+              {typeof check.command === "string" && check.command && <code>{check.command}</code>}
+            </div>
+          ))}
+        </div>
+      )}
+      {blockedBy.length > 0 && <InlineTextList title="Blocked by" values={blockedBy} />}
+      {failedBy.length > 0 && <InlineTextList title="Failed by" values={failedBy} />}
+      {warnings.length > 0 && <InlineTextList title="Warnings" values={warnings} />}
+      {notes.length > 0 && <InlineTextList title="Notes" values={notes} />}
+      {nextSteps.length > 0 && <InlineTextList title="Next steps" values={nextSteps} />}
+      {evidence.length > 0 && <InlineTextList title="Evidence" values={evidence} />}
+    </article>
+  );
+}
+
+function finalReportFromDetail(detail: StoredRunDetail | LiveRunDetail | null): Record<string, unknown> | null {
+  if (!detail || !("result" in detail) || !detail.result) return null;
+  const data = objectValue(detail.result.data);
+  return objectValue(data?.final_report);
+}
+
+function finalReportFromEvents(events: RunEvent[]): Record<string, unknown> | null {
+  const event = [...events].reverse().find((item) => item.type === "final_report.created");
+  const payload = objectValue(event?.payload);
+  if (!payload) return null;
+  return {
+    artifact_type: payload.artifact_type,
+    artifact_id: payload.artifact_id,
+    status: payload.status,
+    summary: payload.summary,
+    evidence_count: payload.evidence_count
+  };
+}
+
+function finalReportTone(status: string): string {
+  if (status === "completed") return "good";
+  if (status === "blocked" || status === "cancelled") return "warn";
+  if (status === "failed") return "bad";
+  return "neutral";
+}
+
 const evidenceArtifactTypes = new Set([
+  "final_report",
   "planner_order",
   "execution_result",
   "planner_decision",
@@ -1527,26 +1561,6 @@ function pendingApprovalEvent(events: RunEvent[]): RunEvent | null {
   return latestApproval;
 }
 
-function filterRunHistory(runs: RunSummaryItem[], query: string, status: string): RunSummaryItem[] {
-  const needle = query.trim().toLowerCase();
-  return runs.filter((run) => {
-    if (status !== "all" && run.status !== status) return false;
-    if (!needle) return true;
-    return [
-      run.id,
-      run.workflow_id,
-      run.repo_root,
-      run.request,
-      run.status,
-      run.status_code ?? "",
-      run.status_reason ?? ""
-    ]
-      .join(" ")
-      .toLowerCase()
-      .includes(needle);
-  });
-}
-
 function isTerminalRunEvent(type: string): boolean {
   return (
     type === "run.completed" ||
@@ -1564,4 +1578,3 @@ function statusClass(type: string | undefined): string {
   if (type === "run.blocked" || type === "agent_graph.run.blocked" || type === "approval.required") return "warn";
   return "";
 }
-

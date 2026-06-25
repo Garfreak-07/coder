@@ -50,6 +50,7 @@ class AgentArchetypeTests(unittest.TestCase):
         executor = next(profile for profile in profiles if profile.agent_id == "executor")
 
         self.assertEqual(executor.agent_archetype, "executor")
+        self.assertEqual(executor.harness_id, "code-worker-harness")
         self.assertEqual(executor.authority.authority, "executor")
         self.assertTrue(executor.tool_policy["edit_files"])
         self.assertTrue(executor.token_budget["managed_by_runtime"])
@@ -72,6 +73,7 @@ class AgentArchetypeApiTests(unittest.TestCase):
         self.assertEqual(profiles.status_code, 200)
         executor = next(profile for profile in profiles.json()["profiles"] if profile["agent_id"] == "executor")
         self.assertEqual(executor["agent_archetype"], "executor")
+        self.assertEqual(executor["harness_id"], "code-worker-harness")
         self.assertEqual(executor["tool_policy"]["connector_operations"], "deny_by_default")
 
 

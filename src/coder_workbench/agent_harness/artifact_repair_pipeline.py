@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 
 from coder_workbench.agent_graph.repair import build_repair_prompt, parse_json_object
+from coder_workbench.agent_harness.execution_verification import ensure_blocked_contract
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
 
 
@@ -169,12 +170,13 @@ def _deterministic_schema_patch(
             patched.setdefault("needs_planner_decision", True)
             patched.setdefault("blocker_type", "schema_validation_failed")
             patched.setdefault("continue_without_human_possible", False)
+            patched = ensure_blocked_contract(patched)
     return patched
 
 
 def _fallback_artifact(expected_type: str, context: RepairContext) -> dict[str, Any]:
     if expected_type == "execution_result":
-        return {
+        return ensure_blocked_contract({
             "artifact_type": "execution_result",
             "round": context.round_number,
             "work_item_id": context.work_item_id,
@@ -197,7 +199,7 @@ def _fallback_artifact(expected_type: str, context: RepairContext) -> dict[str, 
                 "repair_attempted": True,
                 "repair_summary": "Artifact repair failed.",
             },
-        }
+        })
     return {"artifact_type": expected_type}
 
 

@@ -15,9 +15,10 @@ from coder_workbench.runtime_kernel.run_guard import RunGuard
 class RunControllerDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["continue", "finish", "stop", "ask_human", "blocked"]
+    action: Literal["continue", "finish", "blocked"]
     reason: str = ""
     status_code: str | None = None
+    final_status: Literal["completed", "blocked", "failed", "cancelled"] | None = None
 
 
 class RunController:
@@ -79,11 +80,20 @@ class RunController:
         action = str(planner_decision.get("next_action") or "")
         reason = str(planner_decision.get("reason") or "")
         if action == "finish":
-            return RunControllerDecision(action="finish", reason=reason)
+            return RunControllerDecision(
+                action="finish",
+                reason=reason,
+                final_status=_final_status(planner_decision.get("final_status")),
+            )
         if action == "stop":
-            return RunControllerDecision(action="stop", reason=reason)
-        if action == "ask_human":
-            return RunControllerDecision(action="ask_human", reason=reason, status_code="planner_ask_human")
+            return RunControllerDecision(action="finish", reason=reason, final_status="completed")
+        if action in {"ask_human", "blocked"}:
+            return RunControllerDecision(
+                action="finish",
+                reason=reason,
+                status_code="planner_blocked",
+                final_status="blocked",
+            )
         if action != "continue":
             return RunControllerDecision(
                 action="blocked",
@@ -191,3 +201,9 @@ def fingerprint_planner_order(order: PlannerOrder) -> str:
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _final_status(value: Any) -> Literal["completed", "blocked", "failed", "cancelled"] | None:
+    if value in {"completed", "blocked", "failed", "cancelled"}:
+        return value
+    return None

@@ -802,7 +802,7 @@ _CAPABILITIES = [
     CapabilitySpec(
         id="make_next_decision",
         label="Make next decision",
-        description="Planner chooses continue, finish, ask_human, or stop.",
+        description="Planner chooses continue or finish.",
         allowed_roles=["planner"],
         requires=["execution_result"],
         produces=["planner_decision"],

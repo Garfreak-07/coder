@@ -26,8 +26,10 @@ class AgentTypeEngineBoundaryTests(unittest.TestCase):
         executor = compiler.compile(AgentRecipe(id="executor", name="Executor", role="executor"))
 
         self.assertEqual(planner.engine_id, "planner-engine")
+        self.assertIsNone(planner.harness_id)
         self.assertEqual(planner.allowed_artifacts, ["run_contract", "planner_order", "planner_decision", "round_summary"])
         self.assertEqual(executor.engine_id, "code-worker-engine")
+        self.assertEqual(executor.harness_id, "code-worker-harness")
         self.assertEqual(executor.allowed_artifacts, ["execution_result"])
         self.assertTrue(executor.tool_policy["run_commands"])
 
@@ -36,6 +38,7 @@ class AgentTypeEngineBoundaryTests(unittest.TestCase):
 
         self.assertEqual([profile.role for profile in profiles], ["planner", "executor"])
         self.assertEqual([profile.engine_id for profile in profiles], ["planner-engine", "code-worker-engine"])
+        self.assertEqual([profile.harness_id for profile in profiles], [None, "code-worker-harness"])
 
 
 if __name__ == "__main__":

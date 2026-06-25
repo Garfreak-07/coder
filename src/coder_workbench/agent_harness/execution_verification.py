@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from coder_workbench.core.planner_artifacts import ExecutionVerification
@@ -10,8 +11,46 @@ def ensure_execution_verification(artifact: dict[str, Any]) -> dict[str, Any]:
     verification = payload.get("verification")
     if isinstance(verification, dict):
         payload["verification"] = ExecutionVerification.model_validate(verification).model_dump(mode="json")
-        return payload
+        return ensure_blocked_contract(payload)
     payload["verification"] = infer_execution_verification(payload)
+    return ensure_blocked_contract(payload)
+
+
+def ensure_blocked_contract(artifact: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(artifact)
+    if payload.get("status") != "blocked":
+        return payload
+    blocker_type = _normalized_blocker_type(str(payload.get("blocker_type") or "unknown_error"))
+    summary = str(payload.get("summary") or "Execution was blocked.")
+    remaining = _remaining_work(payload)
+    evidence_refs = _evidence_refs(payload)
+    affected_files = _affected_files(payload)
+    attempted_actions = [str(item) for item in payload.get("attempted_actions") or [] if str(item).strip()]
+    payload["blocker_type"] = blocker_type
+    payload.setdefault("executor_recovery_exhausted", True)
+    payload.setdefault("blocker_reason", summary)
+    payload.setdefault("blocker_fingerprint", _blocker_fingerprint(blocker_type, summary, affected_files))
+    payload.setdefault(
+        "recovery_attempts",
+        [
+            {"action": action, "result": "attempted"}
+            for action in attempted_actions
+        ],
+    )
+    payload.setdefault(
+        "planner_recommendation",
+        "replan_once" if payload.get("continue_without_human_possible") is True else "finish",
+    )
+    if payload.get("planner_recommendation") == "replan_once":
+        payload.setdefault("replan_goal", summary)
+    payload.setdefault("affected_files", affected_files)
+    payload.setdefault("constraint_boundary", _constraint_boundary(blocker_type))
+    if not remaining and not affected_files and not evidence_refs:
+        remaining = [summary]
+        payload["remaining_work"] = remaining
+        verification = dict(payload.get("verification") or {})
+        verification["remaining_work"] = remaining
+        payload["verification"] = verification
     return payload
 
 
@@ -111,15 +150,15 @@ def blocked_from_verification_failure(artifact: dict[str, Any], *, repair_attemp
         {
             "status": "blocked",
             "summary": summary,
-            "unexpected_issues": list(blocked.get("unexpected_issues") or []) + ["verification_failed"],
+            "unexpected_issues": list(blocked.get("unexpected_issues") or []) + ["test_failed"],
             "remaining_work": list(blocked.get("remaining_work") or []) + (remaining or [summary]),
             "needs_planner_decision": True,
-            "blocker_type": "verification_failed",
+            "blocker_type": "test_failed",
             "continue_without_human_possible": True,
             "verification": verification,
         }
     )
-    return blocked
+    return ensure_blocked_contract(blocked)
 
 
 def _checks_from_requested_actions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
@@ -185,3 +224,57 @@ def _remaining_work(artifact: dict[str, Any]) -> list[str]:
     if isinstance(issues, list):
         return [str(item) for item in issues if str(item).strip()]
     return []
+
+
+def _affected_files(artifact: dict[str, Any]) -> list[str]:
+    refs: list[str] = []
+    for key in ("affected_files", "changed_files", "created_files", "deleted_files"):
+        value = artifact.get(key)
+        if isinstance(value, list):
+            refs.extend(str(item) for item in value if str(item).strip())
+    return _unique(refs)
+
+
+def _constraint_boundary(blocker_type: str) -> dict[str, bool]:
+    return {
+        "within_scope": blocker_type not in {"scope_violation", "risk_path_blocked"},
+        "requires_secret": blocker_type == "missing_secret",
+        "requires_network": blocker_type == "network_required",
+        "requires_external_account": blocker_type == "external_account_required",
+        "requires_destructive_action": blocker_type == "risk_path_blocked",
+        "requires_out_of_scope_write": blocker_type == "scope_violation",
+    }
+
+
+def _blocker_fingerprint(blocker_type: str, reason: str, affected_files: list[str]) -> str:
+    payload = "|".join([blocker_type, reason, *affected_files])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _normalized_blocker_type(value: str) -> str:
+    return {
+        "technical_blocker": "unknown_error",
+        "verification_failed": "test_failed",
+        "permission_blocked": "permission_boundary",
+        "dependency_missing": "missing_dependency",
+        "tool_error": "tool_unavailable",
+        "out_of_contract": "scope_violation",
+        "scope_boundary": "scope_violation",
+        "risk_boundary": "risk_path_blocked",
+        "unsafe_action": "risk_path_blocked",
+        "patch_rejected": "risk_path_blocked",
+        "transient_error_exhausted": "unknown_error",
+        "ambiguity": "context_missing",
+        "plan_conflict": "unknown_error",
+    }.get(value, value)
+
+
+def _unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output

@@ -37,7 +37,9 @@ class AgentGraphInterventionTests(unittest.TestCase):
         item_status = {item["work_item_id"]: item["execution_status"] for item in bundle["items"]}
 
         self.assertEqual(result.status, "blocked")
-        self.assertEqual(result.status_code, "planner_ask_human")
+        self.assertEqual(result.status_code, "planner_blocked")
+        self.assertEqual(result.data["planner_decision"]["next_action"], "finish")
+        self.assertEqual(result.data["planner_decision"]["final_status"], "blocked")
         self.assertEqual(executor.execution_calls, ["A"])
         self.assertEqual(bundle["plan_status"], "interrupted")
         self.assertEqual(bundle["interrupts"][0]["work_item_id"], "A")
@@ -85,7 +87,7 @@ class AgentGraphInterventionTests(unittest.TestCase):
         self.assertEqual(decision["next_action"], "continue")
         self.assertFalse(decision["requires_human_confirmation"])
 
-    def test_mock_planner_decision_asks_human_when_interrupt_needs_user(self) -> None:
+    def test_mock_planner_decision_finishes_blocked_when_interrupt_needs_user(self) -> None:
         executor = AgentGraphExecutor(
             default_planner_led_agent_workflow(),
             runtime_settings=ProviderSettings(),
@@ -96,8 +98,9 @@ class AgentGraphInterventionTests(unittest.TestCase):
             bundle=_bundle_with_interrupt(continue_without_human_possible=False),
         )
 
-        self.assertEqual(decision["next_action"], "ask_human")
-        self.assertTrue(decision["requires_human_confirmation"])
+        self.assertEqual(decision["next_action"], "finish")
+        self.assertEqual(decision["final_status"], "blocked")
+        self.assertFalse(decision["requires_human_confirmation"])
 
     def test_planner_decision_prompt_receives_interrupts(self) -> None:
         model = FakeChatModel(
@@ -156,7 +159,7 @@ class AgentGraphInterventionTests(unittest.TestCase):
         self.assertEqual(result.status_code, "max_auto_rounds_reached")
         self.assertEqual([event.payload["round"] for event in round_events], [1, 2])
 
-    def test_planner_response_does_not_hardcode_finish(self) -> None:
+    def test_legacy_planner_response_checkpoint_is_not_created(self) -> None:
         executor = ResumeThroughPlannerExecutor()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,26 +167,14 @@ class AgentGraphInterventionTests(unittest.TestCase):
                 default_planner_led_agent_workflow(),
                 executor=executor,
             ).run("Pause for user.", tmp)
-            checkpoint = dict(blocked.resume_checkpoint["data"])
-            checkpoint["planner_human_response"] = {
-                "response": "Use the local fix.",
-                "data": {"confirmed": True},
-            }
-            checkpoint.pop("planner_decision", None)
-            checkpoint["resume_mode"] = "planner_response"
-            resumed = AgentGraphRunner(
-                default_planner_led_agent_workflow(),
-                executor=executor,
-            ).run("Pause for user.", tmp, initial_data=checkpoint, prior_events=blocked.events)
-
-        round_events = [event for event in resumed.events if event.type == "agent_graph.round.started"]
 
         self.assertEqual(blocked.status, "blocked")
-        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(blocked.status_code, "planner_blocked")
+        self.assertIsNone(blocked.resume_checkpoint)
         self.assertEqual(executor.execution_calls.count("blocked-work"), 1)
-        self.assertIn("fix-work", executor.execution_calls)
-        self.assertEqual([event.payload["round"] for event in round_events], [1, 2])
-        self.assertEqual(resumed.data["planner_decision"]["next_action"], "finish")
+        self.assertNotIn("fix-work", executor.execution_calls)
+        self.assertEqual(blocked.data["planner_decision"]["next_action"], "finish")
+        self.assertEqual(blocked.data["planner_decision"]["final_status"], "blocked")
 
 
 class InterventionExecutor:

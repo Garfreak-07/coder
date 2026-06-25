@@ -14,7 +14,7 @@ class PlannerLedArtifactTests(unittest.TestCase):
     def test_new_artifact_protocol_is_supported_without_test_result(self) -> None:
         self.assertEqual(
             set(supported_artifact_types()),
-            {"run_contract", "planner_order", "execution_result", "planner_decision", "round_summary"},
+            {"run_contract", "planner_order", "execution_result", "planner_decision", "round_summary", "final_report"},
         )
 
     def test_execution_result_contains_verification(self) -> None:
@@ -74,6 +74,60 @@ class PlannerLedArtifactTests(unittest.TestCase):
                 },
                 expected_type="execution_result",
             )
+
+    def test_blocked_execution_result_requires_structured_blocked_contract(self) -> None:
+        with self.assertRaises(Exception):
+            validate_artifact(
+                {
+                    "artifact_type": "execution_result",
+                    "round": 1,
+                    "work_item_id": "work",
+                    "merge_index": 1,
+                    "agent_id": "executor",
+                    "status": "blocked",
+                    "summary": "Missing dependency.",
+                    "remaining_work": ["Install dependency."],
+                    "blocker_type": "dependency_missing",
+                    "verification": {
+                        "status": "blocked",
+                        "checks_run": [],
+                        "evidence_refs": [],
+                        "confidence": "low",
+                        "remaining_work": ["Install dependency."],
+                    },
+                },
+                expected_type="execution_result",
+            )
+
+    def test_legacy_blocker_type_maps_to_new_taxonomy(self) -> None:
+        artifact = validate_artifact(
+            {
+                "artifact_type": "execution_result",
+                "round": 1,
+                "work_item_id": "work",
+                "merge_index": 1,
+                "agent_id": "executor",
+                "status": "blocked",
+                "summary": "Missing dependency.",
+                "remaining_work": ["Install dependency."],
+                "needs_planner_decision": True,
+                "blocker_type": "dependency_missing",
+                "executor_recovery_exhausted": True,
+                "blocker_reason": "Missing dependency.",
+                "planner_recommendation": "finish",
+                "constraint_boundary": {"within_scope": True},
+                "verification": {
+                    "status": "blocked",
+                    "checks_run": [],
+                    "evidence_refs": [],
+                    "confidence": "low",
+                    "remaining_work": ["Install dependency."],
+                },
+            },
+            expected_type="execution_result",
+        )
+
+        self.assertEqual(artifact["blocker_type"], "missing_dependency")
 
 
 class AgentWorkflowContractTests(unittest.TestCase):

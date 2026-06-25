@@ -9,6 +9,7 @@ from coder_workbench.agent_harness.artifact_repair_pipeline import (
     ArtifactRepairPipeline,
     RepairContext,
 )
+from coder_workbench.agent_harness.execution_verification import ensure_blocked_contract
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
 
 
@@ -121,7 +122,7 @@ def _executor_artifact_issues(artifact: dict[str, Any]) -> list[str]:
 
 def _blocked_execution(item: WorkItem, envelope: AgentTaskEnvelope, summary: str) -> dict[str, Any]:
     return validate_artifact(
-        {
+        ensure_blocked_contract({
             "artifact_type": "execution_result",
             "round": envelope.round,
             "work_item_id": item.work_item_id,
@@ -144,7 +145,7 @@ def _blocked_execution(item: WorkItem, envelope: AgentTaskEnvelope, summary: str
                 "repair_attempted": False,
                 "repair_summary": None,
             },
-        },
+        }),
         expected_type="execution_result",
     )
 

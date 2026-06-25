@@ -287,7 +287,7 @@ class AgentGraphEffectsTests(unittest.TestCase):
         self.assertEqual(effect["action_spec"]["input"]["operation_id"], "project_index")
         self.assertEqual(effect["work_item_id"], "executor-work")
 
-    def test_approved_runtime_action_replay_does_not_rerun_worker(self) -> None:
+    def test_blocked_runtime_action_finishes_without_planner_response_checkpoint(self) -> None:
         executor = RuntimeActionReplayExecutor()
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "README.md").write_text("sample\n", encoding="utf-8")
@@ -296,37 +296,15 @@ class AgentGraphEffectsTests(unittest.TestCase):
                 executor=executor,
             ).run("Replay approved action.", tmp)
             blocked_effect = blocked.data["planner_input_bundle"]["effects"][0]
-            checkpoint = dict(blocked.resume_checkpoint["data"])
-            checkpoint["planner_human_response"] = {
-                "response": "Approve project index.",
-                "data": {
-                    "approved_runtime_actions": [
-                        {
-                            "approval_key": blocked_effect["approval_key"],
-                            "action_spec": blocked_effect["action_spec"],
-                            "replay_of": blocked_effect["artifact_ref"],
-                        }
-                    ]
-                },
-            }
-            checkpoint["approved_runtime_actions"] = checkpoint["planner_human_response"]["data"]["approved_runtime_actions"]
-            checkpoint.pop("planner_decision", None)
-            checkpoint["resume_mode"] = "planner_response"
-            resumed = AgentGraphRunner(
-                default_planner_led_agent_workflow(),
-                executor=executor,
-            ).run("Replay approved action.", tmp, initial_data=checkpoint, prior_events=blocked.events)
-
-        effects = resumed.data["planner_input_bundle"]["effects"]
-        replay = next(effect for effect in effects if effect.get("replay_of") == blocked_effect["artifact_ref"])
 
         self.assertEqual(blocked.status, "blocked")
-        self.assertEqual(resumed.status, "completed")
+        self.assertEqual(blocked.status_code, "planner_blocked")
+        self.assertIsNone(blocked.resume_checkpoint)
         self.assertEqual(executor.execution_calls, 1)
-        self.assertEqual(replay["status"], "ok")
-        self.assertEqual(replay["action_type"], "call_plugin")
-        self.assertEqual(replay["action_spec"]["input"]["operation_id"], "project_index")
-        self.assertIn(replay["output_ref"], resumed.data["graph_run_cache"]["hidden_effect_outputs"])
+        self.assertEqual(blocked_effect["status"], "blocked")
+        self.assertEqual(blocked.data["planner_decision"]["next_action"], "finish")
+        self.assertEqual(blocked.data["planner_decision"]["final_status"], "blocked")
+        self.assertEqual(blocked.data["final_report"]["status"], "blocked")
 
 
 class EffectSourceExecutor:

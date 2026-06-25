@@ -12,7 +12,7 @@ from coder_workbench.server.app import create_app
 
 class RunHeartbeatTests(unittest.TestCase):
     def test_live_run_heartbeat_endpoint_returns_liveness(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
             response = client.post(
                 "/api/v2/live-agent-runs",
@@ -34,7 +34,7 @@ class RunHeartbeatTests(unittest.TestCase):
         self.assertIn("active_work_item_ids", payload)
 
     def test_live_run_control_endpoints_reject_completed_run(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             client = TestClient(create_app(store_root=tmp, frontend_dist=tmp))
             response = client.post(
                 "/api/v2/live-agent-runs",

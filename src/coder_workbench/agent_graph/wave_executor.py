@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.schema import ExecutionRecord, WorkItemOutcome
+from coder_workbench.agent_harness.execution_verification import ensure_blocked_contract
 
 
 BuildOutcome = Callable[[dict[str, Any]], WorkItemOutcome]
@@ -226,7 +227,7 @@ def _blocked_outcome(item: Any, summary: str, error_code: str) -> WorkItemOutcom
             status="blocked",
             execution_summary=summary,
             execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
-            artifact_payload={
+            artifact_payload=ensure_blocked_contract({
                 "artifact_type": "execution_result",
                 "round": 1,
                 "work_item_id": item.work_item_id,
@@ -249,7 +250,7 @@ def _blocked_outcome(item: Any, summary: str, error_code: str) -> WorkItemOutcom
                     "repair_attempted": False,
                     "repair_summary": None,
                 },
-            },
+            }),
         ),
     )
 

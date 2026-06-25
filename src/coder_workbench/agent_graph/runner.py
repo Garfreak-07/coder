@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from coder_workbench.actions import (
     ActionGateway,
@@ -20,8 +22,8 @@ from coder_workbench.agent_graph.evaluation import (
     build_agent_evaluation_reports,
     build_skill_evaluation_reports,
 )
+from coder_workbench.agent_graph.final_report import build_final_report
 from coder_workbench.agent_graph.interruption import build_graph_interrupt, should_interrupt_execution
-from coder_workbench.agent_graph.memory import PlannerMemoryStore
 from coder_workbench.agent_graph.merge import build_planner_input_bundle, build_round_summary
 from coder_workbench.agent_graph.round_budget import evaluate_round_budget_preflight
 from coder_workbench.agent_graph.scheduler import AgentGraphScheduler
@@ -40,15 +42,18 @@ from coder_workbench.core import (
     compile_runtime_profiles,
     assert_valid_agent_workflow,
 )
+from coder_workbench.core.artifacts import artifact_summary, validate_artifact
 from coder_workbench.budget import BudgetBroker, BudgetLimit
 from coder_workbench.coding import (
     build_debug_finding,
     build_repo_intelligence,
     build_run_coding_eval,
 )
+from coder_workbench.memory import MemoryService
 from coder_workbench.observability import TraceContext, TraceSpan
 from coder_workbench.runtime.state import RunEvent, RunResult, summarize_value
 from coder_workbench.runtime_kernel import RunCancelled, RunControl, RunController, RunGuard
+from coder_workbench.runtime_state import SharedRunState, StateUpdate, apply_state_update
 from coder_workbench.skills import (
     InstalledSkillStore,
     SkillIndex,
@@ -113,7 +118,6 @@ class AgentGraphRunner:
         initial_data: dict[str, Any] | None = None,
         resume_checkpoint: dict[str, Any] | None = None,
         prior_events: list[RunEvent] | None = None,
-        resume_after_node: str | None = None,
         run_control: RunControl | None = None,
     ) -> RunResult:
         checkpoint_data = resume_checkpoint.get("data") if isinstance(resume_checkpoint, dict) else None
@@ -149,8 +153,45 @@ class AgentGraphRunner:
         if hasattr(self.agent_run, "initial_data"):
             self.agent_run.initial_data = data
 
+        shared_run_state = _shared_run_state_from_data(
+            data,
+            run_id=run_id,
+            workflow_id=self.agent_workflow.id,
+            request=request,
+        )
+        data["shared_run_state"] = shared_run_state.model_dump(mode="json")
+
+        def record_state_update(
+            channel: str,
+            payload: dict[str, Any],
+            *,
+            source: str = "agent_graph_runner",
+        ) -> SharedRunState:
+            nonlocal shared_run_state
+            update = StateUpdate(
+                update_id=str(uuid4()),
+                run_id=run_id,
+                source=source,
+                channel=channel,  # type: ignore[arg-type]
+                payload=payload,
+            )
+            shared_run_state = apply_state_update(shared_run_state, update)
+            data["shared_run_state"] = shared_run_state.model_dump(mode="json")
+            summaries = data.setdefault("shared_run_state_update_summaries", [])
+            if isinstance(summaries, list):
+                summaries.append(
+                    {
+                        "update_id": update.update_id,
+                        "channel": update.channel,
+                        "source": update.source,
+                        "keys": sorted(payload.keys()),
+                    }
+                )
+            return shared_run_state
+
         def emit(event_type: str, message: str, **payload: Any) -> None:
-            span = payload.pop("_span", None) or run_span
+            include_trace = bool(payload.pop("_trace", True))
+            span = payload.pop("_span", None) or (run_span if include_trace else None)
             if isinstance(span, TraceSpan):
                 payload = {**span.event_payload(), **payload}
             event = RunEvent(type=event_type, message=message, payload=payload)
@@ -175,6 +216,39 @@ class AgentGraphRunner:
             if controller is not None:
                 data["run_controller"] = controller.diagnostics()
             data["run_control"] = active_run_control.diagnostics()
+            final_report_ref = graph_artifact_id("final_report")
+            final_report = build_final_report(
+                status=final_status,
+                data=data,
+                artifacts=artifacts,
+                events=events,
+                status_reason=status_reason,
+                status_code=status_code,
+            )
+            data["final_report"] = recorder.record(
+                final_report_ref,
+                final_report,
+                expected_type="final_report",
+            )
+            record_state_update("artifacts", _artifact_ref_payload(final_report_ref, data["final_report"]))
+            record_state_update("final_report", {"artifact_id": final_report_ref})
+            record_state_update(
+                "control",
+                {
+                    "status": final_status,
+                    "blocked_recovery_used": bool(data.get("blocked_recovery_used")),
+                },
+            )
+            emit(
+                "final_report.created",
+                "Final report created",
+                artifact_type="final_report",
+                artifact_id=final_report_ref,
+                status=data["final_report"]["status"],
+                summary=data["final_report"]["summary"],
+                evidence_count=len(data["final_report"].get("evidence_refs") or []),
+                _trace=False,
+            )
             if resume_checkpoint is not None:
                 resume_checkpoint = _normalize_resume_checkpoint(
                     resume_checkpoint,
@@ -194,12 +268,31 @@ class AgentGraphRunner:
                 status_code=status_code,
             )
 
+        def finish_values(
+            planner_decision: dict[str, Any],
+            controller_decision: Any,
+        ) -> tuple[str, str | None, str | None, str | None]:
+            final_status = (
+                getattr(controller_decision, "final_status", None)
+                or planner_decision.get("final_status")
+                or "completed"
+            )
+            if final_status not in {"completed", "blocked", "failed", "cancelled"}:
+                final_status = "completed"
+            reason = getattr(controller_decision, "reason", None) or planner_decision.get("reason")
+            status_code_value = getattr(controller_decision, "status_code", None)
+            if final_status == "completed":
+                return final_status, None, None, None
+            return (
+                final_status,
+                str(reason or final_status),
+                str(status_code_value or f"planner_{final_status}"),
+                self.agent_workflow.primary_planner_id if final_status == "blocked" else None,
+            )
+
         recorder = AgentGraphArtifactRecorder(artifacts, emit)
 
         try:
-            if resume_after_node:
-                raise ValueError("AgentGraphRunner resume_after_node is not supported")
-
             assert_valid_agent_workflow(self.agent_workflow)
             workflow_payload = self.agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
             data["agent_workflow"] = workflow_payload
@@ -220,6 +313,14 @@ class AgentGraphRunner:
                 workflow_id=self.agent_workflow.id,
                 repo_root=repo_root,
                 request=request,
+            )
+            record_state_update(
+                "control",
+                {
+                    "status": "running",
+                    "round": 0,
+                    "blocked_recovery_used": bool(data.get("blocked_recovery_used")),
+                },
             )
             active_run_control.checkpoint("run_started", emit)
             emit(
@@ -277,6 +378,19 @@ class AgentGraphRunner:
                     resume_decision,
                     expected_type="planner_decision",
                 )
+                record_state_update("artifacts", _artifact_ref_payload(resume_decision_ref, data["planner_decision"]))
+                record_state_update("planner", {"planner_decision_ref": resume_decision_ref})
+                record_state_update(
+                    "messages",
+                    _state_message_payload(
+                        message_id=f"planner_decision:{resume_decision_ref}",
+                        source_agent_id=self.agent_workflow.primary_planner_id,
+                        target="all",
+                        kind="planner_decision",
+                        summary=f"Planner decision: {data['planner_decision']['next_action']}",
+                        artifact_refs=[resume_decision_ref],
+                    ),
+                )
                 emit(
                     "planner.decision.produced",
                     "Planner decision produced",
@@ -292,20 +406,6 @@ class AgentGraphRunner:
                     round_number=previous_bundle.round,
                 )
                 action = controller_decision.action
-                if action == "ask_human":
-                    status, status_reason, status_code, blocked_node_id, result_resume_checkpoint = self._block_for_planner_human(
-                        data=data,
-                        decision=data["planner_decision"],
-                        emit=emit,
-                        round_number=previous_bundle.round,
-                    )
-                    return finalize_result(
-                        final_status=status,
-                        blocked_node_id=blocked_node_id,
-                        resume_checkpoint=result_resume_checkpoint,
-                        status_reason=status_reason,
-                        status_code=status_code,
-                    )
                 if action == "blocked":
                     status, status_reason, status_code, blocked_node_id, result_resume_checkpoint = self._block_for_controller(
                         data=data,
@@ -319,13 +419,25 @@ class AgentGraphRunner:
                         status_reason=status_reason,
                         status_code=status_code,
                     )
-                if action in {"finish", "stop"}:
-                    emit("agent_graph.run.completed", f"Agent graph {self.agent_workflow.id} completed")
-                    return finalize_result(final_status="completed")
+                if action == "finish":
+                    status, status_reason, status_code, blocked_node_id = finish_values(
+                        data["planner_decision"],
+                        controller_decision,
+                    )
+                    emit(
+                        f"agent_graph.run.{status}",
+                        f"Agent graph {self.agent_workflow.id} {status}",
+                    )
+                    return finalize_result(
+                        final_status=status,
+                        blocked_node_id=blocked_node_id,
+                        status_reason=status_reason,
+                        status_code=status_code,
+                    )
                 round_request = data["planner_decision"].get("next_round_goal") or request
                 start_round = previous_bundle.round + 1
 
-            consecutive_blocked_rounds = _int_value(data.get("consecutive_blocked_rounds"), 0)
+            blocked_recovery_used = bool(data.get("blocked_recovery_used"))
             for round_number in range(start_round, max_rounds + 1):
                 outcome = self._run_round(
                     round_number=round_number,
@@ -343,6 +455,7 @@ class AgentGraphRunner:
                     parent_span=run_span,
                     controller=controller,
                     run_control=active_run_control,
+                    record_state_update=record_state_update,
                 )
                 estimated_tokens_used = _estimated_tokens_used(data)
                 controller.record_round(
@@ -355,24 +468,101 @@ class AgentGraphRunner:
                     item.execution_status == "blocked"
                     for item in outcome.planner_input_bundle.items
                 )
-                consecutive_blocked_rounds = consecutive_blocked_rounds + 1 if round_has_blocked else 0
-                data["consecutive_blocked_rounds"] = consecutive_blocked_rounds
-                if consecutive_blocked_rounds >= 2:
-                    prompt = _consecutive_blocked_summary(outcome)
-                    data["planner_human_prompt"] = prompt
-                    emit(
-                        "agent_graph.run.blocked",
-                        "Agent graph stopped after consecutive blocked rounds",
-                        code="consecutive_blocked_rounds",
-                        round=round_number,
-                        consecutive_blocked_rounds=consecutive_blocked_rounds,
+                blocked_replan_once = _blocked_recommends_replan_once(outcome, artifacts)
+                if round_has_blocked and outcome.planner_decision.get("next_action") == "continue":
+                    if blocked_replan_once and not blocked_recovery_used:
+                        blocked_recovery_used = True
+                        data["blocked_recovery_used"] = True
+                        record_state_update(
+                            "control",
+                            {
+                                "round": round_number,
+                                "blocked_recovery_used": True,
+                            },
+                        )
+                    else:
+                        reason = _blocked_recovery_summary(outcome)
+                        forced_ref = graph_artifact_id("planner_decision", "blocked_recovery", "round", round_number)
+                        forced_decision = recorder.record(
+                            forced_ref,
+                            {
+                                "artifact_type": "planner_decision",
+                                "round": round_number,
+                                "task_done": False,
+                                "next_action": "finish",
+                                "final_status": "blocked",
+                                "reason": reason,
+                                "remaining_auto_rounds": 0,
+                            },
+                            expected_type="planner_decision",
+                        )
+                        data["planner_decision"] = forced_decision
+                        record_state_update("artifacts", _artifact_ref_payload(forced_ref, forced_decision))
+                        record_state_update("planner", {"planner_decision_ref": forced_ref})
+                        if data.get("rounds") and isinstance(data["rounds"], list):
+                            data["rounds"][-1]["planner_decision"] = forced_ref
+                        emit(
+                            "planner.decision.produced",
+                            "Planner decision forced by blocked recovery policy",
+                            artifact_type="planner_decision",
+                            artifact_id=forced_ref,
+                            round=round_number,
+                            next_action="finish",
+                            final_status="blocked",
+                        )
+                        outcome = RoundOutcome(
+                            round=outcome.round,
+                            planner_order=outcome.planner_order,
+                            planner_input_bundle=outcome.planner_input_bundle,
+                            round_summary=outcome.round_summary,
+                            planner_decision=forced_decision,
+                            interrupted=outcome.interrupted,
+                        )
+                elif round_has_blocked and blocked_replan_once and not blocked_recovery_used:
+                    blocked_recovery_used = True
+                    data["blocked_recovery_used"] = True
+                    record_state_update(
+                        "control",
+                        {
+                            "round": round_number,
+                            "blocked_recovery_used": True,
+                        },
                     )
-                    status = "blocked"
-                    status_reason = prompt
-                    status_code = "consecutive_blocked_rounds"
-                    blocked_node_id = self.agent_workflow.primary_planner_id
-                    result_resume_checkpoint = {"data": data}
-                    break
+                if round_has_blocked and blocked_replan_once and blocked_recovery_used:
+                    data["blocked_recovery_used"] = True
+                if (
+                    round_has_blocked
+                    and not blocked_replan_once
+                    and outcome.planner_decision.get("next_action") == "continue"
+                ):
+                    reason = _blocked_recovery_summary(outcome)
+                    forced_ref = graph_artifact_id("planner_decision", "blocked_finish", "round", round_number)
+                    forced_decision = recorder.record(
+                        forced_ref,
+                        {
+                            "artifact_type": "planner_decision",
+                            "round": round_number,
+                            "task_done": False,
+                            "next_action": "finish",
+                            "final_status": "blocked",
+                            "reason": reason,
+                            "remaining_auto_rounds": 0,
+                        },
+                        expected_type="planner_decision",
+                    )
+                    data["planner_decision"] = forced_decision
+                    record_state_update("artifacts", _artifact_ref_payload(forced_ref, forced_decision))
+                    record_state_update("planner", {"planner_decision_ref": forced_ref})
+                    if data.get("rounds") and isinstance(data["rounds"], list):
+                        data["rounds"][-1]["planner_decision"] = forced_ref
+                    outcome = RoundOutcome(
+                        round=outcome.round,
+                        planner_order=outcome.planner_order,
+                        planner_input_bundle=outcome.planner_input_bundle,
+                        round_summary=outcome.round_summary,
+                        planner_decision=forced_decision,
+                        interrupted=outcome.interrupted,
+                    )
                 controller_decision = controller.evaluate_planner_decision(
                     outcome.planner_decision,
                     round_number=round_number,
@@ -384,14 +574,6 @@ class AgentGraphRunner:
                     round_request = outcome.planner_decision.get("next_round_goal") or request
                     planner_human_response = None
                     continue
-                if action == "ask_human":
-                    status, status_reason, status_code, blocked_node_id, result_resume_checkpoint = self._block_for_planner_human(
-                        data=data,
-                        decision=outcome.planner_decision,
-                        emit=emit,
-                        round_number=round_number,
-                    )
-                    break
                 if action == "blocked":
                     status, status_reason, status_code, blocked_node_id, result_resume_checkpoint = self._block_for_controller(
                         data=data,
@@ -399,10 +581,14 @@ class AgentGraphRunner:
                         emit=emit,
                     )
                     break
-                emit("agent_graph.run.completed", f"Agent graph {self.agent_workflow.id} completed")
-                status = "completed"
-                status_reason = None
-                status_code = None
+                status, status_reason, status_code, blocked_node_id = finish_values(
+                    outcome.planner_decision,
+                    controller_decision,
+                )
+                emit(
+                    f"agent_graph.run.{status}",
+                    f"Agent graph {self.agent_workflow.id} {status}",
+                )
                 break
             else:
                 prompt = "Agent graph stopped because max_auto_rounds was reached."
@@ -460,8 +646,17 @@ class AgentGraphRunner:
         parent_span: TraceSpan,
         controller: RunController,
         run_control: RunControl,
+        record_state_update: Any,
     ) -> RoundOutcome:
         run_control.checkpoint("round_started", emit, round_number=round_number)
+        record_state_update(
+            "control",
+            {
+                "status": "running",
+                "round": round_number,
+                "blocked_recovery_used": bool(data.get("blocked_recovery_used")),
+            },
+        )
         round_span = trace_context.start_span(
             name=f"round:{round_number}",
             kind="round",
@@ -515,7 +710,23 @@ class AgentGraphRunner:
             data["planner_order"],
             expected_type="planner_order",
         )
+        record_state_update("artifacts", _artifact_ref_payload(planner_order_ref, data["planner_order"]))
+        record_state_update("planner", {"planner_order_ref": planner_order_ref})
         plan_cache = cache.cache_planner_order(planner_order, planner_order_ref)
+        record_state_update(
+            "work_items",
+            {
+                "items": [
+                    _work_item_state_payload(
+                        work_item_id=item.work_item_id,
+                        agent_id=item.assignee_agent_id,
+                        status="pending",
+                        summary=item.task_summary,
+                    )
+                    for item in plan_cache.work_items
+                ]
+            },
+        )
         emit(
             "planner.plan_cached",
             "Planner order stored in the graph run cache",
@@ -603,7 +814,26 @@ class AgentGraphRunner:
                         },
                     )
                 )
-                self._record_execution_artifact(recorder, cache.round, execution)
+                execution_artifact = self._record_execution_artifact(recorder, cache.round, execution)
+                record_state_update(
+                    "artifacts",
+                    _artifact_ref_payload(execution.execution_result_ref, execution_artifact),
+                )
+                record_state_update(
+                    "work_items",
+                    _work_item_state_payload(
+                        work_item_id=item.work_item_id,
+                        agent_id=item.assignee_agent_id,
+                        status="blocked",
+                        summary=summary,
+                        execution_result_ref=execution.execution_result_ref,
+                        blocked_reason=_execution_blocked_reason(execution_artifact, execution),
+                    ),
+                )
+                record_state_update(
+                    "messages",
+                    _execution_state_message_payload(execution, execution_artifact, target="planner"),
+                )
                 emit(
                     "agent_task.blocked",
                     f"Task {item.work_item_id} blocked by upstream work",
@@ -689,6 +919,7 @@ class AgentGraphRunner:
                     repo_intelligence=repo_intelligence,
                     trace_context=trace_context,
                     parent_span=wave_span,
+                    record_state_update=record_state_update,
                 )
                 task_contexts.append({"item": item, "envelope": envelope})
             outcomes = WaveExecutor(
@@ -701,6 +932,28 @@ class AgentGraphRunner:
             for outcome in outcomes:
                 execution = cache.record_execution(outcome.execution)
                 execution_artifact = self._record_execution_artifact(recorder, cache.round, execution)
+                execution_status = "completed" if execution.status == "completed" else "blocked"
+                record_state_update(
+                    "artifacts",
+                    _artifact_ref_payload(execution.execution_result_ref, execution_artifact),
+                )
+                record_state_update(
+                    "work_items",
+                    _work_item_state_payload(
+                        work_item_id=outcome.work_item_id,
+                        agent_id=execution.agent_id,
+                        status=execution_status,
+                        summary=execution.execution_summary,
+                        execution_result_ref=execution.execution_result_ref,
+                        blocked_reason=_execution_blocked_reason(execution_artifact, execution)
+                        if execution_status == "blocked"
+                        else None,
+                    ),
+                )
+                record_state_update(
+                    "messages",
+                    _execution_state_message_payload(execution, execution_artifact, target="planner"),
+                )
                 if should_interrupt_execution(execution_artifact):
                     interrupt = build_graph_interrupt(
                         round_number=cache.round,
@@ -802,6 +1055,18 @@ class AgentGraphRunner:
             planner_input_bundle_ref,
             planner_input_bundle.model_dump(mode="json", exclude_none=True),
         )
+        record_state_update("artifacts", _artifact_ref_payload(planner_input_bundle_ref, data["planner_input_bundle"]))
+        record_state_update(
+            "messages",
+            _state_message_payload(
+                message_id=f"planner_input_bundle:{planner_input_bundle_ref}",
+                source_agent_id="agent_graph_runner",
+                target="planner",
+                kind="planner_input_bundle",
+                summary=f"PlannerInputBundle round {round_number}: {planner_input_bundle.plan_status}",
+                artifact_refs=[planner_input_bundle_ref],
+            ),
+        )
         emit(
             "planner.input_bundle.created",
             "Compact PlannerInputBundle created",
@@ -819,6 +1084,8 @@ class AgentGraphRunner:
             round_summary.model_dump(mode="json"),
             expected_type="round_summary",
         )
+        record_state_update("artifacts", _artifact_ref_payload(round_summary_ref, data["round_summary"]))
+        record_state_update("planner", {"round_summary_ref": round_summary_ref})
         emit(
             "round_summary.created",
             "Round summary created",
@@ -843,6 +1110,19 @@ class AgentGraphRunner:
             planner_decision,
             expected_type="planner_decision",
         )
+        record_state_update("artifacts", _artifact_ref_payload(planner_decision_ref, data["planner_decision"]))
+        record_state_update("planner", {"planner_decision_ref": planner_decision_ref})
+        record_state_update(
+            "messages",
+            _state_message_payload(
+                message_id=f"planner_decision:{planner_decision_ref}",
+                source_agent_id=self.agent_workflow.primary_planner_id,
+                target="all",
+                kind="planner_decision",
+                summary=f"Planner decision: {data['planner_decision']['next_action']}",
+                artifact_refs=[planner_decision_ref],
+            ),
+        )
         emit(
             "planner.decision.produced",
             "Planner decision produced",
@@ -852,7 +1132,7 @@ class AgentGraphRunner:
             next_action=data["planner_decision"]["next_action"],
         )
         try:
-            memory = PlannerMemoryStore(repo_root).record_round(
+            memory = MemoryService(repo_root).record_planner_round(
                 workflow_id=self.agent_workflow.id,
                 bundle=planner_input_bundle,
                 round_summary=round_summary,
@@ -862,6 +1142,7 @@ class AgentGraphRunner:
                 "workflow_id": memory.workflow_id,
                 "updated_at": memory.updated_at,
                 "planner_notes": len(memory.planner_notes),
+                "successful_assignments": len(memory.successful_assignments),
                 "common_blockers": len(memory.common_blockers),
             }
         except Exception as exc:  # pragma: no cover - memory should not block runtime
@@ -1009,6 +1290,7 @@ class AgentGraphRunner:
         repo_intelligence: dict[str, Any],
         trace_context: TraceContext,
         parent_span: TraceSpan,
+        record_state_update: Any,
     ) -> Any:
         upstream_refs = upstream_refs_for_item(cache, item)
         agent_span = trace_context.start_span(
@@ -1095,6 +1377,11 @@ class AgentGraphRunner:
             if context.compact_coding_context_packet is not None
             else coding_packet.model_dump(mode="json")
         )
+        context_packet_payload = packet.model_dump(mode="json")
+        context_packet_id = graph_artifact_id("context_packet_v2", cache.round, item.work_item_id)
+        coding_context_packet_id = item.work_item_id
+        _record_pending_context_packet(data, context_packet_id, context_packet_payload)
+        _record_pending_context_packet(data, coding_context_packet_id, coding_packet_payload)
         emit(
             "skill.route.selected",
             "ExtensionRouter selected skills for work item",
@@ -1112,7 +1399,10 @@ class AgentGraphRunner:
             "ContextPacketV2 prepared for work item",
             round=cache.round,
             work_item_id=item.work_item_id,
-            packet=packet.model_dump(mode="json"),
+            **_compact_context_packet_event_payload(
+                packet_id=context_packet_id,
+                packet=context_packet_payload,
+            ),
             _span=action_span,
         )
         emit(
@@ -1120,7 +1410,10 @@ class AgentGraphRunner:
             "CodingContextPacket prepared for work item",
             round=cache.round,
             work_item_id=item.work_item_id,
-            packet=coding_packet_payload,
+            **_compact_context_packet_event_payload(
+                packet_id=coding_context_packet_id,
+                packet=coding_packet_payload,
+            ),
             _span=action_span,
         )
         if context.compaction_result is not None:
@@ -1140,7 +1433,7 @@ class AgentGraphRunner:
             "Token ledger entry recorded",
             round=cache.round,
             work_item_id=item.work_item_id,
-            entry=ledger_entry.model_dump(mode="json"),
+            **_compact_token_ledger_payload(ledger_entry.model_dump(mode="json")),
             _span=action_span,
         )
         emit(
@@ -1152,13 +1445,38 @@ class AgentGraphRunner:
             merge_index=item.merge_index,
             _span=agent_span,
         )
+        record_state_update(
+            "work_items",
+            _work_item_state_payload(
+                work_item_id=item.work_item_id,
+                agent_id=item.assignee_agent_id,
+                status="pending",
+                summary=item.task_summary,
+            ),
+        )
         emit(
             "agent_task.started",
             f"Task {item.work_item_id} started",
             round=cache.round,
             work_item_id=item.work_item_id,
-            envelope=envelope.model_dump(mode="json"),
+            agent_task_id=graph_artifact_id("agent_task", cache.round, item.work_item_id),
+            assigned_agent_id=envelope.assigned_agent_id,
+            merge_index=envelope.merge_index,
+            planner_order_ref=envelope.planner_order_ref,
+            upstream_refs=envelope.upstream_refs,
+            allowed_skill_ids=envelope.allowed_skill_ids,
+            loaded_skill_refs=envelope.loaded_skill_refs,
+            omitted_skill_ids=envelope.omitted_skill_ids,
             _span=agent_span,
+        )
+        record_state_update(
+            "work_items",
+            _work_item_state_payload(
+                work_item_id=item.work_item_id,
+                agent_id=item.assignee_agent_id,
+                status="running",
+                summary=item.task_summary,
+            ),
         )
         return envelope
 
@@ -1401,19 +1719,11 @@ class AgentGraphRunner:
         value = data.get("planner_decision")
         if not isinstance(value, dict):
             return None
-        action = value.get("next_action")
-        if action not in {"continue", "ask_human", "finish", "stop"}:
-            raise ValueError("planner_decision.next_action must be continue, ask_human, finish, or stop")
-        payload = {
-            "artifact_type": "planner_decision",
-            "round": int(value.get("round") or 1),
-            "task_done": bool(value.get("task_done", action in {"finish", "stop"})),
-            "next_action": action,
-            "reason": str(value.get("reason") or ""),
-        }
-        if value.get("human_message") is not None:
-            payload["human_message"] = str(value["human_message"])
-        return payload
+        payload = dict(value)
+        payload.setdefault("artifact_type", "planner_decision")
+        payload.setdefault("round", 1)
+        payload.setdefault("reason", "")
+        return validate_artifact(payload, expected_type="planner_decision")
 
 
 def _hidden_effect_artifact_payload(effect: dict[str, Any], output: dict[str, Any]) -> dict[str, Any]:
@@ -1545,6 +1855,162 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _shared_run_state_from_data(
+    data: dict[str, Any],
+    *,
+    run_id: str,
+    workflow_id: str,
+    request: str,
+) -> SharedRunState:
+    value = data.get("shared_run_state")
+    if isinstance(value, dict):
+        try:
+            state = SharedRunState.model_validate(value)
+            if state.run_id == run_id:
+                return state
+        except Exception:
+            pass
+    return SharedRunState(run_id=run_id, workflow_id=workflow_id, user_request=request)
+
+
+def _artifact_ref_payload(artifact_id: str, artifact: dict[str, Any]) -> dict[str, str]:
+    summary = artifact.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        summary = summarize_value(artifact_summary(artifact), max_chars=240)
+    return {
+        "artifact_id": artifact_id,
+        "artifact_type": str(artifact.get("artifact_type") or ""),
+        "summary": summary,
+    }
+
+
+def _work_item_state_payload(
+    *,
+    work_item_id: str,
+    agent_id: str,
+    status: str,
+    summary: str = "",
+    execution_result_ref: str | None = None,
+    blocked_reason: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "work_item_id": work_item_id,
+        "agent_id": agent_id,
+        "status": status,
+        "summary": summary,
+    }
+    if execution_result_ref:
+        payload["execution_result_ref"] = execution_result_ref
+    if blocked_reason:
+        payload["blocked_reason"] = blocked_reason
+    return payload
+
+
+def _state_message_payload(
+    *,
+    message_id: str,
+    source_agent_id: str,
+    target: str,
+    kind: str,
+    summary: str,
+    artifact_refs: list[str] | None = None,
+    tool_result_refs: list[str] | None = None,
+    blob_refs: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "message_id": message_id,
+        "source_agent_id": source_agent_id,
+        "target": target,
+        "kind": kind,
+        "summary": summary,
+        "artifact_refs": artifact_refs or [],
+        "tool_result_refs": tool_result_refs or [],
+        "blob_refs": blob_refs or [],
+    }
+
+
+def _execution_state_message_payload(
+    execution: ExecutionRecord,
+    artifact: dict[str, Any],
+    *,
+    target: str,
+) -> dict[str, Any]:
+    blocked = execution.status != "completed"
+    return _state_message_payload(
+        message_id=f"execution_result:{execution.execution_result_ref}",
+        source_agent_id=execution.agent_id,
+        target=target,
+        kind="execution_blocked" if blocked else "execution_completed",
+        summary=str(artifact.get("summary") or execution.execution_summary or execution.status),
+        artifact_refs=[execution.execution_result_ref],
+    )
+
+
+def _execution_blocked_reason(execution_artifact: dict[str, Any], execution: ExecutionRecord) -> str:
+    return str(
+        execution_artifact.get("blocker_reason")
+        or execution_artifact.get("summary")
+        or execution.execution_summary
+        or "Execution blocked."
+    )
+
+
+def _record_pending_context_packet(data: dict[str, Any], packet_id: str, packet: dict[str, Any]) -> None:
+    pending = data.setdefault("pending_context_packets", {})
+    if isinstance(pending, dict):
+        pending[packet_id] = packet
+
+
+def _compact_context_packet_event_payload(
+    *,
+    packet_id: str,
+    packet: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "packet_id": packet_id,
+        "summary": _context_packet_summary(packet),
+        "size_chars": len(json.dumps(packet, ensure_ascii=False)),
+    }
+
+
+def _compact_token_ledger_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: entry.get(key)
+        for key in (
+            "run_id",
+            "agent_id",
+            "artifact_type",
+            "estimated_input_tokens",
+            "estimated_output_tokens",
+            "skill_tokens_available",
+            "skill_tokens_loaded",
+            "upstream_tokens_loaded",
+            "omitted_tokens",
+            "compression_ratio",
+        )
+        if key in entry
+    }
+
+
+def _context_packet_summary(packet: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "agent_id",
+        "work_item_id",
+        "artifact_type",
+        "estimated_input_tokens",
+        "estimated_omitted_tokens",
+        "compression_ratio",
+    )
+    summary = {key: packet[key] for key in keys if key in packet}
+    if "included_skill_ids" in packet:
+        summary["included_skill_ids"] = list(packet.get("included_skill_ids") or [])[:8]
+    if "included_refs" in packet:
+        summary["included_refs"] = list(packet.get("included_refs") or [])[:8]
+    if "included_files" in packet:
+        summary["included_files"] = list(packet.get("included_files") or [])[:8]
+    return summary
+
+
 def _fallback_verification(execution: ExecutionRecord) -> dict[str, Any]:
     if execution.status == "completed":
         return {
@@ -1642,22 +2108,30 @@ def _max_auto_rounds_from_workflow_or_data(agent_workflow: AgentWorkflowSpec, da
         return 3
 
 
-def _consecutive_blocked_summary(outcome: RoundOutcome) -> str:
+def _blocked_recovery_summary(outcome: RoundOutcome) -> str:
     blocked_items = [
         item
         for item in outcome.planner_input_bundle.items
         if item.execution_status == "blocked"
     ]
     if not blocked_items:
-        return "Planner received blocked execution results for two consecutive workflow rounds."
+        return "Planner received blocked execution results."
     details = "; ".join(
         f"{item.work_item_id}: {item.execution_summary or item.verification_summary or 'blocked'}"
         for item in blocked_items
     )
-    return (
-        "Planner received blocked execution results for two consecutive workflow rounds. "
-        f"Blocked WorkItems: {details}"
-    )
+    return f"Blocked recovery was exhausted. Blocked WorkItems: {details}"
+
+
+def _blocked_recommends_replan_once(outcome: RoundOutcome, artifacts: dict[str, Any]) -> bool:
+    for item in outcome.planner_input_bundle.items:
+        if item.execution_status != "blocked" and item.verification_status not in {"fail", "blocked"}:
+            continue
+        for ref in item.refs:
+            artifact = artifacts.get(ref)
+            if isinstance(artifact, dict) and artifact.get("planner_recommendation") == "replan_once":
+                return True
+    return any(interrupt.continue_without_human_possible is True for interrupt in outcome.planner_input_bundle.interrupts)
 
 
 def _run_guard_from_data(data: dict[str, Any], *, max_rounds: int) -> RunGuard:

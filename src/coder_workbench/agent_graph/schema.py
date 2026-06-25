@@ -84,6 +84,7 @@ class AgentTaskEnvelope(MergeIndexedModel):
     estimated_skill_tokens: int = 0
     selected_skill_context: list[dict[str, Any]] = Field(default_factory=list)
     coding_context_packet: dict[str, Any] = Field(default_factory=dict)
+    capability_set: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionRecord(MergeIndexedModel):

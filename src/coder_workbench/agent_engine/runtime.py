@@ -43,6 +43,7 @@ class AgentEngine(Protocol):
         agent: AgentWorkflowAgent,
         item: "WorkItem",
         envelope: "AgentTaskEnvelope",
+        capability_set: dict[str, Any] | None = None,
         model: Any | None = None,
         emit: Any | None = None,
     ) -> "ExecutionRecord":
@@ -356,6 +357,8 @@ class PlannerEngine(ModelBackedEngine):
         planner_human_response: dict[str, Any] | None = None,
         skill_index: "SkillIndex | None" = None,
         repo_intelligence: dict[str, Any] | None = None,
+        state_view: dict[str, Any] | None = None,
+        capability_set: dict[str, Any] | None = None,
         round_number: int = 1,
         emit: EmitEvent | None = None,
     ) -> "PlannerOrder":
@@ -373,6 +376,8 @@ class PlannerEngine(ModelBackedEngine):
                 planner_human_response=planner_human_response,
                 skill_index=skill_index,
                 repo_intelligence=repo_intelligence,
+                state_view=state_view,
+                capability_set=capability_set,
                 round_number=round_number,
             ),
             mock_payload=_mock_planner_order_payload(
@@ -409,6 +414,8 @@ class PlannerEngine(ModelBackedEngine):
         budget_broker: BudgetBroker | None = None,
         action_gateway: ActionGateway | None = None,
         run_id: str | None = None,
+        state_view: dict[str, Any] | None = None,
+        capability_set: dict[str, Any] | None = None,
         emit: EmitEvent | None = None,
     ) -> dict[str, Any]:
         from coder_workbench.agent_graph.prompts import build_planner_decision_prompt
@@ -440,6 +447,12 @@ class PlannerEngine(ModelBackedEngine):
             interrupt.continue_without_human_possible is True
             for interrupt in bundle.interrupts
         )
+        blocked_requires_finish = (
+            has_interrupts
+            or has_blocked_work
+            or has_blocked_check_effects
+            or has_blocked_runtime_actions
+        ) and not can_continue_from_interrupts
         mock_next_action = (
             "continue"
             if can_continue_from_interrupts
@@ -447,10 +460,9 @@ class PlannerEngine(ModelBackedEngine):
             or has_debug_findings
             or has_failed_check_effects
             or has_failed_runtime_actions
-            else "ask_human"
-            if has_interrupts or has_blocked_work or has_blocked_check_effects or has_blocked_runtime_actions
             else "finish"
         )
+        mock_final_status = "blocked" if blocked_requires_finish else None
         mock_reason = (
             "DebugFinding is inside the current RunContract; Planner will replan."
             if has_debug_findings
@@ -481,12 +493,15 @@ class PlannerEngine(ModelBackedEngine):
                 planner=planner,
                 bundle=bundle,
                 planner_human_response=planner_human_response,
+                state_view=state_view,
+                capability_set=capability_set,
             ),
             mock_payload={
                 "artifact_type": "planner_decision",
                 "round": bundle.round,
-                "task_done": mock_next_action == "finish",
+                "task_done": mock_next_action == "finish" and mock_final_status is None,
                 "next_action": mock_next_action,
+                "final_status": mock_final_status,
                 "risk_level": "medium"
                 if has_interrupts
                 or has_debug_findings
@@ -495,13 +510,11 @@ class PlannerEngine(ModelBackedEngine):
                 or has_blocked_runtime_actions
                 or has_failed_runtime_actions
                 else "low",
-                "requires_human_confirmation": mock_next_action == "ask_human",
+                "requires_human_confirmation": False,
                 "reason": mock_reason,
                 "next_round_goal": "Fix debug finding evidence and rerun checks." if has_debug_findings else "Fix failed check evidence and rerun checks." if has_failed_check_effects else "Replan around failed runtime action evidence." if has_failed_runtime_actions else "Fix failed execution verification and rerun checks." if has_failed_verification else "Resolve the blocked work item." if mock_next_action == "continue" else "",
                 "remaining_auto_rounds": 2 if mock_next_action == "continue" else 0,
-                "human_message": "Planner needs user input to resolve the blocked work item."
-                if mock_next_action == "ask_human"
-                else None,
+                "human_message": None,
             },
             emit=emit,
             agent_workflow=agent_workflow,
@@ -523,6 +536,7 @@ class CodeWorkerEngine:
         agent: AgentWorkflowAgent,
         item: "WorkItem",
         envelope: "AgentTaskEnvelope",
+        capability_set: dict[str, Any] | None = None,
         model: Any | None = None,
         emit: Any | None = None,
     ) -> "ExecutionRecord":
@@ -534,7 +548,12 @@ class CodeWorkerEngine:
             envelope=envelope,
             coding_context_packet=envelope.coding_context_packet if model is not None else None,
             emit=emit,
-            prompt=build_worker_execution_prompt(agent=agent, item=item, envelope=envelope),
+            prompt=build_worker_execution_prompt(
+                agent=agent,
+                item=item,
+                envelope=envelope,
+                capability_set=capability_set,
+            ),
         )
 
 

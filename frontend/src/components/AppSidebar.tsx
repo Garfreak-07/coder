@@ -1,4 +1,4 @@
-export const appSections = ["chat", "workflow", "extensions", "runs", "settings"] as const;
+export const appSections = ["chat", "workflow", "extensions", "settings"] as const;
 
 export type AppSection = (typeof appSections)[number];
 
@@ -12,7 +12,6 @@ const sectionLabels: Record<AppSection, string> = {
   chat: "Planner Chat",
   workflow: "Agent Workflow",
   extensions: "Extensions",
-  runs: "Runs",
   settings: "Settings"
 };
 

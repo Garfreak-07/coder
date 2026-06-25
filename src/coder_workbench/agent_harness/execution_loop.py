@@ -8,6 +8,7 @@ from coder_workbench.agent_harness.execution_memory import ExecutionRunMemory
 from coder_workbench.agent_harness.execution_verification import (
     blocked_from_verification_failure,
     ensure_execution_verification,
+    ensure_blocked_contract,
     verification_failed,
 )
 from coder_workbench.core.artifacts import validate_artifact
@@ -49,7 +50,7 @@ class ExecutionLoop:
             )
             memory.blockers.append({"work_item_id": item.work_item_id, "blocker_type": "context_missing"})
             _emit(emit, "execution_loop.inspect.blocked", artifact["summary"], work_item_id=item.work_item_id)
-            return validate_artifact(artifact, expected_type="execution_result")
+            return validate_artifact(ensure_blocked_contract(artifact), expected_type="execution_result")
 
         _emit(emit, "execution_loop.execute.started", "Execution execute stage started", work_item_id=item.work_item_id)
         payload = self.execute_payload() if self.execute_payload is not None else _mock_completed_payload(item, envelope)

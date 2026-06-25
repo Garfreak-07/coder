@@ -71,8 +71,10 @@ class WorkbenchUiSimplifiedModelTests(unittest.TestCase):
         sidebar = APP_SIDEBAR.read_text(encoding="utf-8")
         app = APP.read_text(encoding="utf-8")
 
-        self.assertIn('["chat", "workflow", "extensions", "runs", "settings"]', sidebar)
-        for label in ["Planner Chat", "Agent Workflow", "Extensions", "Runs", "Settings"]:
+        self.assertIn('["chat", "workflow", "extensions", "settings"]', sidebar)
+        self.assertNotIn('"runs"', sidebar)
+        self.assertNotIn('runs:', sidebar)
+        for label in ["Planner Chat", "Agent Workflow", "Extensions", "Settings"]:
             with self.subTest(label=label):
                 self.assertIn(label, sidebar)
 

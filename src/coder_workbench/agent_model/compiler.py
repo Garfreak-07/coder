@@ -27,12 +27,14 @@ class RuntimeProfileCompiler:
             agent_id=recipe.id,
             role=role,
             engine_id=_engine_id(role),
+            harness_id=_harness_id(role),
             context_profile=_context_profile(role),
             token_budget=_token_budget(role, planner_preferences=planner_preferences),
             allowed_artifacts=_allowed_artifacts(role),
             plugin_policy=_plugin_policy(role, recipe.preferred_extension_ids, run_contract),
             skill_policy=_skill_policy(role, recipe.preferred_extension_ids),
             memory_policy=_memory_policy(role),
+            prompt_layers=_prompt_layers(role),
             repair_policy=_repair_policy(role),
             tool_policy=_tool_policy(role),
         )
@@ -57,6 +59,12 @@ def _engine_id(role: str) -> str:
         "planner": "planner-engine",
         "executor": "code-worker-engine",
     }.get(role, "code-worker-engine")
+
+
+def _harness_id(role: str) -> str | None:
+    if role == "executor":
+        return "code-worker-harness"
+    return None
 
 
 def _context_profile(role: str) -> str:
@@ -107,10 +115,42 @@ def _memory_policy(role: str) -> dict[str, Any]:
     }
 
 
+def _prompt_layers(role: str) -> dict[str, Any]:
+    if role == "planner":
+        return {
+            "schema_version": "prompt-layers/v1",
+            "layer_order": [
+                "output_contract",
+                "planner_rules",
+                "harness_contract",
+                "task_context",
+                "state_view",
+                "capability_set",
+                "memory_context",
+            ],
+            "max_layer_chars": 8000,
+        }
+    return {
+        "schema_version": "prompt-layers/v1",
+        "layer_order": [
+            "output_contract",
+            "executor_rules",
+            "harness_contract",
+            "agent_context",
+            "work_item",
+            "task_envelope",
+            "coding_context",
+            "capability_set",
+            "skill_context",
+        ],
+        "max_layer_chars": 8000,
+    }
+
+
 def _repair_policy(role: str) -> dict[str, Any]:
     return {
         "schema_repair_attempts": 1,
-        "fallback_artifact": "blocked" if role != "planner" else "ask_human_or_stop",
+        "fallback_artifact": "blocked" if role != "planner" else "finish_blocked",
     }
 
 
@@ -119,5 +159,5 @@ def _tool_policy(role: str) -> dict[str, Any]:
         "read_files": role == "executor",
         "write_files": role == "executor",
         "run_commands": role == "executor",
-        "ask_human": role == "planner",
+        "ask_human": False,
     }

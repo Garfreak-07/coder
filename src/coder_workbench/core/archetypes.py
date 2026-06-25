@@ -34,10 +34,12 @@ class AgentRuntimeProfile(BaseModel):
     role_card: str | None = None
     agent_archetype: str
     engine_id: str
+    harness_id: str | None = None
     authority: AgentAuthorityProfile
     allowed_artifacts: list[str] = Field(default_factory=list)
     context_policy: dict[str, object] = Field(default_factory=dict)
     memory_policy: dict[str, object] = Field(default_factory=dict)
+    prompt_layers: dict[str, object] | None = None
     token_budget: dict[str, object] = Field(default_factory=dict)
     internal_loops: dict[str, object] = Field(default_factory=dict)
     tool_policy: dict[str, object] = Field(default_factory=dict)
@@ -125,10 +127,12 @@ def compile_agent_runtime_profile(
         role_card=agent.role_card,
         agent_archetype=archetype,
         engine_id=_engine_id_for_agent(agent, archetype),
+        harness_id=_harness_id_for_archetype(archetype),
         authority=authority,
         allowed_artifacts=list(authority.allowed_artifact_types),
         context_policy=_context_policy(archetype),
         memory_policy=_memory_policy(authority.authority),
+        prompt_layers=_prompt_layers(archetype),
         token_budget=_token_budget(archetype),
         internal_loops=_internal_loops(authority.authority),
         tool_policy=_tool_policy(agent, authority),
@@ -160,6 +164,12 @@ def _engine_id_for_agent(agent: "AgentWorkflowAgent", archetype: str) -> str:
     }[archetype]
 
 
+def _harness_id_for_archetype(archetype: str) -> str | None:
+    if archetype == "executor":
+        return "code-worker-harness"
+    return None
+
+
 def _context_policy(archetype: str) -> dict[str, object]:
     if archetype == "planner":
         return {"skill_load_mode": "index_only", "memory": "workflow_summary", "max_skill_tokens": 0}
@@ -170,6 +180,38 @@ def _memory_policy(authority: str) -> dict[str, object]:
     return {
         "can_read_workflow_memory": authority == "planner",
         "can_write_long_term_memory": authority == "planner",
+    }
+
+
+def _prompt_layers(archetype: str) -> dict[str, object]:
+    if archetype == "planner":
+        return {
+            "schema_version": "prompt-layers/v1",
+            "layer_order": [
+                "output_contract",
+                "planner_rules",
+                "harness_contract",
+                "task_context",
+                "state_view",
+                "capability_set",
+                "memory_context",
+            ],
+            "max_layer_chars": 8000,
+        }
+    return {
+        "schema_version": "prompt-layers/v1",
+        "layer_order": [
+            "output_contract",
+            "executor_rules",
+            "harness_contract",
+            "agent_context",
+            "work_item",
+            "task_envelope",
+            "coding_context",
+            "capability_set",
+            "skill_context",
+        ],
+        "max_layer_chars": 8000,
     }
 
 

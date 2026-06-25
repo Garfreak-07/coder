@@ -104,6 +104,7 @@ class RunStore:
             result_payload = result.model_dump(mode="json")
             if isinstance(result_payload.get("data"), dict):
                 result_payload["data"] = self._persist_pending_blob_writes(result_payload["data"])
+                result_payload["data"] = self._persist_pending_context_packets(stored.id, result_payload["data"])
             result_payload["events"] = []
             result_payload["artifacts"] = self._write_artifacts(stored.id, result.artifacts)
             result_data = result_payload.get("data", {})
@@ -670,6 +671,30 @@ class RunStore:
                 compact_payload["work_item_id"] = event.payload.get("work_item_id")
             compact_events.append(event.model_copy(update={"payload": compact_payload}))
         return compact_events
+
+    def _persist_pending_context_packets(self, run_id: str, data: dict[str, Any]) -> dict[str, Any]:
+        pending = data.get("pending_context_packets")
+        if not isinstance(pending, dict):
+            return data
+        output = dict(data)
+        records: list[dict[str, Any]] = []
+        for raw_packet_id, packet in pending.items():
+            if not isinstance(packet, dict):
+                continue
+            try:
+                packet_id = self._safe_object_id(str(raw_packet_id))
+            except KeyError:
+                continue
+            self.partitions.contexts.write(run_id, packet_id, packet)
+            records.append(
+                {
+                    "packet_id": packet_id,
+                    "summary": self._context_packet_summary(packet),
+                    "size_chars": len(json.dumps(packet, ensure_ascii=False)),
+                }
+            )
+        output["pending_context_packets"] = records
+        return output
 
     def _externalize_tool_results(self, run_id: str, events: list[RunEvent]) -> list[RunEvent]:
         compact_events: list[RunEvent] = []
