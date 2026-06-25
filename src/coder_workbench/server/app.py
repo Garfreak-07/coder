@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -19,6 +20,7 @@ from coder_workbench.core import (
     role_card_catalog,
     validate_agent_workflow_payload,
 )
+from coder_workbench.core.artifacts import validate_artifact
 from coder_workbench.extensions import builtin_plugin_manifests, extension_search
 from coder_workbench.server.agent_manager import AgentGraphRunManager
 from coder_workbench.server.library import LibraryStore
@@ -48,6 +50,30 @@ class AgentRunRequest(BaseModel):
     request: str
     agent_workflow: dict[str, Any]
     approved: bool = False
+    scopes: list[str] = Field(default_factory=list)
+    initial_data: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlannerChatDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    request: str
+    workflow_id: str = "default-planner-led"
+    planner_agent_id: str = "planner"
+    knowledge_pack_ids: list[str] = Field(default_factory=list)
+    skill_pack_ids: list[str] = Field(default_factory=list)
+    memory_pack_ids: list[str] = Field(default_factory=list)
+    repo: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+
+
+class PlannerChatConfirmRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str
+    approved: bool
+    edits: dict[str, Any] = Field(default_factory=dict)
+    repo: str | None = None
     scopes: list[str] = Field(default_factory=list)
     initial_data: dict[str, Any] = Field(default_factory=dict)
 
@@ -123,6 +149,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     library = LibraryStore(Path(store_root) / "library")
     skill_store = InstalledSkillStore(store_root)
     agent_manager = AgentGraphRunManager(store, runtime_settings_loader=settings_store.load)
+    planner_chat_drafts: dict[str, dict[str, Any]] = {}
 
     @app.get("/api/v2/health")
     def health() -> dict[str, Any]:
@@ -415,6 +442,129 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             ]
         }
 
+    @app.post("/api/v2/planner-chat/draft")
+    def create_planner_chat_draft(body: PlannerChatDraftRequest) -> dict[str, Any]:
+        if not body.request.strip():
+            raise HTTPException(status_code=400, detail="request is required")
+        try:
+            agent_workflow = _load_agent_workflow_for_planner_chat(library, body.workflow_id)
+            _raise_agent_workflow_validation(agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True))
+        except AgentWorkflowValidationError as exc:
+            raise HTTPException(status_code=400, detail=exc.result.model_dump(mode="json")) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        planner = next((agent for agent in agent_workflow.agents if agent.id == body.planner_agent_id), None)
+        if planner is None or planner.role != "planner":
+            raise HTTPException(status_code=400, detail="planner_agent_id must point to a Planner agent")
+
+        draft_id = str(uuid4())
+        proposed_scope = list(body.scopes)
+        success_criteria = [
+            "User confirms the draft before execution starts.",
+            f"Complete the requested goal: {body.request.strip()}",
+        ]
+        risks = [
+            "Execution may be blocked if required credentials, network, or dependencies are unavailable.",
+            "Task execution must stay inside the confirmed workflow and sandbox policy.",
+        ]
+        plan_draft = validate_artifact(
+            {
+                "artifact_type": "project_plan_draft",
+                "draft_id": draft_id,
+                "summary": f"Draft plan for {agent_workflow.name}: {body.request.strip()}",
+                "proposed_scope": proposed_scope,
+                "success_criteria": success_criteria,
+                "risks": risks,
+                "requires_confirmation": True,
+            },
+            expected_type="project_plan_draft",
+            artifact_id=draft_id,
+        )
+        run_contract_draft = validate_artifact(
+            {
+                "artifact_type": "run_contract_draft",
+                "draft_id": draft_id,
+                "user_goal": body.request.strip(),
+                "workflow_id": agent_workflow.id,
+                "planner_agent_id": planner.id,
+                "success_criteria": success_criteria,
+                "constraints": [
+                    "Planning Chat Mode cannot write files or run commands.",
+                    "Workflow execution starts only after confirm approved=true.",
+                ],
+                "selected_knowledge_pack_ids": body.knowledge_pack_ids,
+                "selected_skill_pack_ids": body.skill_pack_ids,
+                "selected_memory_pack_ids": body.memory_pack_ids,
+                "requires_confirmation": True,
+            },
+            expected_type="run_contract_draft",
+            artifact_id=f"{draft_id}:run_contract",
+        )
+        planner_chat_drafts[draft_id] = {
+            "draft_id": draft_id,
+            "status": "drafted",
+            "request": body.request.strip(),
+            "repo": body.repo,
+            "scopes": proposed_scope,
+            "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+            "project_plan_draft": plan_draft,
+            "run_contract_draft": run_contract_draft,
+        }
+        return {
+            "draft_id": draft_id,
+            "artifact_type": "project_plan_draft",
+            "summary": plan_draft["summary"],
+            "proposed_scope": plan_draft["proposed_scope"],
+            "success_criteria": plan_draft["success_criteria"],
+            "risks": plan_draft["risks"],
+            "requires_confirmation": plan_draft["requires_confirmation"],
+        }
+
+    @app.post("/api/v2/planner-chat/confirm")
+    def confirm_planner_chat_draft(body: PlannerChatConfirmRequest) -> dict[str, Any]:
+        draft = planner_chat_drafts.get(body.draft_id)
+        if draft is None:
+            raise HTTPException(status_code=404, detail="planner chat draft not found")
+        if not body.approved:
+            draft["status"] = "cancelled"
+            return {"draft_id": body.draft_id, "status": "cancelled"}
+
+        agent_workflow = AgentWorkflowSpec.model_validate(draft["agent_workflow"])
+        request_text = str(body.edits.get("request") or draft["request"]).strip()
+        repo = body.repo or draft.get("repo") or "."
+        repo_root = resolve_existing_dir(str(repo))
+        scopes = body.scopes or list(draft.get("scopes") or [])
+        try:
+            normalized_scopes = normalize_scope_paths(repo_root, scopes)
+        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        initial_data = dict(body.initial_data)
+        initial_data.update(
+            {
+                "request": request_text,
+                "approved": True,
+                "preapprove_all": True,
+                "scopes": normalized_scopes,
+                "planner_chat_draft": draft["project_plan_draft"],
+                "run_contract_draft": draft["run_contract_draft"],
+                "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+                "skill_index": build_skill_index(skill_store.list_installed()).model_dump(mode="json"),
+                "skill_store_root": str(Path(store_root)),
+            }
+        )
+        live = agent_manager.start(
+            agent_workflow=agent_workflow,
+            repo_root=str(repo_root),
+            request=request_text,
+            initial_data=initial_data,
+        )
+        draft["status"] = "confirmed"
+        draft["run_id"] = live.id
+        return {
+            "run_id": live.id,
+            "status": live.status,
+        }
+
     @app.get("/api/v2/runs")
     def list_runs() -> dict[str, Any]:
         return {"runs": store.list()}
@@ -630,6 +780,15 @@ def _raise_agent_workflow_validation(agent_workflow: dict[str, Any]) -> None:
     validation = validate_agent_workflow_payload(agent_workflow)
     if validation.status == "error":
         raise AgentWorkflowValidationError(validation)
+
+
+def _load_agent_workflow_for_planner_chat(library: LibraryStore, workflow_id: str) -> AgentWorkflowSpec:
+    if workflow_id == "default-planner-led":
+        return default_planner_led_agent_workflow()
+    try:
+        return AgentWorkflowSpec.model_validate(library.get_agent_workflow(workflow_id))
+    except KeyError as exc:
+        raise ValueError("agent workflow not found") from exc
 
 
 def _resolve_skill_registry_url(registry_url: str | None) -> str:

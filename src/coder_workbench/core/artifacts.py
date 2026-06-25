@@ -12,6 +12,8 @@ from coder_workbench.core.planner_artifacts import (
 
 
 ArtifactType = Literal[
+    "project_plan_draft",
+    "run_contract_draft",
     "run_contract",
     "planner_order",
     "execution_result",

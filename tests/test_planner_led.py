@@ -14,7 +14,16 @@ class PlannerLedArtifactTests(unittest.TestCase):
     def test_new_artifact_protocol_is_supported_without_test_result(self) -> None:
         self.assertEqual(
             set(supported_artifact_types()),
-            {"run_contract", "planner_order", "execution_result", "planner_decision", "round_summary", "final_report"},
+            {
+                "project_plan_draft",
+                "run_contract_draft",
+                "run_contract",
+                "planner_order",
+                "execution_result",
+                "planner_decision",
+                "round_summary",
+                "final_report",
+            },
         )
 
     def test_execution_result_contains_verification(self) -> None:

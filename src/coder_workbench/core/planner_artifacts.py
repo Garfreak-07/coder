@@ -33,6 +33,8 @@ PlannerRecommendation = Literal["replan_once", "finish"]
 PlannerNextAction = Literal["continue", "finish"]
 PlanStatus = Literal["pending", "running", "completed", "blocked", "interrupted"]
 PlannerArtifactType = Literal[
+    "project_plan_draft",
+    "run_contract_draft",
     "run_contract",
     "planner_order",
     "execution_result",
@@ -100,6 +102,30 @@ class ExecutionPolicy(BaseModel):
     executor_can_run_check_commands: bool = True
     executor_cannot_ask_human: bool = True
     executor_must_follow_planner_order: bool = True
+
+
+class ProjectPlanDraftArtifact(PlannerArtifactBase):
+    artifact_type: Literal["project_plan_draft"] = "project_plan_draft"
+    draft_id: str
+    summary: str
+    proposed_scope: list[str] = Field(default_factory=list)
+    success_criteria: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    requires_confirmation: bool = True
+
+
+class RunContractDraftArtifact(PlannerArtifactBase):
+    artifact_type: Literal["run_contract_draft"] = "run_contract_draft"
+    draft_id: str
+    user_goal: str
+    workflow_id: str
+    planner_agent_id: str
+    success_criteria: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    selected_knowledge_pack_ids: list[str] = Field(default_factory=list)
+    selected_skill_pack_ids: list[str] = Field(default_factory=list)
+    selected_memory_pack_ids: list[str] = Field(default_factory=list)
+    requires_confirmation: bool = True
 
 
 class RunContractArtifact(PlannerArtifactBase):
@@ -372,6 +398,8 @@ class FinalReportArtifact(PlannerArtifactBase):
 
 
 PLANNER_ARTIFACT_MODELS: dict[str, type[PlannerArtifactBase]] = {
+    "project_plan_draft": ProjectPlanDraftArtifact,
+    "run_contract_draft": RunContractDraftArtifact,
     "run_contract": RunContractArtifact,
     "planner_order": PlannerOrderArtifact,
     "execution_result": ExecutionResultArtifact,
@@ -383,6 +411,23 @@ PLANNER_ARTIFACT_MODELS: dict[str, type[PlannerArtifactBase]] = {
 
 def planner_artifact_summary(artifact: dict) -> dict:
     artifact_type = str(artifact.get("artifact_type") or "")
+    if artifact_type == "project_plan_draft":
+        return {
+            "draft_id": artifact.get("draft_id"),
+            "summary": artifact.get("summary"),
+            "success_criteria": len(artifact.get("success_criteria", [])),
+            "risks": len(artifact.get("risks", [])),
+            "requires_confirmation": artifact.get("requires_confirmation"),
+        }
+    if artifact_type == "run_contract_draft":
+        return {
+            "draft_id": artifact.get("draft_id"),
+            "user_goal": artifact.get("user_goal"),
+            "workflow_id": artifact.get("workflow_id"),
+            "planner_agent_id": artifact.get("planner_agent_id"),
+            "success_criteria": len(artifact.get("success_criteria", [])),
+            "requires_confirmation": artifact.get("requires_confirmation"),
+        }
     if artifact_type == "run_contract":
         scope = artifact.get("scope") or {}
         loop_policy = artifact.get("loop_policy") or {}
