@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
+from coder_workbench.actions import ActionGateway, RunContext
 from coder_workbench.agent_graph.artifacts import graph_artifact_id
 from coder_workbench.agent_graph.repair import parse_json_object
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, ExecutionRecord, WorkItem
+from coder_workbench.agent_harness.artifact_repair_pipeline import ArtifactRepairPipeline
 from coder_workbench.agent_harness.execution_loop import ExecutionLoop
 from coder_workbench.agent_harness.execution_verification import ensure_execution_verification
 from coder_workbench.agent_harness.execution_memory import ExecutionRunMemory
 from coder_workbench.agent_harness.repair import ArtifactRepairService
 from coder_workbench.agent_harness.self_check import ExecutorSelfChecker, harness_self_check_enabled
+from coder_workbench.agent_harness.tool_gate import ToolGate
+from coder_workbench.agent_harness.tool_loop import CodeWorkerToolLoop
 from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
 
 from .base import AgentHarness
@@ -30,10 +36,32 @@ class CodeWorkerHarness(AgentHarness):
         coding_context_packet: dict[str, Any] | None = None,
         emit: Any | None = None,
         prompt: str | None = None,
+        repo_root: str | Path = ".",
+        sandbox_root: str | Path | None = None,
+        scopes: list[str] | None = None,
+        run_id: str | None = None,
+        data: dict[str, Any] | None = None,
+        action_gateway: ActionGateway | None = None,
+        capability_set: dict[str, Any] | None = None,
     ) -> ExecutionRecord:
         loop_envelope = envelope
         if coding_context_packet is not None and not envelope.coding_context_packet:
             loop_envelope = envelope.model_copy(update={"coding_context_packet": coding_context_packet})
+        if capability_set is not None:
+            loop_envelope = loop_envelope.model_copy(update={"capability_set": capability_set})
+        if _tool_loop_enabled():
+            return self._create_execution_result_with_tool_loop(
+                item=item,
+                envelope=loop_envelope,
+                emit=emit,
+                prompt=prompt,
+                repo_root=repo_root,
+                sandbox_root=sandbox_root,
+                scopes=scopes,
+                run_id=run_id,
+                data=data,
+                action_gateway=action_gateway,
+            )
         try:
             payload = ExecutionLoop(
                 execute_payload=lambda: self._payload_from_model_or_mock(
@@ -72,6 +100,70 @@ class CodeWorkerHarness(AgentHarness):
                 artifact_payload=artifact,
             )
         artifact = validate_artifact(ensure_execution_verification(payload), expected_type="execution_result")
+        return ExecutionRecord(
+            work_item_id=item.work_item_id,
+            merge_index=item.merge_index,
+            agent_id=item.assignee_agent_id,
+            status=artifact["status"],
+            execution_summary=artifact["summary"],
+            execution_result_ref=graph_artifact_id("execution_result", item.work_item_id),
+            artifact_payload=artifact,
+        )
+
+    def _create_execution_result_with_tool_loop(
+        self,
+        *,
+        item: WorkItem,
+        envelope: AgentTaskEnvelope,
+        emit: Any | None,
+        prompt: str | None,
+        repo_root: str | Path,
+        sandbox_root: str | Path | None,
+        scopes: list[str] | None,
+        run_id: str | None,
+        data: dict[str, Any] | None,
+        action_gateway: ActionGateway | None,
+    ) -> ExecutionRecord:
+        run_data = data if data is not None else {}
+        gateway = action_gateway or ActionGateway()
+        run_context = RunContext(
+            run_id=run_id or str(run_data.get("run_id") or "code-worker-run"),
+            repo_root=repo_root,
+            sandbox_root=sandbox_root,
+            scopes=scopes,
+            data=run_data,
+            item=item,
+            planner_order_ref=envelope.planner_order_ref,
+            upstream_refs=envelope.upstream_refs,
+            user_request=envelope.task_summary,
+            role="executor",
+            artifact_type="execution_result",
+            emit=emit,
+            model=self.model,
+        )
+        capability_set = dict(envelope.capability_set or {})
+        tool_gate = ToolGate(run_context=run_context, capability_set=capability_set)
+        try:
+            artifact = CodeWorkerToolLoop(
+                model=self.model,
+                action_gateway=gateway,
+                run_context=run_context,
+                tool_gate=tool_gate,
+                repair_pipeline=ArtifactRepairPipeline(),
+                self_checker=ExecutorSelfChecker(),
+                emit=emit,
+            ).run(
+                item=item,
+                envelope=envelope,
+                prompt=prompt or _executor_prompt(item, envelope, envelope.coding_context_packet),
+            )
+        except ArtifactValidationError:
+            artifact = validate_artifact(
+                ensure_execution_verification(
+                    _blocked_payload(item, envelope.round, "CodeWorker tool loop returned invalid execution_result.")
+                ),
+                expected_type="execution_result",
+            )
         return ExecutionRecord(
             work_item_id=item.work_item_id,
             merge_index=item.merge_index,
@@ -164,6 +256,10 @@ def _emit_schema_failed(emit: Any | None, item: WorkItem, errors: list[dict[str,
 def _emit(emit: Any | None, event_type: str, message: str, **payload: Any) -> None:
     if emit is not None:
         emit(event_type, message, **{key: value for key, value in payload.items() if value is not None})
+
+
+def _tool_loop_enabled() -> bool:
+    return str(os.getenv("CODER_ENABLE_CODE_WORKER_TOOL_LOOP") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _executor_prompt(item: WorkItem, envelope: AgentTaskEnvelope, coding_context_packet: dict[str, Any] | None) -> str:

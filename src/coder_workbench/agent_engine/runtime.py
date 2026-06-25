@@ -45,6 +45,12 @@ class AgentEngine(Protocol):
         envelope: "AgentTaskEnvelope",
         capability_set: dict[str, Any] | None = None,
         model: Any | None = None,
+        repo_root: str | None = None,
+        sandbox_root: str | None = None,
+        scopes: list[str] | None = None,
+        run_id: str | None = None,
+        data: dict[str, Any] | None = None,
+        action_gateway: ActionGateway | None = None,
         emit: Any | None = None,
     ) -> "ExecutionRecord":
         ...
@@ -530,6 +536,12 @@ class CodeWorkerEngine:
         envelope: "AgentTaskEnvelope",
         capability_set: dict[str, Any] | None = None,
         model: Any | None = None,
+        repo_root: str | None = None,
+        sandbox_root: str | None = None,
+        scopes: list[str] | None = None,
+        run_id: str | None = None,
+        data: dict[str, Any] | None = None,
+        action_gateway: ActionGateway | None = None,
         emit: Any | None = None,
     ) -> "ExecutionRecord":
         from coder_workbench.agent_graph.prompts import build_worker_execution_prompt
@@ -546,6 +558,13 @@ class CodeWorkerEngine:
                 envelope=envelope,
                 capability_set=capability_set,
             ),
+            repo_root=repo_root or ".",
+            sandbox_root=sandbox_root,
+            scopes=scopes,
+            run_id=run_id,
+            data=data,
+            action_gateway=action_gateway,
+            capability_set=capability_set,
         )
 
 

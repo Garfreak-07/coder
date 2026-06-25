@@ -151,6 +151,12 @@ class AgentRun:
             envelope=envelope,
             capability_set=capability_payload,
             model=model or self._chat_model(),
+            repo_root=str(self.initial_data.get("repo_root") or "."),
+            sandbox_root=_optional_string(self.initial_data.get("sandbox_root")),
+            scopes=_scopes_from_data(self.initial_data),
+            run_id=self.run_id,
+            data=self.initial_data,
+            action_gateway=self.action_gateway,
             emit=emit,
         )
 
@@ -296,3 +302,19 @@ class AgentRun:
             artifact_type=artifact_type,
             round=round_number,
         )
+
+
+def _optional_string(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _scopes_from_data(data: dict[str, Any]) -> list[str]:
+    value = data.get("scopes", data.get("scope"))
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]

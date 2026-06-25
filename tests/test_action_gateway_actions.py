@@ -30,17 +30,22 @@ class ActionGatewayActionClosureTests(unittest.TestCase):
                 skill_index=SkillIndex(),
                 skill_store_root=root / ".coder",
                 repo_intelligence={},
-                data={"preapprove_all": True},
+                data={"preapprove_all": True, "tool_outputs": {"tool-output-ref": "stored output"}},
             )
             specs = [
                 ActionSpec(action_id="build_context", action_type="build_context"),
                 ActionSpec(action_id="call_plugin", action_type="call_plugin", input={"operation_id": "safe.op", "approved": True}),
                 ActionSpec(action_id="call_mcp", action_type="call_mcp", input={"operation_id": "mcp.fs.read", "approved": True}),
                 ActionSpec(action_id="repo_index", action_type="repo_index"),
+                ActionSpec(action_id="read-file", action_type="read_file", input={"path": "example.py"}),
+                ActionSpec(action_id="search-files", action_type="search_files", input={"query": "x", "paths": ["."]}),
+                ActionSpec(action_id="git-diff", action_type="inspect_git_diff"),
                 ActionSpec(action_id="propose_patch", action_type="propose_patch", input={"changes": []}),
                 ActionSpec(action_id="apply_patch_sandbox", action_type="apply_patch_sandbox", input={"changes": []}),
                 ActionSpec(action_id="run_command_sandbox", action_type="run_command_sandbox", input={"command": "echo ok"}),
                 ActionSpec(action_id="run_command", action_type="run_command", input={"command": "echo ok"}),
+                ActionSpec(action_id="read-output", action_type="read_tool_output", input={"output_ref": "tool-output-ref"}),
+                ActionSpec(action_id="return-result", action_type="return_execution_result"),
                 ActionSpec(
                     action_id="validate_artifact",
                     action_type="validate_artifact",

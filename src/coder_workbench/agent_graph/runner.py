@@ -132,6 +132,7 @@ class AgentGraphRunner:
         status_code = None
         run_id = str(data.get("run_id") or self.agent_workflow.id)
         data["run_id"] = run_id
+        data["repo_root"] = repo_root
         trace = TraceContext(trace_id=str(data.get("trace_id") or "") or None)
         run_span = trace.start_span(
             name=f"run:{self.agent_workflow.id}",

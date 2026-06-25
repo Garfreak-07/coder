@@ -1,3 +1,4 @@
+from .action_protocol import HarnessActionRequest, HarnessObservation
 from .actions import HarnessAction
 from .base import AgentHarness, HarnessResult, HarnessTask
 from .code_worker import CodeWorkerHarness
@@ -11,7 +12,7 @@ from .contracts import (
     harness_contract_for_id,
     harness_contracts_for_role,
 )
-from .observations import HarnessObservation
+from .observations import HarnessObservation as LegacyHarnessObservation
 from .permissions import HarnessPermissionPolicy
 from .planner import PlannerHarness
 from .policies import (
@@ -32,22 +33,30 @@ from .prompt_layers import (
 from .repair import ArtifactRepairService
 from .scratchpad import Scratchpad, ScratchpadEntry
 from .self_check import ExecutorSelfChecker, SelfCheckResult, harness_self_check_enabled
+from .session import CodeWorkerLoopState, HarnessSession
+from .tool_gate import ToolGate, ToolGateDecision
+from .tool_loop import CodeWorkerToolLoop
 
 __all__ = [
     "AgentHarness",
     "ArtifactRepairService",
     "CODE_WORKER_HARNESS",
+    "CodeWorkerLoopState",
     "CodeWorkerHarness",
+    "CodeWorkerToolLoop",
     "ExecutorSelfChecker",
     "FINAL_REPORT_HARNESS",
     "HARNESS_CONTRACTS",
     "HarnessAction",
+    "HarnessActionRequest",
     "HarnessContract",
     "HarnessObservation",
     "HarnessPermissionPolicy",
     "HarnessPolicy",
     "HarnessResult",
+    "HarnessSession",
     "HarnessTask",
+    "LegacyHarnessObservation",
     "PLANNER_DECISION_HARNESS",
     "PLANNER_ORDER_HARNESS",
     "PromptLayer",
@@ -55,6 +64,8 @@ __all__ = [
     "Scratchpad",
     "ScratchpadEntry",
     "SelfCheckResult",
+    "ToolGate",
+    "ToolGateDecision",
     "code_worker_policy",
     "default_prompt_layer_config",
     "harness_contract_layer",

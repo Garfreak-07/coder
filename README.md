@@ -36,6 +36,12 @@ the Planner -> Execution Engine -> Planner authority model:
 - The executor harness supports bounded self-checks, verification checks, and
   multi-stage artifact repair. Invalid model output becomes a Planner-visible
   blocked artifact instead of an unstructured runtime crash.
+- The CodeWorker harness can optionally run a provider-neutral internal
+  action/observation loop. When `CODER_ENABLE_CODE_WORKER_TOOL_LOOP=1`, model
+  steps must return either a `harness_action` or a final `execution_result`;
+  runtime validates the action through `ToolGate`, executes supported effects
+  through `ActionGateway`, records observations/evidence, and enriches the final
+  artifact from runtime facts instead of model claims.
 - `WaveExecutor` records per-work-item attempts, timeout/cancel evidence,
   conservative retry diagnostics, completed/blocked outcomes, and wave-level
   summaries.
@@ -85,6 +91,7 @@ Most low-level runtime behavior is feature-flagged during rollout:
 CODER_ENABLE_TOOL_EXECUTION_SERVICE=1
 CODER_ENABLE_CONTEXT_COMPACTION=1
 CODER_ENABLE_HARNESS_SELF_CHECK=1
+CODER_ENABLE_CODE_WORKER_TOOL_LOOP=1
 CODER_ENABLE_WAVE_RETRY=1
 ```
 
@@ -248,6 +255,11 @@ npm.cmd run build
 - Product live Agent workflows must run through AgentGraph.
 - New context, patch, command, repair, validation, plugin, and MCP behavior
   should enter through `ActionGateway`.
+- CodeWorker tool-loop actions must remain scoped to `read_file`,
+  `search_files`, `inspect_git_diff`, `propose_patch`, `apply_patch_sandbox`,
+  `run_command_sandbox`, `read_tool_output`, and `return_execution_result`.
+  Executors must not use `run_command`, publish externally, install plugins, or
+  enable MCP servers from inside the harness.
 - Executors cannot write long-term memory directly. Durable memory writes must
   go through `MemoryService` as evidence-backed, staged/gated deltas.
 - New tools, MCP manifests, and skills should be represented in the runtime

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -17,6 +18,7 @@ from coder_workbench.coding.patch_service import PatchService
 from coder_workbench.extensions import ExtensionRuntime
 from coder_workbench.extensions.policy import merge_extension_policy
 from coder_workbench.skills import SkillIndex, estimate_tokens
+from coder_workbench.tools.filesystem import DEFAULT_IGNORE_DIRS, TEXT_EXTENSIONS, resolve_scoped_path
 
 
 PatchServiceFactory = Callable[[str | Path, list[str], dict[str, Any]], PatchService]
@@ -28,10 +30,14 @@ TOOL_EXECUTION_ACTION_TYPES = {
     "call_plugin",
     "call_mcp",
     "repo_index",
+    "read_file",
+    "search_files",
+    "inspect_git_diff",
     "propose_patch",
     "apply_patch_sandbox",
     "run_command_sandbox",
     "run_command",
+    "read_tool_output",
 }
 
 
@@ -114,10 +120,15 @@ class ActionGateway:
             "call_plugin",
             "call_mcp",
             "repo_index",
+            "read_file",
+            "search_files",
+            "inspect_git_diff",
             "propose_patch",
             "apply_patch_sandbox",
             "run_command_sandbox",
             "run_command",
+            "read_tool_output",
+            "return_execution_result",
             "validate_artifact",
             "repair_artifact",
         )
@@ -138,6 +149,20 @@ class ActionGateway:
     def _run_direct(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
         if spec.action_type == "build_context":
             return self._build_context(spec, run_context)
+        if spec.action_type == "read_file":
+            return self._read_file(spec, run_context)
+        if spec.action_type == "search_files":
+            return self._search_files(spec, run_context)
+        if spec.action_type == "inspect_git_diff":
+            return self._inspect_git_diff(spec, run_context)
+        if spec.action_type == "read_tool_output":
+            return self._read_tool_output(spec, run_context)
+        if spec.action_type == "return_execution_result":
+            return ActionResult(
+                status="failed",
+                summary="return_execution_result is handled by the harness loop.",
+                error_code="loop_control_action",
+            )
         if spec.action_type == "propose_patch":
             return self._propose_patch(spec, run_context)
         if spec.action_type == "apply_patch_sandbox":
@@ -180,6 +205,24 @@ class ActionGateway:
             if externalized_refs:
                 payload.setdefault("result_budget", {})["externalized_refs"] = externalized_refs
         return _action_result_from_tool_execution(result, payload)
+
+    def _apply_result_budget(
+        self,
+        spec: ActionSpec,
+        run_context: RunContext,
+        payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[str]]:
+        compacted, externalized_refs = apply_result_budget(
+            payload,
+            data=run_context.mutable_data,
+            run_id=run_context.run_id,
+            action_id=spec.action_id,
+            action_type=spec.action_type,
+            budget=self.result_budget,
+        )
+        if externalized_refs:
+            compacted.setdefault("result_budget", {})["externalized_refs"] = externalized_refs
+        return compacted, externalized_refs
 
     def _build_context(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
         skill_index = _input_or_context(spec, run_context, "skill_index")
@@ -255,6 +298,158 @@ class ActionGateway:
                 "context_compaction": context.compaction_result.__dict__ if context.compaction_result else None,
             },
         )
+
+    def _read_file(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
+        path = str(spec.input.get("path") or "").strip()
+        if not path:
+            return ActionResult(status="failed", summary="read_file requires path.", error_code="path_required")
+        target = resolve_scoped_path(Path(run_context.repo_root).resolve(), path, run_context.active_scopes)
+        if not target.exists():
+            return ActionResult(status="failed", summary=f"File not found: {path}", error_code="missing_file")
+        if not target.is_file():
+            return ActionResult(status="failed", summary=f"Path is not a file: {path}", error_code="not_file")
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            return ActionResult(status="failed", summary=f"File is not UTF-8 text: {path}", error_code="binary_file")
+        start_line = max(1, int(spec.input.get("start_line") or 1))
+        end_line_value = spec.input.get("end_line")
+        end_line = len(lines) if end_line_value in (None, "") else max(start_line, int(end_line_value))
+        selected = lines[start_line - 1 : end_line]
+        relative = target.relative_to(Path(run_context.repo_root).resolve()).as_posix()
+        payload = {
+            "path": relative,
+            "start_line": start_line,
+            "end_line": min(end_line, len(lines)),
+            "total_lines": len(lines),
+            "content": "\n".join(selected),
+        }
+        payload, refs = self._apply_result_budget(spec, run_context, payload)
+        return ActionResult(
+            status="ok",
+            summary=f"Read {relative}:{start_line}-{min(end_line, len(lines))}.",
+            output_ref=refs[0] if refs else None,
+            payload=payload,
+        )
+
+    def _search_files(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
+        query = str(spec.input.get("query") or "").strip()
+        if not query:
+            return ActionResult(status="failed", summary="search_files requires query.", error_code="query_required")
+        max_results = max(1, min(500, int(spec.input.get("max_results") or 50)))
+        root = Path(run_context.repo_root).resolve()
+        paths = _string_list(spec.input.get("paths"))
+        scan_roots = [resolve_scoped_path(root, path, run_context.active_scopes) for path in paths] if paths else _scope_roots(root, run_context.active_scopes)
+        matches: list[dict[str, Any]] = []
+        for scan_root in scan_roots:
+            candidates = [scan_root] if scan_root.is_file() else scan_root.rglob("*")
+            for candidate in candidates:
+                if len(matches) >= max_results:
+                    break
+                if not candidate.is_file() or _ignored(candidate, root) or candidate.suffix.lower() not in TEXT_EXTENSIONS:
+                    continue
+                try:
+                    lines = candidate.read_text(encoding="utf-8").splitlines()
+                except UnicodeDecodeError:
+                    continue
+                for line_number, line in enumerate(lines, start=1):
+                    if query.lower() not in line.lower():
+                        continue
+                    matches.append(
+                        {
+                            "path": candidate.relative_to(root).as_posix(),
+                            "line": line_number,
+                            "preview": line.strip()[:300],
+                        }
+                    )
+                    if len(matches) >= max_results:
+                        break
+            if len(matches) >= max_results:
+                break
+        payload = {
+            "query": query,
+            "paths": [path.relative_to(root).as_posix() if path != root else "." for path in scan_roots],
+            "match_count": len(matches),
+            "matches": matches,
+            "truncated": len(matches) >= max_results,
+        }
+        payload, refs = self._apply_result_budget(spec, run_context, payload)
+        return ActionResult(
+            status="ok",
+            summary=f"search_files found {len(matches)} match(es).",
+            output_ref=refs[0] if refs else None,
+            payload=payload,
+        )
+
+    def _inspect_git_diff(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
+        root = Path(run_context.repo_root).resolve()
+        paths = _string_list(spec.input.get("paths"))
+        for path in paths:
+            resolve_scoped_path(root, path, run_context.active_scopes)
+        cmd = ["git", "-C", str(root), "diff", "--"]
+        name_cmd = ["git", "-C", str(root), "diff", "--name-status", "--"]
+        cmd.extend(paths)
+        name_cmd.extend(paths)
+        try:
+            diff = subprocess.run(cmd, text=True, capture_output=True, timeout=15)
+            names = subprocess.run(name_cmd, text=True, capture_output=True, timeout=15)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return ActionResult(status="failed", summary=str(exc), error_code="git_diff_failed")
+        if diff.returncode != 0:
+            message = (diff.stderr or diff.stdout or "git diff failed").strip()
+            return ActionResult(status="failed", summary=message, error_code="git_diff_failed")
+        files = _parse_name_status(names.stdout if names.returncode == 0 else "")
+        payload = {
+            "paths": paths,
+            "files": files,
+            "file_count": len(files),
+            "diff": diff.stdout,
+        }
+        payload, refs = self._apply_result_budget(spec, run_context, payload)
+        return ActionResult(
+            status="ok",
+            summary=f"inspect_git_diff found {len(files)} changed file(s).",
+            output_ref=refs[0] if refs else None,
+            payload=payload,
+        )
+
+    def _read_tool_output(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
+        output_ref = str(spec.input.get("output_ref") or "").strip()
+        if not output_ref:
+            return ActionResult(status="failed", summary="read_tool_output requires output_ref.", error_code="output_ref_required")
+        data = run_context.mutable_data
+        blobs = data.get("pending_blob_writes")
+        if isinstance(blobs, dict) and output_ref in blobs:
+            record = blobs[output_ref]
+            content = record.get("content") if isinstance(record, dict) else None
+            preview = record.get("preview") if isinstance(record, dict) else None
+            text = str(content if content is not None else preview if preview is not None else "")
+            return ActionResult(
+                status="ok",
+                summary=f"Read stored tool output {output_ref}.",
+                output_ref=output_ref,
+                payload={
+                    "output_ref": output_ref,
+                    "preview": text[:4000],
+                    "original_chars": len(text),
+                    "truncated": len(text) > 4000,
+                },
+            )
+        outputs = data.get("tool_outputs")
+        if isinstance(outputs, dict) and output_ref in outputs:
+            text = str(outputs[output_ref])
+            return ActionResult(
+                status="ok",
+                summary=f"Read stored tool output {output_ref}.",
+                output_ref=output_ref,
+                payload={
+                    "output_ref": output_ref,
+                    "preview": text[:4000],
+                    "original_chars": len(text),
+                    "truncated": len(text) > 4000,
+                },
+            )
+        return ActionResult(status="failed", summary=f"Tool output not found: {output_ref}", error_code="output_ref_not_found")
 
     def _propose_patch(self, spec: ActionSpec, run_context: RunContext) -> ActionResult:
         reservation = self.budget_broker.reserve_tool_call(
@@ -539,6 +734,39 @@ class ActionGateway:
         return ActionResult(status="ok", summary="Artifact repaired.", payload={"artifact": repaired})
 
 
+def _scope_roots(root: Path, scopes: list[str]) -> list[Path]:
+    if not scopes:
+        return [root]
+    return [resolve_scoped_path(root, scope, []) for scope in scopes]
+
+
+def _ignored(path: Path, root: Path) -> bool:
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return True
+    return any(part in DEFAULT_IGNORE_DIRS or part.endswith(".egg-info") for part in parts)
+
+
+def _parse_name_status(value: str) -> list[dict[str, str]]:
+    files: list[dict[str, str]] = []
+    for line in value.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            files.append({"status": parts[0], "path": parts[-1]})
+    return files
+
+
+def _string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
 def _budget_blocked(reservation: Any) -> ActionResult:
     return ActionResult(
         status="blocked",
@@ -648,7 +876,13 @@ def _requires_exclusive_access(spec: ActionSpec) -> bool:
 def _is_read_only_action(spec: ActionSpec) -> bool:
     if "is_read_only" in spec.input:
         return bool(spec.input["is_read_only"])
-    return spec.action_type == "repo_index"
+    return spec.action_type in {
+        "repo_index",
+        "read_file",
+        "search_files",
+        "inspect_git_diff",
+        "read_tool_output",
+    }
 
 
 def _concurrency_key(spec: ActionSpec, run_context: RunContext) -> str:

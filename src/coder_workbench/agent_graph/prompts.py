@@ -134,6 +134,57 @@ def build_worker_execution_prompt(
     )
 
 
+def build_worker_tool_loop_prompt(
+    *,
+    base_prompt: str,
+    item: WorkItem,
+    envelope: AgentTaskEnvelope,
+    loop_state: dict[str, Any],
+    capability_set: dict[str, Any] | None = None,
+) -> str:
+    return render_prompt_layers(
+        [
+            instruction_layer(
+                layer_id="tool_loop_contract",
+                title="CodeWorker Tool Loop Contract",
+                instructions=[
+                    "Return exactly one JSON object. Do not include markdown, commentary, transcript, or code fences.",
+                    "Allowed artifact_type values are harness_action and execution_result.",
+                    "Use harness_action when you need runtime evidence before continuing.",
+                    "Use execution_result only when the WorkItem is complete or blocked.",
+                    "Do not claim file edits, command results, diffs, or evidence unless prior runtime observations support them.",
+                    "Do not fabricate observations. Observations are produced only by runtime.",
+                    "Do not ask the human. Do not return planner_decision or final_report.",
+                    "Non-sandbox run_command is forbidden. Use run_command_sandbox only when command execution is needed.",
+                ],
+            ),
+            text_layer(layer_id="base_worker_prompt", title="Base executor prompt", content=base_prompt),
+            json_layer(layer_id="work_item", title="Work item JSON", value=item.model_dump(mode="json")),
+            json_layer(layer_id="agent_task_envelope", title="AgentTaskEnvelope JSON", value=envelope.model_dump(mode="json")),
+            json_layer(layer_id="capability_set", title="Resolved CapabilitySet JSON", value=capability_set or envelope.capability_set),
+            json_layer(layer_id="loop_state", title="CodeWorkerLoopState JSON", value=_tool_loop_state_projection(loop_state)),
+            text_layer(
+                layer_id="action_schema",
+                title="Harness action schema",
+                content=(
+                    '{"artifact_type":"harness_action","action_id":"step-1","action_type":"read_file",'
+                    '"payload":{"path":"src/example.py"},"reason":"Inspect the file before editing.",'
+                    '"risk_level":"low","expected_evidence":["file content preview"]}'
+                ),
+            ),
+            text_layer(
+                layer_id="final_schema",
+                title="Execution result schema",
+                content=(
+                    '{"artifact_type":"execution_result","status":"completed","summary":"Done.",'
+                    '"verification":{"status":"pass","checks_run":[],"evidence_refs":[],"confidence":"medium",'
+                    '"remaining_work":[],"no_check_rationale":null,"repair_attempted":false,"repair_summary":null}}'
+                ),
+            ),
+        ]
+    )
+
+
 def build_planner_decision_prompt(
     *,
     planner: AgentWorkflowAgent,
@@ -286,6 +337,27 @@ def _debug_findings_text(findings: list[dict[str, Any]]) -> str:
             )
         )
     return "\n".join(lines)
+
+
+def _tool_loop_state_projection(loop_state: dict[str, Any]) -> dict[str, Any]:
+    session = loop_state.get("session") if isinstance(loop_state.get("session"), dict) else {}
+    observations = session.get("observations") if isinstance(session.get("observations"), list) else []
+    return {
+        "turn_count": loop_state.get("turn_count"),
+        "max_turns": loop_state.get("max_turns"),
+        "transition": loop_state.get("transition"),
+        "recent_observations": observations[-8:],
+        "evidence_refs": session.get("evidence_refs", []),
+        "opened_files": session.get("opened_files", []),
+        "searched_patterns": session.get("searched_patterns", []),
+        "changed_files": session.get("changed_files", []),
+        "created_files": session.get("created_files", []),
+        "deleted_files": session.get("deleted_files", []),
+        "patch_refs": session.get("patch_refs", []),
+        "command_checks": session.get("command_checks", [])[-4:],
+        "blocked_reasons": session.get("blocked_reasons", [])[-4:],
+        "recovery_attempts": session.get("recovery_attempts", [])[-4:],
+    }
 
 
 def _symbol_index_summary(value: Any) -> dict[str, Any]:
