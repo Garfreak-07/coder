@@ -39,6 +39,7 @@ from .scratchpad import Scratchpad, ScratchpadEntry
 from .self_check import ExecutorSelfChecker, SelfCheckResult, harness_self_check_enabled
 from .session import CodeWorkerLoopState, HarnessSession
 from .stop_gate import StopGate, StopGateDecision
+from .streaming_action_executor import StreamingActionExecutor
 from .tool_batcher import ToolActionBatch, ToolBatcher
 from .tool_gate import ToolGate, ToolGateDecision
 from .tool_loop import CodeWorkerToolLoop
@@ -83,6 +84,7 @@ __all__ = [
     "SelfCheckResult",
     "StopGate",
     "StopGateDecision",
+    "StreamingActionExecutor",
     "ToolActionBatch",
     "ToolBatcher",
     "ToolCapabilityMetadata",
