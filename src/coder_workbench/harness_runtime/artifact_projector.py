@@ -36,6 +36,27 @@ class ArtifactProjector:
             raise ArtifactProjectionError(f"{target_type} projection failed validation: {exc.errors}") from exc
 
     def _synthesize_artifact(self, artifact_type: str, result: HarnessRunResult) -> dict[str, Any]:
+        if artifact_type == "project_plan_draft":
+            return {
+                "artifact_type": "project_plan_draft",
+                "draft_id": "runtime-draft",
+                "summary": _summary(result, "Runtime provider produced a planning draft."),
+                "proposed_scope": [],
+                "success_criteria": ["Confirm the draft before execution."],
+                "risks": [],
+                "requires_confirmation": True,
+            }
+        if artifact_type == "run_contract_draft":
+            return {
+                "artifact_type": "run_contract_draft",
+                "draft_id": "runtime-draft",
+                "user_goal": _summary(result, "Runtime provider produced a run contract draft."),
+                "workflow_id": "unknown-workflow",
+                "planner_agent_id": "planner",
+                "success_criteria": ["Confirm the draft before execution."],
+                "constraints": ["Do not start execution until the draft is confirmed."],
+                "requires_confirmation": True,
+            }
         if artifact_type == "planner_order":
             return {
                 "artifact_type": "planner_order",
@@ -120,7 +141,7 @@ class ArtifactProjector:
         result: HarnessRunResult,
     ) -> dict[str, Any]:
         refs = _combined_refs(result)
-        if refs:
+        if refs and artifact_type in {"execution_result", "final_report"}:
             payload["evidence_refs"] = _dedupe([*payload.get("evidence_refs", []), *refs])
         if artifact_type == "execution_result" and result.diff_refs:
             payload["patch_refs"] = _dedupe([*payload.get("patch_refs", []), *result.diff_refs])

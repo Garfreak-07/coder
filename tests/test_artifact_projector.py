@@ -70,6 +70,50 @@ class ArtifactProjectorTests(unittest.TestCase):
         self.assertEqual(report["status"], "completed")
         self.assertEqual(report["evidence_refs"], ["evidence-ref"])
 
+    def test_projector_synthesizes_planning_chat_drafts_without_runtime_refs_inline(self) -> None:
+        projector = ArtifactProjector()
+
+        plan = projector.project(
+            HarnessRunResult(
+                status="completed",
+                artifact_type="project_plan_draft",
+                native_event_refs=["native-ref"],
+            )
+        )
+        contract = projector.project(
+            HarnessRunResult(
+                status="completed",
+                artifact_type="run_contract_draft",
+                native_event_refs=["native-ref"],
+            )
+        )
+
+        self.assertEqual(plan["artifact_type"], "project_plan_draft")
+        self.assertEqual(contract["artifact_type"], "run_contract_draft")
+        self.assertNotIn("evidence_refs", plan)
+        self.assertNotIn("evidence_refs", contract)
+
+    def test_projector_preserves_provider_planning_draft_without_extra_refs(self) -> None:
+        artifact = ArtifactProjector().project(
+            HarnessRunResult(
+                status="completed",
+                artifact_type="project_plan_draft",
+                artifact={
+                    "artifact_type": "project_plan_draft",
+                    "draft_id": "draft-1",
+                    "summary": "Draft plan.",
+                    "proposed_scope": ["src"],
+                    "success_criteria": ["Confirm."],
+                    "risks": [],
+                    "requires_confirmation": True,
+                },
+                native_event_refs=["native-ref"],
+            )
+        )
+
+        self.assertEqual(artifact["draft_id"], "draft-1")
+        self.assertNotIn("evidence_refs", artifact)
+
 
 if __name__ == "__main__":
     unittest.main()

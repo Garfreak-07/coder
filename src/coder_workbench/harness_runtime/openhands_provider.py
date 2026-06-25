@@ -134,6 +134,7 @@ class OpenHandsRuntimeProvider:
             )
 
         summary = _summarize_run_output(run_output)
+        facts = _runtime_facts(run_output)
         completed_event = self._record_event(
             request,
             native_type="conversation.completed",
@@ -143,9 +144,16 @@ class OpenHandsRuntimeProvider:
                 "mode": request.mode,
                 "output_type": type(run_output).__name__,
                 "output_summary": summary,
+                "changed_files": facts["changed_files"],
+                "created_files": facts["created_files"],
+                "deleted_files": facts["deleted_files"],
+                "diff_refs": facts["diff_refs"],
+                "log_refs": facts["log_refs"],
+                "evidence_refs": facts["evidence_refs"],
             },
         )
         refs = [selected_event.event_id, started_event.event_id, completed_event.event_id]
+        evidence_refs = _dedupe([*refs, *facts["evidence_refs"]])
         self._emit(
             emit,
             "harness_runtime.openhands.completed",
@@ -157,9 +165,11 @@ class OpenHandsRuntimeProvider:
         return HarnessRunResult(
             status="completed",
             artifact_type=_artifact_type_for_request(request),
-            artifact=_artifact_for_success(request, summary=summary, evidence_refs=refs),
+            artifact=_artifact_for_success(request, summary=summary, evidence_refs=evidence_refs, facts=facts),
             native_event_refs=refs,
-            evidence_refs=[completed_event.event_id],
+            evidence_refs=evidence_refs,
+            diff_refs=facts["diff_refs"],
+            log_refs=facts["log_refs"],
         )
 
     def _load_sdk(self) -> Any | None:
@@ -381,7 +391,13 @@ def _artifact_type_for_request(request: HarnessRunRequest) -> str:
     return "final_report"
 
 
-def _artifact_for_success(request: HarnessRunRequest, *, summary: str, evidence_refs: list[str]) -> dict[str, Any]:
+def _artifact_for_success(
+    request: HarnessRunRequest,
+    *,
+    summary: str,
+    evidence_refs: list[str],
+    facts: dict[str, list[str]],
+) -> dict[str, Any]:
     if request.mode == "task_execution":
         return {
             "artifact_type": "execution_result",
@@ -390,7 +406,10 @@ def _artifact_for_success(request: HarnessRunRequest, *, summary: str, evidence_
             "agent_id": request.context.agent_id,
             "status": "completed",
             "summary": summary,
-            "changed_files": [],
+            "changed_files": facts["changed_files"],
+            "created_files": facts["created_files"],
+            "deleted_files": facts["deleted_files"],
+            "patch_refs": facts["diff_refs"],
             "evidence_refs": evidence_refs,
             "verification": {
                 "status": "skipped",
@@ -487,6 +506,44 @@ def _summarize_run_output(run_output: Any) -> str:
     if run_output is None:
         return "OpenHands conversation completed."
     return "OpenHands conversation completed."
+
+
+def _runtime_facts(run_output: Any) -> dict[str, list[str]]:
+    return {
+        "changed_files": _string_list_fact(run_output, "changed_files"),
+        "created_files": _string_list_fact(run_output, "created_files"),
+        "deleted_files": _string_list_fact(run_output, "deleted_files"),
+        "diff_refs": _string_list_fact(run_output, "diff_refs", "patch_refs"),
+        "log_refs": _string_list_fact(run_output, "log_refs"),
+        "evidence_refs": _string_list_fact(run_output, "evidence_refs"),
+    }
+
+
+def _string_list_fact(run_output: Any, *names: str) -> list[str]:
+    for name in names:
+        value = _fact_value(run_output, name)
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item)]
+        if isinstance(value, tuple):
+            return [str(item) for item in value if str(item)]
+    return []
+
+
+def _fact_value(run_output: Any, name: str) -> Any:
+    if isinstance(run_output, dict):
+        return run_output.get(name)
+    return getattr(run_output, name, None)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output
 
 
 __all__ = ["OpenHandsRuntimeProvider"]

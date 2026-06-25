@@ -80,7 +80,14 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
     def test_openhands_provider_invokes_fake_sdk_and_returns_execution_result(self) -> None:
         store = NativeRuntimeStore()
         state: dict[str, Any] = {}
-        provider = OpenHandsRuntimeProvider(native_store=store, sdk_loader=lambda: _fake_sdk(state))
+        run_output = SimpleNamespace(
+            summary="Fake OpenHands completed.",
+            changed_files=["src/app.py"],
+            diff_refs=["diff-ref"],
+            log_refs=["log-ref"],
+            evidence_refs=["runtime-ref"],
+        )
+        provider = OpenHandsRuntimeProvider(native_store=store, sdk_loader=lambda: _fake_sdk(state, run_output=run_output))
 
         with tempfile.TemporaryDirectory() as sandbox:
             with _env("LLM_API_KEY", "test-key"), _env("DEEPSEEK_API_KEY", None), _env("LLM_MODEL", "test-model"):
@@ -89,6 +96,11 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.artifact_type, "execution_result")
         self.assertEqual(result.artifact["verification"]["status"], "skipped")
+        self.assertEqual(result.artifact["changed_files"], ["src/app.py"])
+        self.assertEqual(result.artifact["patch_refs"], ["diff-ref"])
+        self.assertEqual(result.diff_refs, ["diff-ref"])
+        self.assertEqual(result.log_refs, ["log-ref"])
+        self.assertIn("runtime-ref", result.evidence_refs)
         self.assertEqual(state["llm"]["model"], "test-model")
         self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["terminal", "file_editor", "task_tracker"])
         self.assertIn("Do not ask the user", state["conversation"]["prompt"])
@@ -243,7 +255,12 @@ def _task_request(*, sandbox_root: str | None) -> HarnessRunRequest:
     )
 
 
-def _fake_sdk(state: dict[str, Any], *, run_error: Exception | None = None) -> Any:
+def _fake_sdk(
+    state: dict[str, Any],
+    *,
+    run_error: Exception | None = None,
+    run_output: Any | None = None,
+) -> Any:
     class FakeLLM:
         def __init__(self, **kwargs: Any) -> None:
             state["llm"] = kwargs
@@ -267,7 +284,7 @@ def _fake_sdk(state: dict[str, Any], *, run_error: Exception | None = None) -> A
             if run_error is not None:
                 raise run_error
             state["conversation"]["ran"] = True
-            return SimpleNamespace(summary="Fake OpenHands completed.")
+            return run_output or SimpleNamespace(summary="Fake OpenHands completed.")
 
     return SimpleNamespace(
         LLM=FakeLLM,
