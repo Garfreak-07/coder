@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from coder_workbench.core import default_planner_led_agent_workflow
 from coder_workbench.core.artifacts import validate_artifact
+from coder_workbench.harness_runtime import HarnessRunResult
 from coder_workbench.server.app import create_app
 
 
@@ -109,6 +111,56 @@ class PlannerChatFlowTests(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertIn("Unsaved Workflow", draft["summary"])
+
+    def test_draft_routes_through_harness_runtime_manager(self) -> None:
+        calls: list[dict] = []
+
+        class FakeHarnessRuntimeManager:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run_planning_chat(self, **kwargs):
+                calls.append(kwargs)
+                return HarnessRunResult(
+                    status="completed",
+                    artifact_type="project_plan_draft",
+                    artifact=kwargs["input_artifacts"]["legacy_kwargs"]["draft_payload"],
+                )
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as store, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo:
+            with patch("coder_workbench.server.app.HarnessRuntimeManager", FakeHarnessRuntimeManager):
+                client = TestClient(create_app(store_root=store, frontend_dist=store))
+                response = client.post(
+                    "/api/v2/planner-chat/draft",
+                    json={
+                        "request": "Route through runtime.",
+                        "workflow_id": "default-planner-led",
+                        "planner_agent_id": "planner",
+                        "repo": repo,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["context"].mode, "planning_chat")
+        self.assertEqual(calls[0]["input_artifacts"]["legacy_operation"], "planning_chat")
+        self.assertNotIn("run_id", response.json())
+
+    def test_draft_rejects_invalid_planner_agent_id(self) -> None:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as store, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo:
+            client = TestClient(create_app(store_root=store, frontend_dist=store))
+            response = client.post(
+                "/api/v2/planner-chat/draft",
+                json={
+                    "request": "Bad planner.",
+                    "workflow_id": "default-planner-led",
+                    "planner_agent_id": "executor",
+                    "repo": repo,
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("planner_agent_id", response.json()["detail"])
 
 
 if __name__ == "__main__":

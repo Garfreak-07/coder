@@ -21,7 +21,16 @@ from coder_workbench.core import (
     validate_agent_workflow_payload,
 )
 from coder_workbench.core.artifacts import validate_artifact
+from coder_workbench.context import build_harness_context_packet
 from coder_workbench.extensions import builtin_plugin_manifests, extension_search
+from coder_workbench.harness_runtime import (
+    ArtifactProjector,
+    HarnessRunResult,
+    HarnessRuntimeContext,
+    HarnessRuntimeManager,
+    OpenHandsRuntimeProvider,
+)
+from coder_workbench.harness_runtime.fallback_provider import InternalFallbackProvider
 from coder_workbench.server.agent_manager import AgentGraphRunManager
 from coder_workbench.server.library import LibraryStore
 from coder_workbench.server.settings import ProviderSettingsStore, provider_status
@@ -150,6 +159,13 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     library = LibraryStore(Path(store_root) / "library")
     skill_store = InstalledSkillStore(store_root)
     agent_manager = AgentGraphRunManager(store, runtime_settings_loader=settings_store.load)
+    harness_runtime_manager = HarnessRuntimeManager(
+        providers=[
+            OpenHandsRuntimeProvider(),
+            InternalFallbackProvider(planning_chat_runner=_planning_chat_fallback_runner),
+        ]
+    )
+    artifact_projector = ArtifactProjector()
     planner_chat_drafts: dict[str, dict[str, Any]] = {}
 
     @app.get("/api/v2/health")
@@ -465,45 +481,56 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
 
         draft_id = str(uuid4())
         proposed_scope = list(body.scopes)
-        success_criteria = [
-            "User confirms the draft before execution starts.",
-            f"Complete the requested goal: {body.request.strip()}",
-        ]
-        risks = [
-            "Execution may be blocked if required credentials, network, or dependencies are unavailable.",
-            "Task execution must stay inside the confirmed workflow and sandbox policy.",
-        ]
-        plan_draft = validate_artifact(
-            {
-                "artifact_type": "project_plan_draft",
-                "draft_id": draft_id,
-                "summary": f"Draft plan for {agent_workflow.name}: {body.request.strip()}",
-                "proposed_scope": proposed_scope,
-                "success_criteria": success_criteria,
-                "risks": risks,
-                "requires_confirmation": True,
-            },
-            expected_type="project_plan_draft",
-            artifact_id=draft_id,
+        plan_payload, run_contract_payload = _planner_chat_draft_payloads(
+            draft_id=draft_id,
+            request=body.request.strip(),
+            workflow=agent_workflow,
+            planner_agent_id=planner.id,
+            proposed_scope=proposed_scope,
+            knowledge_pack_ids=body.knowledge_pack_ids,
+            skill_pack_ids=body.skill_pack_ids,
+            memory_pack_ids=body.memory_pack_ids,
         )
-        run_contract_draft = validate_artifact(
-            {
-                "artifact_type": "run_contract_draft",
+        context_packet = build_harness_context_packet(
+            mode="planning_chat",
+            user_goal=body.request.strip(),
+            workflow_id=agent_workflow.id,
+            agent_id=planner.id,
+            selected_knowledge_pack_ids=body.knowledge_pack_ids,
+            selected_skill_pack_ids=body.skill_pack_ids,
+            selected_memory_pack_ids=body.memory_pack_ids,
+        )
+        runtime_context = HarnessRuntimeContext(
+            run_id=f"planner-chat-draft-{draft_id}",
+            agent_id=planner.id,
+            workflow_id=agent_workflow.id,
+            harness_id="conversation-harness",
+            mode="planning_chat",
+            profile_id=agent_workflow.harness_bindings.planning_chat.profile_id,
+            repo_root=body.repo,
+            context_packet=context_packet,
+        )
+        runtime_result = harness_runtime_manager.run_planning_chat(
+            context=runtime_context,
+            profile_id=agent_workflow.harness_bindings.planning_chat.profile_id,
+            input_artifacts={
+                "legacy_operation": "planning_chat",
+                "legacy_kwargs": {"draft_payload": plan_payload},
                 "draft_id": draft_id,
-                "user_goal": body.request.strip(),
-                "workflow_id": agent_workflow.id,
-                "planner_agent_id": planner.id,
-                "success_criteria": success_criteria,
-                "constraints": [
-                    "Planning Chat Mode cannot write files or run commands.",
-                    "Workflow execution starts only after confirm approved=true.",
-                ],
-                "selected_knowledge_pack_ids": body.knowledge_pack_ids,
-                "selected_skill_pack_ids": body.skill_pack_ids,
-                "selected_memory_pack_ids": body.memory_pack_ids,
-                "requires_confirmation": True,
+                "user_request": body.request.strip(),
+                "workflow_summary": {"workflow_id": agent_workflow.id, "workflow_name": agent_workflow.name},
             },
-            expected_type="run_contract_draft",
+        )
+        plan_draft = artifact_projector.project(runtime_result, artifact_type="project_plan_draft", artifact_id=draft_id)
+        run_contract_draft = artifact_projector.project(
+            HarnessRunResult(
+                status=runtime_result.status,
+                artifact_type="run_contract_draft",
+                artifact=run_contract_payload,
+                native_event_refs=runtime_result.native_event_refs,
+                evidence_refs=runtime_result.evidence_refs,
+            ),
+            artifact_type="run_contract_draft",
             artifact_id=f"{draft_id}:run_contract",
         )
         planner_chat_drafts[draft_id] = {
@@ -515,6 +542,8 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
             "project_plan_draft": plan_draft,
             "run_contract_draft": run_contract_draft,
+            "runtime_status": runtime_result.status,
+            "runtime_native_event_refs": list(runtime_result.native_event_refs),
         }
         return {
             "draft_id": draft_id,
@@ -780,6 +809,71 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
         app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 
     return app
+
+
+def _planning_chat_fallback_runner(*, draft_payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
+    if emit is not None:
+        emit(
+            "harness_runtime.fallback.planning_chat",
+            "InternalFallbackProvider generated a deterministic planning chat draft",
+            mode="planning_chat",
+        )
+    return dict(draft_payload)
+
+
+def _planner_chat_draft_payloads(
+    *,
+    draft_id: str,
+    request: str,
+    workflow: AgentWorkflowSpec,
+    planner_agent_id: str,
+    proposed_scope: list[str],
+    knowledge_pack_ids: list[str],
+    skill_pack_ids: list[str],
+    memory_pack_ids: list[str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    success_criteria = [
+        "User confirms the draft before execution starts.",
+        f"Complete the requested goal: {request}",
+    ]
+    risks = [
+        "Execution may be blocked if required credentials, network, or dependencies are unavailable.",
+        "Task execution must stay inside the confirmed workflow and sandbox policy.",
+    ]
+    plan_draft = validate_artifact(
+        {
+            "artifact_type": "project_plan_draft",
+            "draft_id": draft_id,
+            "summary": f"Draft plan for {workflow.name}: {request}",
+            "proposed_scope": proposed_scope,
+            "success_criteria": success_criteria,
+            "risks": risks,
+            "requires_confirmation": True,
+        },
+        expected_type="project_plan_draft",
+        artifact_id=draft_id,
+    )
+    run_contract_draft = validate_artifact(
+        {
+            "artifact_type": "run_contract_draft",
+            "draft_id": draft_id,
+            "user_goal": request,
+            "workflow_id": workflow.id,
+            "planner_agent_id": planner_agent_id,
+            "success_criteria": success_criteria,
+            "constraints": [
+                "Planning Chat Mode cannot write files or run commands.",
+                "Workflow execution starts only after confirm approved=true.",
+            ],
+            "selected_knowledge_pack_ids": knowledge_pack_ids,
+            "selected_skill_pack_ids": skill_pack_ids,
+            "selected_memory_pack_ids": memory_pack_ids,
+            "requires_confirmation": True,
+        },
+        expected_type="run_contract_draft",
+        artifact_id=f"{draft_id}:run_contract",
+    )
+    return plan_draft, run_contract_draft
 
 
 def _raise_agent_workflow_validation(agent_workflow: dict[str, Any]) -> None:
