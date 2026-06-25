@@ -1,6 +1,7 @@
 from .budget import ContextBudget, context_compaction_enabled
 from .compaction import CompactionResult, ContextCompactor
 from .external_refs import ContextExternalRefStore, ExternalRef
+from .harness_packets import build_harness_context_packet
 
 
 def __getattr__(name: str):
@@ -18,5 +19,6 @@ __all__ = [
     "ContextExternalRefStore",
     "ContextService",
     "ExternalRef",
+    "build_harness_context_packet",
     "context_compaction_enabled",
 ]

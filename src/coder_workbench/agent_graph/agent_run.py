@@ -18,6 +18,7 @@ from coder_workbench.agent_harness.contracts import (
 from coder_workbench.agent_model import RuntimeProfileCache, RuntimeProfileCompiler, recipe_from_workflow_agent
 from coder_workbench.budget import BudgetBroker
 from coder_workbench.config import RuntimeConfig, load_runtime_config
+from coder_workbench.context import build_harness_context_packet
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec
 from coder_workbench.harness_runtime import HarnessRuntimeContext, HarnessRuntimeManager
 from coder_workbench.harness_runtime.fallback_provider import InternalFallbackProvider
@@ -101,6 +102,7 @@ class AgentRun:
             round_number=round_number,
             state_view=state_view,
             capability_set=capability_set.model_dump(mode="json"),
+            request_text=request,
         )
         result = self.harness_runtime_manager.run_workflow_supervisor(
             context=context,
@@ -208,6 +210,8 @@ class AgentRun:
             round_number=envelope.round,
             state_view=state_view,
             capability_set=capability_payload,
+            work_item=item,
+            task_envelope=envelope,
         )
         result = self.harness_runtime_manager.run_task_execution(
             context=context,
@@ -288,6 +292,8 @@ class AgentRun:
             round_number=round_number,
             state_view=state_view,
             capability_set=capability_set.model_dump(mode="json"),
+            request_text=str(getattr(bundle, "user_goal", "") or self.initial_data.get("request") or ""),
+            evidence_refs=_evidence_refs_from_bundle(bundle),
         )
         result = self.harness_runtime_manager.run_workflow_supervisor(
             context=context,
@@ -386,8 +392,27 @@ class AgentRun:
         round_number: int | None,
         state_view: dict[str, Any] | None,
         capability_set: dict[str, Any] | None,
+        request_text: str | None = None,
+        work_item: WorkItem | None = None,
+        task_envelope: AgentTaskEnvelope | None = None,
+        evidence_refs: list[str] | None = None,
+        native_event_refs: list[str] | None = None,
     ) -> HarnessRuntimeContext:
         shared_state = self.initial_data.get("shared_run_state")
+        user_goal = request_text or str(self.initial_data.get("request") or "")
+        context_packet = build_harness_context_packet(
+            mode=mode,
+            user_goal=user_goal,
+            workflow_id=self.agent_workflow.id,
+            agent_id=agent_id,
+            round_number=round_number,
+            work_item=work_item,
+            task_envelope=task_envelope,
+            state_view=state_view,
+            capability_set=capability_set,
+            evidence_refs=evidence_refs,
+            native_event_refs=native_event_refs,
+        )
         return HarnessRuntimeContext(
             run_id=self.run_id or str(self.initial_data.get("run_id") or self.agent_workflow.id),
             round=round_number,
@@ -398,6 +423,7 @@ class AgentRun:
             profile_id=profile_id,
             repo_root=str(self.initial_data.get("repo_root") or "."),
             sandbox_root=_optional_string(self.initial_data.get("sandbox_root")),
+            context_packet=context_packet,
             capability_set=capability_set,
             shared_run_state=shared_state if isinstance(shared_state, dict) else None,
             round_working_set=state_view,
@@ -479,3 +505,10 @@ def _scopes_from_data(data: dict[str, Any]) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item).strip()]
     return [str(value)]
+
+
+def _evidence_refs_from_bundle(bundle: Any) -> list[str]:
+    refs: list[str] = []
+    for item in getattr(bundle, "items", []) or []:
+        refs.extend(str(ref) for ref in getattr(item, "refs", []) or [] if str(ref).strip())
+    return refs
