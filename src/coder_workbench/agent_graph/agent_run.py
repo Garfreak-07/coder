@@ -20,7 +20,7 @@ from coder_workbench.budget import BudgetBroker
 from coder_workbench.config import RuntimeConfig, load_runtime_config
 from coder_workbench.context import build_harness_context_packet
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec
-from coder_workbench.harness_runtime import HarnessRuntimeContext, HarnessRuntimeManager
+from coder_workbench.harness_runtime import HarnessRuntimeContext, HarnessRuntimeManager, OpenHandsRuntimeProvider
 from coder_workbench.harness_runtime.fallback_provider import InternalFallbackProvider
 from coder_workbench.llm import create_chat_model
 from coder_workbench.runtime_capabilities import CapabilitySet, resolve_capabilities
@@ -59,6 +59,7 @@ class AgentRun:
         self.initial_data = initial_data or {}
         self.harness_runtime_manager = HarnessRuntimeManager(
             providers=[
+                OpenHandsRuntimeProvider(),
                 InternalFallbackProvider(
                     planner_order_runner=self._run_planner_order_legacy,
                     task_execution_runner=self._run_execution_legacy,

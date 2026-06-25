@@ -31,6 +31,15 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.error["code"], "fallback_used")
         self.assertEqual(provider.calls, 0)
 
+    def test_manager_falls_back_when_openhands_enabled_but_sdk_unavailable(self) -> None:
+        provider = OpenHandsRuntimeProvider(runtime_module_names=("definitely_missing_openhands_sdk",))
+        manager = HarnessRuntimeManager(providers=[provider, _FakeFallbackProvider()])
+
+        with _env("CODER_ENABLE_OPENHANDS_RUNTIME", "1"):
+            result = manager.run_workflow_supervisor(context=_context())
+
+        self.assertEqual(result.error["code"], "fallback_used")
+
     def test_manager_uses_openhands_provider_when_flag_enabled_and_available(self) -> None:
         provider = _FakeOpenHandsProvider()
         manager = HarnessRuntimeManager(providers=[provider, _FakeFallbackProvider()])

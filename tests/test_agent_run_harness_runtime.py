@@ -10,6 +10,12 @@ from coder_workbench.core import default_planner_led_agent_workflow
 
 
 class AgentRunHarnessRuntimeTests(unittest.TestCase):
+    def test_agent_run_manager_registers_openhands_and_fallback_providers(self) -> None:
+        agent_run = AgentRun(default_planner_led_agent_workflow())
+
+        self.assertIn("openhands-sdk", agent_run.harness_runtime_manager.providers)
+        self.assertIn("internal-fallback", agent_run.harness_runtime_manager.providers)
+
     def test_agent_run_routes_current_paths_through_harness_runtime_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             result = AgentGraphRunner(default_planner_led_agent_workflow()).run(
