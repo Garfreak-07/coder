@@ -42,6 +42,11 @@ workspace events when `CODER_ENABLE_OPENHANDS_RUNTIME=1` and the SDK is
 available. Without that flag or SDK, Coder uses the internal fallback provider
 so local development and tests remain runnable.
 
+OpenHands SDK runtime verification uses Python 3.12 or newer. The local
+integration has been import-verified with `openhands-sdk` and `openhands-tools`
+1.29.2, but those packages remain optional until the adapter is fully wired and
+validated.
+
 The ordinary Planner Chat path is explicit:
 
 ```text
@@ -199,7 +204,7 @@ examples/            Example Agent workflow payloads
 
 ## Install
 
-Requires Python 3.11 or newer and Node.js for the frontend.
+Requires Python 3.12 or newer and Node.js for the frontend.
 
 ```powershell
 git clone https://github.com/Garfreak-07/Coder.git
@@ -334,10 +339,22 @@ npm.cmd run build
 ## Secrets
 
 Do not commit API keys or local secrets. Copy `.env.example` to `.env` for local
-model configuration. `.env` is ignored by Git.
+model configuration. `.env`, `.env.local`, and `.local-env.ps1` are ignored by
+Git.
 
 Provider configuration is OpenAI-compatible and optional. Without credentials,
 the runtime uses mock mode for safe local development.
+
+For OpenHands runtime smoke tests, prefer local environment variables rather
+than committed files:
+
+```powershell
+$env:DEEPSEEK_API_KEY="..."
+$env:LLM_API_KEY=$env:DEEPSEEK_API_KEY
+$env:LLM_BASE_URL="https://api.deepseek.com"
+$env:LLM_MODEL="deepseek-v4-flash"
+$env:CODER_ENABLE_OPENHANDS_RUNTIME="1"
+```
 
 ## License
 

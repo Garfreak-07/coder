@@ -4,9 +4,10 @@ import json
 import shutil
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,6 +26,19 @@ from coder_workbench.server.storage_objects import (
 
 
 BLOB_STRING_THRESHOLD = 8192
+
+
+@contextmanager
+def _sqlite_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    connection = sqlite3.connect(path)
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 class StoredRun(BaseModel):
@@ -223,7 +237,7 @@ class RunStore:
         return runs
 
     def _init_index(self) -> None:
-        with sqlite3.connect(self.index_path) as connection:
+        with _sqlite_connection(self.index_path) as connection:
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS runs (
@@ -247,7 +261,7 @@ class RunStore:
             self._ensure_index_columns(connection)
 
     def _upsert_index(self, metadata: StoredRunMetadata, *, updated_at: float) -> None:
-        with sqlite3.connect(self.index_path) as connection:
+        with _sqlite_connection(self.index_path) as connection:
             connection.execute(
                 """
                 INSERT INTO runs (
@@ -310,11 +324,11 @@ class RunStore:
             connection.execute("ALTER TABLE runs ADD COLUMN turn_index INTEGER")
 
     def _delete_index(self, run_id: str) -> None:
-        with sqlite3.connect(self.index_path) as connection:
+        with _sqlite_connection(self.index_path) as connection:
             connection.execute("DELETE FROM runs WHERE id = ?", (run_id,))
 
     def _list_from_index(self) -> list[dict[str, Any]]:
-        with sqlite3.connect(self.index_path) as connection:
+        with _sqlite_connection(self.index_path) as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 """
@@ -329,7 +343,7 @@ class RunStore:
         return [dict(row) for row in rows]
 
     def _rebuild_index(self, runs: list[dict[str, Any]]) -> None:
-        with sqlite3.connect(self.index_path) as connection:
+        with _sqlite_connection(self.index_path) as connection:
             connection.execute("DELETE FROM runs")
             for index, run in enumerate(reversed(runs)):
                 connection.execute(
