@@ -47,6 +47,19 @@ class StopGate:
                     "command_failed" if latest_command_status == "fail" else "stop_gate_failed",
                     state,
                 )
+            latest_patch_status = _latest_patch_status(state)
+            if latest_patch_status in {"failed", "blocked"}:
+                return _recoverable(
+                    "Completed execution_result cannot ignore the latest failed or blocked patch action.",
+                    "patch_failed",
+                    state,
+                )
+            if _has_successful_patch(state) and not _has_patch_runtime_evidence(state):
+                return _recoverable(
+                    "Completed execution_result after a patch requires runtime-backed changed_files or patch_refs.",
+                    "stop_gate_failed",
+                    state,
+                )
             unsupported_claim = _unsupported_session_claim(payload, state)
             if unsupported_claim:
                 return _recoverable(unsupported_claim, "stop_gate_failed", state)
@@ -91,6 +104,25 @@ def _latest_command_status(state: CodeWorkerLoopState) -> str:
     if not checks:
         return ""
     return str(checks[-1].get("status") or "")
+
+
+def _latest_patch_status(state: CodeWorkerLoopState) -> str:
+    for observation in reversed(state.session.observations):
+        if observation.action_type in {"propose_patch", "apply_patch_sandbox", "patch_workflow"}:
+            return observation.status
+    return ""
+
+
+def _has_successful_patch(state: CodeWorkerLoopState) -> bool:
+    return any(
+        observation.action_type == "apply_patch_sandbox" and observation.status == "ok"
+        for observation in state.session.observations
+    )
+
+
+def _has_patch_runtime_evidence(state: CodeWorkerLoopState) -> bool:
+    session = state.session
+    return bool(session.changed_files or session.created_files or session.deleted_files or session.patch_refs)
 
 
 def _unsupported_session_claim(payload: dict[str, Any], state: CodeWorkerLoopState) -> str:

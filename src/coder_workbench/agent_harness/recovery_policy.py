@@ -67,6 +67,12 @@ _POLICIES: dict[str, dict[str, Any]] = {
         "reason": "Patch action failed.",
         "next_instruction": "Reread the affected file and produce a smaller patch or return blocked.",
     },
+    "patch_requires_reread": {
+        "recoverable": True,
+        "max_attempts": 2,
+        "reason": "A patch retry was attempted before rereading affected files.",
+        "next_instruction": "Reread or search the affected file before attempting another patch.",
+    },
     "command_failed": {
         "recoverable": True,
         "max_attempts": 2,

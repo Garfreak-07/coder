@@ -14,8 +14,10 @@ from coder_workbench.agent_graph.repair import parse_json_object
 from coder_workbench.agent_graph.schema import AgentTaskEnvelope, WorkItem
 from coder_workbench.agent_harness.action_protocol import HarnessActionBatch, HarnessActionRequest, HarnessObservation
 from coder_workbench.agent_harness.artifact_repair_pipeline import ArtifactRepairPipeline, RepairContext
+from coder_workbench.agent_harness.command_workflow import CommandWorkflow
 from coder_workbench.agent_harness.context_preprocessor import CodeWorkerContextPreprocessor
 from coder_workbench.agent_harness.execution_verification import ensure_blocked_contract, ensure_execution_verification
+from coder_workbench.agent_harness.patch_workflow import PatchWorkflow
 from coder_workbench.agent_harness.recovery_policy import RecoveryPolicy
 from coder_workbench.agent_harness.self_check import ExecutorSelfChecker
 from coder_workbench.agent_harness.session import CodeWorkerLoopState, HarnessSession
@@ -49,6 +51,8 @@ class CodeWorkerToolLoop:
         self.context_preprocessor = CodeWorkerContextPreprocessor()
         self.result_budget = ResultBudget(max_inline_chars=4000, preview_chars=1200)
         self.tool_batcher = ToolBatcher()
+        self.patch_workflow = PatchWorkflow()
+        self.command_workflow = CommandWorkflow()
         self.max_turns = max(1, max_turns)
         self.emit = emit
 
@@ -270,6 +274,29 @@ class CodeWorkerToolLoop:
                 continue
 
             request = batch.actions[0]
+            patch_decision = self.patch_workflow.before_action(request, state)
+            if not patch_decision.allowed and patch_decision.observation is not None:
+                workflow_request = request.model_copy(
+                    update={
+                        "action_id": patch_decision.observation.action_id,
+                        "action_type": patch_decision.observation.action_type,
+                        "payload": {},
+                    }
+                )
+                self._record_observation(state, workflow_request, patch_decision.observation)
+                state.transition = {
+                    "reason": "patch_requires_reread",
+                    "from_action_id": request.action_id,
+                    "error_code": patch_decision.error_code,
+                }
+                remaining = [
+                    action
+                    for action in requests
+                    if action.action_id not in processed_action_ids and action.action_id != request.action_id
+                ]
+                self._record_skipped_actions(state, remaining, failed_action_id=request.action_id)
+                return None
+
             decision = self.tool_gate.decide(request)
             if not decision.allowed:
                 assert decision.observation is not None
@@ -296,6 +323,8 @@ class CodeWorkerToolLoop:
             self._emit_action_allowed(state, request)
             result = self.action_gateway.run(decision.action_spec, run_context=self.run_context)
             observation = self._record_action_result(state, request, result)
+            if self.patch_workflow.should_auto_inspect(request, observation):
+                self._auto_inspect_after_patch(state, request)
             processed_action_ids.add(request.action_id)
             if observation.status != "ok":
                 remaining = [action for action in requests if action.action_id not in processed_action_ids]
@@ -312,6 +341,24 @@ class CodeWorkerToolLoop:
             "from_action_ids": [request.action_id for request in requests],
         }
         return None
+
+    def _auto_inspect_after_patch(self, state: CodeWorkerLoopState, request: HarnessActionRequest) -> None:
+        inspect_request = self.patch_workflow.auto_inspect_request(request)
+        decision = self.tool_gate.decide(inspect_request)
+        if not decision.allowed:
+            assert decision.observation is not None
+            self._record_blocked_action(
+                state,
+                inspect_request,
+                decision.observation,
+                decision.reason,
+                decision.error_code,
+            )
+            return
+        assert decision.action_spec is not None
+        self._emit_action_allowed(state, inspect_request)
+        result = self.action_gateway.run(decision.action_spec, run_context=self.run_context)
+        self._record_action_result(state, inspect_request, result)
 
     def _process_concurrent_action_batch(
         self,
@@ -508,11 +555,9 @@ class CodeWorkerToolLoop:
         if aggregate_ref:
             budget_refs.append(aggregate_ref)
         payload = _json_preview(result_payload)
-        if request.action_type == "run_command_sandbox":
-            command_result = result_payload.get("result") if isinstance(result_payload.get("result"), dict) else {}
-            if command_result and command_result.get("passed") is False and status == "ok":
-                status = "failed"
-                error_code = "command_failed"
+        if self.command_workflow.result_failed(request, result_payload, status):
+            status = "failed"
+            error_code = "command_failed"
         output_ref = result.output_ref or _first_externalized_ref(result_payload)
         summary = _bounded_result_summary(
             result.summary or f"{request.action_type} completed with status {status}.",
@@ -610,6 +655,20 @@ class CodeWorkerToolLoop:
                 if action == "create":
                     session.created_files = _unique([*session.created_files, path])
                 elif action == "delete":
+                    session.deleted_files = _unique([*session.deleted_files, path])
+                else:
+                    session.changed_files = _unique([*session.changed_files, path])
+        elif request.action_type == "inspect_git_diff" and observation.status == "ok":
+            for item in payload.get("files") or []:
+                if not isinstance(item, dict):
+                    continue
+                path = str(item.get("path") or "").strip()
+                status = str(item.get("status") or "").strip().upper()
+                if not path:
+                    continue
+                if status.startswith("A"):
+                    session.created_files = _unique([*session.created_files, path])
+                elif status.startswith("D"):
                     session.deleted_files = _unique([*session.deleted_files, path])
                 else:
                     session.changed_files = _unique([*session.changed_files, path])
@@ -778,6 +837,7 @@ class CodeWorkerToolLoop:
                         "status": observation.status,
                         "summary": observation.summary,
                         "output_ref": observation.output_ref,
+                        "error_code": observation.error_code,
                     }
                     for observation in session.observations
                     if observation.action_type != "model_step"
@@ -987,6 +1047,8 @@ def _blocker_type_for_error(error_code: str | None) -> str:
         "invalid_artifact_type": "schema_validation_failed",
         "schema_validation_failed": "schema_validation_failed",
         "stop_gate_failed": "schema_validation_failed",
+        "patch_failed": "schema_validation_failed",
+        "patch_requires_reread": "schema_validation_failed",
     }.get(str(error_code or ""), "unknown_error")
 
 

@@ -2,6 +2,7 @@ from .action_protocol import HarnessActionBatch, HarnessActionRequest, HarnessOb
 from .actions import HarnessAction
 from .base import AgentHarness, HarnessResult, HarnessTask
 from .code_worker import CodeWorkerHarness
+from .command_workflow import CommandWorkflow
 from .contracts import (
     CODE_WORKER_HARNESS,
     FINAL_REPORT_HARNESS,
@@ -14,6 +15,7 @@ from .contracts import (
 )
 from .context_preprocessor import CodeWorkerContextBudget, CodeWorkerContextPreprocessor, PreparedCodeWorkerContext
 from .observations import HarnessObservation as LegacyHarnessObservation
+from .patch_workflow import PatchWorkflow, PatchWorkflowDecision
 from .permissions import HarnessPermissionPolicy
 from .planner import PlannerHarness
 from .policies import (
@@ -51,6 +53,7 @@ __all__ = [
     "CodeWorkerContextBudget",
     "CodeWorkerContextPreprocessor",
     "CodeWorkerToolLoop",
+    "CommandWorkflow",
     "ExecutorSelfChecker",
     "FINAL_REPORT_HARNESS",
     "HARNESS_CONTRACTS",
@@ -67,6 +70,8 @@ __all__ = [
     "LegacyHarnessObservation",
     "PLANNER_DECISION_HARNESS",
     "PLANNER_ORDER_HARNESS",
+    "PatchWorkflow",
+    "PatchWorkflowDecision",
     "PromptLayer",
     "PreparedCodeWorkerContext",
     "PlannerHarness",
