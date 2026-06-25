@@ -6,12 +6,16 @@ Coder keeps the ordinary product path small:
 
 ```text
 User request
--> Planner Chat
+-> Planning Chat draft
+-> user confirmation
 -> AgentGraphRunner / RunController
 -> SharedRunState
--> PlannerEngine / CodeWorkerEngine
--> Harness contracts and ActionGateway
--> Evidence stores
+-> Context packets and RoundWorkingSet
+-> HarnessRuntimeManager
+-> Conversation Harness / Task Execution Harness
+-> OpenHandsRuntimeProvider or InternalFallbackProvider
+-> NativeRuntimeStore / BlobStore
+-> ArtifactProjector
 -> final_report
 ```
 
@@ -20,6 +24,37 @@ outcomes through the `final_report` artifact. Executors perform bounded
 implementation work, run allowed checks, and return structured verification
 evidence. The runtime passes structured artifacts and refs instead of
 transcript-sized context.
+
+## OpenHands Runtime Refactor
+
+Coder is moving toward this runtime split:
+
+```text
+Coder = Agent OS / workflow orchestrator
+OpenHands SDK = default agent runtime provider when enabled
+```
+
+Coder owns the product flow, Planner authority, AgentGraph loop,
+RunController, context and memory planes, skill routing, safety policy,
+sandbox policy, artifact validation, runtime event storage, observability, and
+final reports. OpenHands owns the model/tool interaction loop and native
+workspace events when `CODER_ENABLE_OPENHANDS_RUNTIME=1` and the SDK is
+available. Without that flag or SDK, Coder uses the internal fallback provider
+so local development and tests remain runnable.
+
+The ordinary Planner Chat path is explicit:
+
+```text
+User request
+-> ProjectPlanDraft / RunContractDraft
+-> user confirms or discards
+-> live AgentGraph run starts only after confirmation
+```
+
+Planning Chat Mode cannot modify files or run commands. In-run Workflow
+Supervisor Mode produces planner orders, planner decisions, and final reports.
+Task Execution Harnesses perform bounded execution work and cannot talk to the
+user, commit, push, deploy, or write long-term memory directly.
 
 ## Runtime Hardening
 
@@ -60,9 +95,13 @@ the Planner -> Execution Engine -> Planner authority model:
   message, memory, and final-report refs. Planner, Executor, final-report, and
   debug views are projected from that shared state instead of exposing raw
   runtime caches by default.
-- Harness contracts and the runtime capability resolver define the tool,
-  memory, skill, and denied-capability surface for planner-order,
-  planner-decision, final-report, and code-worker harnesses.
+- Canonical harness contracts and the runtime capability resolver define the
+  tool, memory, skill, and denied-capability surface for the Conversation
+  Harness and Task Execution Harness, while legacy harness IDs remain supported
+  during migration.
+- `HarnessRuntimeManager` is the central runtime entrypoint. It applies safety
+  and sandbox policy before selecting `OpenHandsRuntimeProvider` or
+  `InternalFallbackProvider`.
 - Live AgentGraph runs expose pause, resume, cancel, and heartbeat control for
   long/background execution.
 
@@ -102,6 +141,7 @@ CODER_ENABLE_CONTEXT_COMPACTION=1
 CODER_ENABLE_HARNESS_SELF_CHECK=1
 CODER_ENABLE_CODE_WORKER_TOOL_LOOP=1
 CODER_ENABLE_WAVE_RETRY=1
+CODER_ENABLE_OPENHANDS_RUNTIME=1
 ```
 
 ## Current Product Surface
@@ -109,7 +149,8 @@ CODER_ENABLE_WAVE_RETRY=1
 The app uses a ChatGPT-style left sidebar and keeps chat separate from workflow
 editing:
 
-- `Planner Chat`: send a request to the Planner and inspect the structured final
+- `Planner Chat`: draft a plan, scope, success criteria, and risks before a run
+  starts; confirm the draft to execute, then inspect the structured final
   report, run status, evidence, patches, checks, and explicit debug exports.
 - `Agent Workflow`: load saved Agent workflows, load the default workflow, edit
   the basic Planner -> Executor loop, save, save as a new copy, import, and
@@ -134,14 +175,16 @@ blocked `final_report`.
 src/coder_workbench/
   actions/           ActionSpec and ActionGateway for controlled effects
   agent_engine/      Planner and execution engine boundary
-  agent_graph/       Planner-led graph runner, scheduling, cache, merge logic
-  agent_harness/     Harness loops and JSON artifact repair implementation
+  agent_graph/       Planner-led graph runner, scheduling, working set, merge logic
+  agent_harness/     Legacy/fallback harness loops and JSON artifact repair
+  harness_runtime/   Canonical harness contracts, providers, safety, sandbox, native events
   budget/            BudgetBroker reservations and round preflight
   coding/            Repo intelligence, patching, command checks, diagnostics
   context/           Context packet and skill-context construction
   core/              AgentWorkflowSpec, artifacts, authority, role cards
   extensions/        Plugin and skill manifests, routing, runtime
   memory/            MemoryService, staged deltas, workflow memory adapter
+  observability/     Tracing and evaluation support
   runtime_capabilities/
                      Harness capability resolver, tool/MCP/skill registries
   runtime_kernel/    RunController, RunGuard, round state, fingerprints
@@ -217,6 +260,8 @@ Common development endpoints:
 - `GET /api/v2/agent-workflows/default`
 - `POST /api/v2/agent-workflows/validate`
 - `POST /api/v2/agent-workflows/runtime-profiles`
+- `POST /api/v2/planner-chat/draft`
+- `POST /api/v2/planner-chat/confirm`
 - `GET /api/v2/library`
 - `POST /api/v2/library/agent-workflows`
 - `GET /api/v2/library/agent-workflows/{workflow_id}`
@@ -261,6 +306,11 @@ npm.cmd run build
 - Executors must not ask the user directly.
 - Executor results must include `execution_result.verification` with pass,
   skipped, failed, or blocked evidence for the Planner to judge.
+- Planner Chat drafts must be confirmed before a live AgentGraph run starts.
+- Conversation Harness profiles cannot write files, run commands, commit, push,
+  deploy, or publish externally.
+- Task Execution Harness profiles cannot ask the user, commit, push, deploy,
+  publish externally, or write long-term memory directly.
 - Product live Agent workflows must run through AgentGraph.
 - New context, patch, command, repair, validation, plugin, and MCP behavior
   should enter through `ActionGateway`.
