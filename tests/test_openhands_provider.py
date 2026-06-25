@@ -113,6 +113,22 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(projected["artifact_type"], "execution_result")
         self.assertEqual(projected["status"], "completed")
 
+    def test_openhands_provider_normalizes_bare_deepseek_model_for_litellm(self) -> None:
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(native_store=NativeRuntimeStore(), sdk_loader=lambda: _fake_sdk(state))
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with (
+                _env("LLM_API_KEY", "test-key"),
+                _env("DEEPSEEK_API_KEY", None),
+                _env("LLM_BASE_URL", "https://api.deepseek.com"),
+                _env("LLM_MODEL", "deepseek-v4-flash"),
+            ):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(state["llm"]["model"], "deepseek/deepseek-v4-flash")
+
     def test_temp_worktree_preserves_original_repo_and_collects_diff_refs(self) -> None:
         store = NativeRuntimeStore()
         state: dict[str, Any] = {}

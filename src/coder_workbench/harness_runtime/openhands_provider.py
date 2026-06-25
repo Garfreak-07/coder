@@ -370,11 +370,24 @@ class OpenHandsRuntimeProvider:
 
 
 def _llm_credentials() -> dict[str, str | None]:
+    base_url = os.getenv("LLM_BASE_URL") or "https://api.deepseek.com"
+    model = _normalize_deepseek_model(os.getenv("LLM_MODEL") or "deepseek-v4-flash", base_url=base_url)
     return {
         "api_key": os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY"),
-        "model": os.getenv("LLM_MODEL") or "deepseek-v4-flash",
-        "base_url": os.getenv("LLM_BASE_URL") or "https://api.deepseek.com",
+        "model": model,
+        "base_url": base_url,
     }
+
+
+def _normalize_deepseek_model(model: str, *, base_url: str | None) -> str:
+    text = model.strip() or "deepseek-v4-flash"
+    if "/" in text:
+        return text
+    if text.startswith("deepseek-") or text in {"deepseek-chat", "deepseek-reasoner"}:
+        return f"deepseek/{text}"
+    if "deepseek.com" in str(base_url or "").lower() and text.startswith("v"):
+        return f"deepseek/{text}"
+    return text
 
 
 def _prompt_for_request(request: HarnessRunRequest) -> str:
