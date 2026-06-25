@@ -38,10 +38,16 @@ the Planner -> Execution Engine -> Planner authority model:
   blocked artifact instead of an unstructured runtime crash.
 - The CodeWorker harness can optionally run a provider-neutral internal
   action/observation loop. When `CODER_ENABLE_CODE_WORKER_TOOL_LOOP=1`, model
-  steps must return either a `harness_action` or a final `execution_result`;
-  runtime validates the action through `ToolGate`, executes supported effects
-  through `ActionGateway`, records observations/evidence, and enriches the final
-  artifact from runtime facts instead of model claims.
+  steps must return `harness_action`, `harness_action_batch`, or a final
+  `execution_result`; runtime validates actions through `ToolGate`, executes
+  supported effects through `ActionGateway`, budgets large outputs into
+  preview/ref form, records action lifecycle, and enriches the final artifact
+  from runtime facts instead of model claims.
+- CodeWorker finalization now uses a stop gate and bounded recovery policy:
+  failed command or patch evidence cannot be ignored, model-provided changed
+  files and patch refs are checked against runtime session facts, read/search
+  actions can batch, patch/command actions remain exclusive, and future
+  streaming execution has a provider-neutral internal executor.
 - `WaveExecutor` records per-work-item attempts, timeout/cancel evidence,
   conservative retry diagnostics, completed/blocked outcomes, and wave-level
   summaries.
@@ -83,7 +89,10 @@ Coder uses one durable path for large text:
   provide lightweight multi-run continuity without a parallel session store.
 
 See [docs/runtime-storage.md](docs/runtime-storage.md) and
-[docs/long-context.md](docs/long-context.md) for contributor notes.
+[docs/long-context.md](docs/long-context.md) for storage contributor notes.
+See [docs/codeworker_harness_tool_loop.md](docs/codeworker_harness_tool_loop.md)
+for CodeWorker tool-loop architecture, action policy, recovery, lifecycle, and
+test commands.
 
 Most low-level runtime behavior is feature-flagged during rollout:
 
