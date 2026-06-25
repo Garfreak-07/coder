@@ -19,6 +19,8 @@ from coder_workbench.agent_model import RuntimeProfileCache, RuntimeProfileCompi
 from coder_workbench.budget import BudgetBroker
 from coder_workbench.config import RuntimeConfig, load_runtime_config
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec
+from coder_workbench.harness_runtime import HarnessRuntimeContext, HarnessRuntimeManager
+from coder_workbench.harness_runtime.fallback_provider import InternalFallbackProvider
 from coder_workbench.llm import create_chat_model
 from coder_workbench.runtime_capabilities import CapabilitySet, resolve_capabilities
 from coder_workbench.runtime_state import SharedRunState, build_executor_state_view, build_planner_state_view
@@ -54,6 +56,15 @@ class AgentRun:
         self.action_gateway = action_gateway
         self.run_id = run_id
         self.initial_data = initial_data or {}
+        self.harness_runtime_manager = HarnessRuntimeManager(
+            providers=[
+                InternalFallbackProvider(
+                    planner_order_runner=self._run_planner_order_legacy,
+                    task_execution_runner=self._run_execution_legacy,
+                    planner_decision_runner=self._run_planner_decision_legacy,
+                )
+            ]
+        )
 
     def run_planner_order(
         self,
@@ -82,6 +93,51 @@ class AgentRun:
             harness_id=PLANNER_ORDER_HARNESS.harness_id,
             capability_set=capability_set,
         )
+        context = self._harness_context(
+            agent_id=planner.id,
+            harness_id="conversation-harness",
+            mode="workflow_supervisor",
+            profile_id="internal-fallback-workflow-supervisor",
+            round_number=round_number,
+            state_view=state_view,
+            capability_set=capability_set.model_dump(mode="json"),
+        )
+        result = self.harness_runtime_manager.run_workflow_supervisor(
+            context=context,
+            profile_id="internal-fallback-workflow-supervisor",
+            input_artifacts={
+                "legacy_operation": "planner_order",
+                "legacy_kwargs": {
+                    "request": request,
+                    "previous_bundle": previous_bundle,
+                    "previous_round_summary": previous_round_summary,
+                    "skill_index": skill_index,
+                    "repo_intelligence": repo_intelligence,
+                    "round_number": round_number,
+                    "state_view": state_view,
+                    "capability_set": capability_set.model_dump(mode="json"),
+                },
+            },
+            emit=emit,
+        )
+        legacy_output = getattr(result, "_legacy_output", None)
+        if legacy_output is not None:
+            return legacy_output
+        return result.artifact
+
+    def _run_planner_order_legacy(
+        self,
+        *,
+        request: str,
+        previous_bundle: Any | None = None,
+        previous_round_summary: dict[str, Any] | None = None,
+        skill_index: Any | None = None,
+        repo_intelligence: dict[str, Any] | None = None,
+        round_number: int = 1,
+        state_view: dict[str, Any] | None = None,
+        capability_set: dict[str, Any] | None = None,
+        emit: Any | None = None,
+    ) -> Any:
         mode = self._planner_mode()
         strategy = planner_strategy_for_mode(mode)
         order = strategy.create_order(
@@ -112,7 +168,7 @@ class AgentRun:
             skill_index=skill_index,
             repo_intelligence=repo_intelligence,
             state_view=state_view,
-            capability_set=capability_set.model_dump(mode="json"),
+            capability_set=capability_set,
             round_number=round_number,
             emit=emit,
         )
@@ -144,12 +200,53 @@ class AgentRun:
             harness_id=harness_id,
             capability_set=capability_set,
         )
-        engine = self.engine_registry.get(profile.engine_id)
+        context = self._harness_context(
+            agent_id=agent.id,
+            harness_id="task-execution-harness",
+            mode="task_execution",
+            profile_id="internal-fallback-task-executor",
+            round_number=envelope.round,
+            state_view=state_view,
+            capability_set=capability_payload,
+        )
+        result = self.harness_runtime_manager.run_task_execution(
+            context=context,
+            profile_id="internal-fallback-task-executor",
+            input_artifacts={
+                "legacy_operation": "task_execution",
+                "legacy_kwargs": {
+                    "agent": agent,
+                    "engine_id": profile.engine_id,
+                    "item": item,
+                    "envelope": envelope,
+                    "capability_set": capability_payload,
+                    "model": model,
+                },
+            },
+            emit=emit,
+        )
+        legacy_output = getattr(result, "_legacy_output", None)
+        if legacy_output is not None:
+            return legacy_output
+        raise RuntimeError("HarnessRuntimeManager did not return an ExecutionRecord")
+
+    def _run_execution_legacy(
+        self,
+        *,
+        agent: AgentWorkflowAgent,
+        engine_id: str,
+        item: WorkItem,
+        envelope: AgentTaskEnvelope,
+        capability_set: dict[str, Any],
+        model: Any | None = None,
+        emit: Any | None = None,
+    ) -> ExecutionRecord:
+        engine = self.engine_registry.get(engine_id)
         return engine.run_execution(
             agent=agent,
             item=item,
             envelope=envelope,
-            capability_set=capability_payload,
+            capability_set=capability_set,
             model=model or self._chat_model(),
             repo_root=str(self.initial_data.get("repo_root") or "."),
             sandbox_root=_optional_string(self.initial_data.get("sandbox_root")),
@@ -182,6 +279,42 @@ class AgentRun:
             harness_id=PLANNER_DECISION_HARNESS.harness_id,
             capability_set=capability_set,
         )
+        round_number = int(getattr(bundle, "round", 1) or 1)
+        context = self._harness_context(
+            agent_id=planner.id,
+            harness_id="conversation-harness",
+            mode="workflow_supervisor",
+            profile_id="internal-fallback-workflow-supervisor",
+            round_number=round_number,
+            state_view=state_view,
+            capability_set=capability_set.model_dump(mode="json"),
+        )
+        result = self.harness_runtime_manager.run_workflow_supervisor(
+            context=context,
+            profile_id="internal-fallback-workflow-supervisor",
+            input_artifacts={
+                "legacy_operation": "planner_decision",
+                "legacy_kwargs": {
+                    "bundle": bundle,
+                    "state_view": state_view,
+                    "capability_set": capability_set.model_dump(mode="json"),
+                },
+            },
+            emit=emit,
+        )
+        legacy_output = getattr(result, "_legacy_output", None)
+        if legacy_output is not None:
+            return legacy_output
+        return result.artifact or {}
+
+    def _run_planner_decision_legacy(
+        self,
+        *,
+        bundle: Any,
+        state_view: dict[str, Any] | None = None,
+        capability_set: dict[str, Any] | None = None,
+        emit: Any | None = None,
+    ) -> dict[str, Any]:
         mode = self._planner_mode()
         strategy = planner_strategy_for_mode(mode)
         decision = strategy.create_decision(
@@ -204,7 +337,7 @@ class AgentRun:
             action_gateway=self.action_gateway,
             run_id=self.run_id,
             state_view=state_view,
-            capability_set=capability_set.model_dump(mode="json"),
+            capability_set=capability_set,
             emit=emit,
         )
 
@@ -242,6 +375,34 @@ class AgentRun:
     def _executor_state_view(self, work_item_id: str) -> dict[str, Any]:
         state = self._shared_run_state()
         return build_executor_state_view(state, work_item_id) if state is not None else {}
+
+    def _harness_context(
+        self,
+        *,
+        agent_id: str,
+        harness_id: str,
+        mode: str,
+        profile_id: str,
+        round_number: int | None,
+        state_view: dict[str, Any] | None,
+        capability_set: dict[str, Any] | None,
+    ) -> HarnessRuntimeContext:
+        shared_state = self.initial_data.get("shared_run_state")
+        return HarnessRuntimeContext(
+            run_id=self.run_id or str(self.initial_data.get("run_id") or self.agent_workflow.id),
+            round=round_number,
+            agent_id=agent_id,
+            workflow_id=self.agent_workflow.id,
+            harness_id=harness_id,
+            mode=mode,
+            profile_id=profile_id,
+            repo_root=str(self.initial_data.get("repo_root") or "."),
+            sandbox_root=_optional_string(self.initial_data.get("sandbox_root")),
+            capability_set=capability_set,
+            shared_run_state=shared_state if isinstance(shared_state, dict) else None,
+            round_working_set=state_view,
+            initial_data=self.initial_data,
+        )
 
     def _record_capability_set(
         self,
