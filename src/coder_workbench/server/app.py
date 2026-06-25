@@ -496,6 +496,17 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             user_goal=body.request.strip(),
             workflow_id=agent_workflow.id,
             agent_id=planner.id,
+            planner_agent_id=planner.id,
+            workflow_summary={
+                "workflow_id": agent_workflow.id,
+                "workflow_name": agent_workflow.name,
+                "planner_agent_id": planner.id,
+                "agent_count": len(agent_workflow.agents),
+            },
+            user_constraints=[
+                "Planning Chat Mode must not write files or run commands.",
+                "Execution starts only after explicit confirmation.",
+            ],
             selected_knowledge_pack_ids=body.knowledge_pack_ids,
             selected_skill_pack_ids=body.skill_pack_ids,
             selected_memory_pack_ids=body.memory_pack_ids,
