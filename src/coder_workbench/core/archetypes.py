@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
+from coder_workbench.agent_model import RuntimeProfileCompiler
+from coder_workbench.agent_model.profile import AgentRuntimeProfile, TokenBudget
+from coder_workbench.agent_model.recipe import recipe_from_workflow_agent
 from coder_workbench.core.authority import AgentAuthorityProfile, authority_profile_for_agent
 
 if TYPE_CHECKING:
@@ -24,26 +27,6 @@ class RoleCardSpec(BaseModel):
     engine_id: str
     default_capabilities: list[str]
     description: str
-
-
-class AgentRuntimeProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    agent_id: str
-    agent_name: str
-    role_card: str | None = None
-    agent_archetype: str
-    engine_id: str
-    harness_id: str | None = None
-    authority: AgentAuthorityProfile
-    allowed_artifacts: list[str] = Field(default_factory=list)
-    context_policy: dict[str, object] = Field(default_factory=dict)
-    memory_policy: dict[str, object] = Field(default_factory=dict)
-    prompt_layers: dict[str, object] | None = None
-    token_budget: dict[str, object] = Field(default_factory=dict)
-    internal_loops: dict[str, object] = Field(default_factory=dict)
-    tool_policy: dict[str, object] = Field(default_factory=dict)
-    evaluation_profile: dict[str, object] = Field(default_factory=dict)
 
 
 ROLE_CARDS = [
@@ -121,22 +104,26 @@ def compile_agent_runtime_profile(
 ) -> AgentRuntimeProfile:
     authority = authority_profile_for_agent(agent, primary_planner_id=primary_planner_id)
     archetype = _archetype_for_agent(agent, authority.authority)
-    return AgentRuntimeProfile(
-        agent_id=agent.id,
-        agent_name=agent.name,
-        role_card=agent.role_card,
-        agent_archetype=archetype,
-        engine_id=_engine_id_for_agent(agent, archetype),
-        harness_id=_harness_id_for_archetype(archetype),
-        authority=authority,
-        allowed_artifacts=list(authority.allowed_artifact_types),
-        context_policy=_context_policy(archetype),
-        memory_policy=_memory_policy(authority.authority),
-        prompt_layers=_prompt_layers(archetype),
-        token_budget=_token_budget(archetype),
-        internal_loops=_internal_loops(authority.authority),
-        tool_policy=_tool_policy(agent, authority),
-        evaluation_profile=_evaluation_profile(archetype),
+    profile = RuntimeProfileCompiler().compile(
+        recipe_from_workflow_agent(agent, primary_planner_id=primary_planner_id)
+    )
+    return profile.model_copy(
+        update={
+            "agent_name": agent.name,
+            "role_card": agent.role_card,
+            "agent_archetype": archetype,
+            "engine_id": _engine_id_for_agent(agent, archetype),
+            "harness_id": _harness_id_for_archetype(archetype),
+            "authority": authority,
+            "allowed_artifacts": list(authority.allowed_artifact_types),
+            "context_policy": _context_policy(archetype),
+            "memory_policy": _memory_policy(authority.authority),
+            "prompt_layers": _prompt_layers(archetype),
+            "token_budget": _token_budget(archetype),
+            "internal_loops": _internal_loops(authority.authority),
+            "tool_policy": _tool_policy(agent, authority),
+            "evaluation_profile": _evaluation_profile(archetype),
+        }
     )
 
 
@@ -215,12 +202,12 @@ def _prompt_layers(archetype: str) -> dict[str, object]:
     }
 
 
-def _token_budget(archetype: str) -> dict[str, object]:
+def _token_budget(archetype: str) -> TokenBudget:
     budgets = {
         "planner": 12000,
         "executor": 9000,
     }
-    return {"max_input_tokens": budgets.get(archetype, 8000), "managed_by_runtime": True}
+    return TokenBudget(max_input_tokens=budgets.get(archetype, 8000), managed_by_runtime=True)
 
 
 def _internal_loops(authority: str) -> dict[str, object]:

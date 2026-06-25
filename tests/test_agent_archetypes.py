@@ -12,6 +12,7 @@ from coder_workbench.core import (
     role_card_catalog,
     validate_agent_workflow_payload,
 )
+from coder_workbench.agent_model.profile import AgentRuntimeProfile as InternalAgentRuntimeProfile
 from coder_workbench.server.app import create_app
 
 
@@ -49,6 +50,7 @@ class AgentArchetypeTests(unittest.TestCase):
         profiles = compile_runtime_profiles(workflow)
         executor = next(profile for profile in profiles if profile.agent_id == "executor")
 
+        self.assertIsInstance(executor, InternalAgentRuntimeProfile)
         self.assertEqual(executor.agent_archetype, "executor")
         self.assertEqual(executor.harness_id, "code-worker-harness")
         self.assertEqual(executor.authority.authority, "executor")
