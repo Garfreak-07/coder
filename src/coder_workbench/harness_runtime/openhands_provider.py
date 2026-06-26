@@ -1067,6 +1067,10 @@ def _append_artifact_output_contract(lines: list[str], artifact_target: str) -> 
         _append_execution_result_output_contract(lines)
 
 
+def artifact_output_contract_available(artifact_target: str) -> bool:
+    return artifact_target in {"planner_order", "execution_result"}
+
+
 def _append_planner_order_output_contract(lines: list[str]) -> None:
     lines.extend(
         [
@@ -2476,4 +2480,4 @@ def _dedupe(values: list[str]) -> list[str]:
     return output
 
 
-__all__ = ["OpenHandsRuntimeProvider"]
+__all__ = ["OpenHandsRuntimeProvider", "artifact_output_contract_available"]

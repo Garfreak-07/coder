@@ -10,6 +10,14 @@ from .contracts import (
 )
 from .manager import HarnessRuntimeManager
 from .artifact_projector import ArtifactProjectionError, ArtifactProjector
+from .dry_run import (
+    HarnessDryRunCheck,
+    HarnessDryRunReport,
+    dry_run_harness_request,
+    run_harness_dry_run,
+    sanitize_dry_run_metadata,
+    summarize_dry_run_status,
+)
 from .loops import HarnessLoopLimits, HarnessLoopPhase, HarnessLoopStep, HarnessLoopTrace
 from .native_events import NativeRuntimeEvent
 from .openhands_provider import OpenHandsRuntimeProvider
@@ -39,6 +47,8 @@ __all__ = [
     "CONVERSATION_HARNESS",
     "CONVERSATION_HARNESS_ID",
     "DEFAULT_HARNESS_RUNTIME_PROFILES",
+    "HarnessDryRunCheck",
+    "HarnessDryRunReport",
     "HarnessBindings",
     "HarnessContract",
     "HarnessLoopLimits",
@@ -66,6 +76,7 @@ __all__ = [
     "TASK_EXECUTION_HARNESS_ID",
     "collect_workspace_changes",
     "default_harness_runtime_profiles",
+    "dry_run_harness_request",
     "enforce_harness_safety",
     "enforce_sandbox_policy",
     "evaluate_harness_safety",
@@ -74,5 +85,8 @@ __all__ = [
     "harness_runtime_profile_for_id",
     "prepare_sandbox_workspace",
     "resolve_harness_id",
+    "run_harness_dry_run",
     "sandbox_policy_for_profile",
+    "sanitize_dry_run_metadata",
+    "summarize_dry_run_status",
 ]
