@@ -6,8 +6,8 @@ Coder keeps the ordinary product path small:
 
 ```text
 User request
--> Planning Chat draft
--> user confirmation
+-> Planning Chat session (Discuss or Work) or legacy draft
+-> Work-mode readiness handoff or user confirmation
 -> AgentGraphRunner / RunController
 -> SharedRunState
 -> Context packets and RoundWorkingSet
@@ -75,16 +75,29 @@ OpenAI-compatible env profile, or leave it unset for DeepSeek. Existing
 The ordinary Planner Chat path is explicit:
 
 ```text
-User request
--> ProjectPlanDraft / RunContractDraft
--> user confirms or discards
--> live AgentGraph run starts only after confirmation
+Discuss:
+  User <-> Planner multi-turn session
+  Produces PlannerTaskState / PlannerChatTurn
+  Never starts workflow execution
+
+Work:
+  User <-> Planner multi-turn session
+  If PlannerTaskState is ready_to_execute, starts the existing AgentGraph run
+
+Legacy draft:
+  ProjectPlanDraft / RunContractDraft
+  User confirms or discards
+  Live AgentGraph run starts only after confirmation
 ```
 
-Planning Chat Mode cannot modify files or run commands. In-run Workflow
-Supervisor Mode produces planner orders, planner decisions, and final reports.
-Task Execution Harnesses perform bounded execution work and cannot talk to the
-user, commit, push, deploy, or write long-term memory directly.
+Planning Chat Mode cannot modify files or run commands. Discuss mode cannot
+start workflow execution. Work mode is the user's execution confirmation, but
+the Planner may start the workflow only when the current `PlannerTaskState`
+has a goal, success criteria, no open questions, and a structured handoff.
+In-run Workflow Supervisor Mode produces planner orders, planner decisions,
+activity updates, and final reports. Task Execution Harnesses perform bounded
+execution work and cannot talk to the user, commit, push, deploy, or write
+long-term memory directly.
 
 ## Runtime Hardening
 
@@ -179,9 +192,11 @@ CODER_ENABLE_OPENHANDS_RUNTIME=1
 The app uses a ChatGPT-style left sidebar and keeps chat separate from workflow
 editing:
 
-- `Planner Chat`: draft a plan, scope, success criteria, and risks before a run
-  starts; confirm the draft to execute, then inspect the structured final
-  report, run status, evidence, patches, checks, and explicit debug exports.
+- `Planner Chat`: use Discuss mode for multi-turn planning that never starts
+  execution, Work mode to start the existing workflow once the task is ready,
+  or the legacy draft/confirm flow for explicit review before execution. The
+  page shows the structured final report, run status, evidence, patches,
+  checks, and explicit debug exports.
 - `Agent Workflow`: load saved Agent workflows, load the default workflow, edit
   the basic Planner -> Executor loop, save, save as a new copy, import, and
   export.
@@ -292,6 +307,9 @@ Common development endpoints:
 - `POST /api/v2/agent-workflows/runtime-profiles`
 - `POST /api/v2/planner-chat/draft`
 - `POST /api/v2/planner-chat/confirm`
+- `POST /api/v2/planner-chat/sessions`
+- `POST /api/v2/planner-chat/sessions/{session_id}/turn`
+- `GET /api/v2/planner-chat/sessions/{session_id}`
 - `GET /api/v2/library`
 - `POST /api/v2/library/agent-workflows`
 - `GET /api/v2/library/agent-workflows/{workflow_id}`
@@ -336,7 +354,10 @@ npm.cmd run build
 - Executors must not ask the user directly.
 - Executor results must include `execution_result.verification` with pass,
   skipped, failed, or blocked evidence for the Planner to judge.
-- Planner Chat drafts must be confirmed before a live AgentGraph run starts.
+- Planner Chat Discuss mode must never start workflow execution. Work mode can
+  start a live AgentGraph run only from a validated ready PlannerTaskState.
+- Legacy Planner Chat drafts must be confirmed before a live AgentGraph run
+  starts.
 - Conversation Harness profiles cannot write files, run commands, commit, push,
   deploy, or publish externally.
 - Task Execution Harness profiles cannot ask the user, commit, push, deploy,
