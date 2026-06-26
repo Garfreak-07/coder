@@ -109,6 +109,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         event_types = [event.native_type for event in store.list_events("run-1")]
         self.assertIn("provider.selected", event_types)
         self.assertIn("sandbox.prepared", event_types)
+        self.assertEqual(event_types.count("harness_permission.allowed"), 3)
         self.assertIn("conversation.started", event_types)
         self.assertIn("conversation.completed", event_types)
         self.assertIn("harness_loop.completed", event_types)
@@ -311,6 +312,36 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.artifact["verification"]["status"], "pass")
         self.assertEqual(result.artifact["verification"]["checks_run"][0]["status"], "pass")
 
+    def test_runtime_denied_command_blocks_execution_result(self) -> None:
+        store = NativeRuntimeStore()
+        state: dict[str, Any] = {}
+        events = [
+            SimpleNamespace(
+                source="agent",
+                id="action-1",
+                tool_name="terminal",
+                action=SimpleNamespace(command="git push origin main", is_input=False),
+            )
+        ]
+        provider = OpenHandsRuntimeProvider(
+            native_store=store,
+            sdk_loader=lambda: _fake_sdk(
+                state,
+                run_output=_execution_result_output(no_op_rationale="No source changes were required."),
+                conversation_events=events,
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.error["code"], "commit_push_deploy_denied")
+        event_types = _native_types(store)
+        self.assertIn("harness_permission.denied", event_types)
+        self.assertIn("harness_loop.blocked", event_types)
+
     def test_runtime_facts_override_model_declared_changed_files_and_patch_refs(self) -> None:
         state: dict[str, Any] = {}
 
@@ -391,8 +422,9 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.artifact["remaining_work"], ["Install pytest or choose a verification path."])
 
     def test_openhands_provider_uses_task_tracker_only_for_conversation_modes(self) -> None:
+        store = NativeRuntimeStore()
         state: dict[str, Any] = {}
-        provider = OpenHandsRuntimeProvider(native_store=NativeRuntimeStore(), sdk_loader=lambda: _fake_sdk(state))
+        provider = OpenHandsRuntimeProvider(native_store=store, sdk_loader=lambda: _fake_sdk(state))
 
         with _env("LLM_API_KEY", "test-key"):
             result = provider.run(_request())
@@ -400,6 +432,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.artifact_type, "final_report")
         self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
+        self.assertEqual(_native_types(store).count("harness_permission.allowed"), 1)
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
 
     def test_workflow_supervisor_requested_artifact_target_drives_output(self) -> None:

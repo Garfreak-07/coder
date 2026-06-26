@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from .contracts import harness_contract_for_id
 from .native_events import NativeRuntimeEvent
+from .permissions import HarnessPermissionDecision, evaluate_harness_permission
 from .profiles import OPENHANDS_PROVIDER_ID
 from .runtime_context import HarnessRunRequest, HarnessRunResult
 from .sandbox import SandboxPreparationError, collect_workspace_changes, prepare_sandbox_workspace
@@ -211,6 +212,44 @@ class OpenHandsRuntimeProvider:
                 )
                 loop_refs.append(prompt_contract_event.event_id)
                 tool_names = self._tool_names_for_request(request, sdk)
+                permission_refs: list[str] = []
+                for tool_name in tool_names:
+                    decision = evaluate_harness_permission(
+                        mode=request.mode,
+                        harness_id=request.profile.harness_id,
+                        role=contract.role,
+                        tool_name=tool_name,
+                        sandbox_root=str(workspace),
+                    )
+                    permission_event = self._record_permission_event(
+                        request,
+                        decision=decision,
+                        tool_name=tool_name,
+                        summary="Harness permission preflight allowed tool."
+                        if decision.allowed
+                        else "Harness permission preflight denied tool.",
+                    )
+                    permission_refs.append(permission_event.event_id)
+                    if not decision.allowed:
+                        return self._failed(
+                            request,
+                            emit=emit,
+                            code=decision.code,
+                            message=decision.reason,
+                            native_type="permission.denied",
+                            status="blocked",
+                            refs=[
+                                selected_event.event_id,
+                                sandbox_event.event_id,
+                                *loop_refs,
+                                *permission_refs,
+                            ],
+                            payload={
+                                "code": decision.code,
+                                "message": decision.reason,
+                                "tool_name": tool_name,
+                            },
+                        )
                 started_event = self._record_event(
                     request,
                     native_type="conversation.started",
@@ -299,8 +338,45 @@ class OpenHandsRuntimeProvider:
                     self._sandbox_facts(request, sandbox),
                 )
                 facts["native_event_refs"] = _dedupe(
-                    [sandbox_event.event_id, started_event.event_id, *loop_refs, *facts["native_event_refs"]]
+                    [
+                        sandbox_event.event_id,
+                        *permission_refs,
+                        started_event.event_id,
+                        *loop_refs,
+                        *facts["native_event_refs"],
+                    ]
                 )
+                denied_command = _denied_runtime_command(
+                    request=request,
+                    commands=facts["commands_run"],
+                    sandbox_root=str(workspace),
+                )
+                if denied_command is not None:
+                    denied_decision, denied_command_text = denied_command
+                    permission_event = self._record_permission_event(
+                        request,
+                        decision=denied_decision,
+                        command=denied_command_text,
+                        summary="Harness permission post-run inspection denied command.",
+                    )
+                    facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], permission_event.event_id])
+                    return self._failed(
+                        request,
+                        emit=emit,
+                        code=denied_decision.code,
+                        message=denied_decision.reason,
+                        native_type="permission.denied",
+                        status="blocked",
+                        refs=[
+                            selected_event.event_id,
+                            sandbox_event.event_id,
+                            *facts["native_event_refs"],
+                        ],
+                        payload={
+                            "code": denied_decision.code,
+                            "message": denied_decision.reason,
+                        },
+                    )
                 execution_result_status = "completed"
                 if artifact_type == "execution_result":
                     if execution_extract_error is not None:
@@ -724,6 +800,40 @@ class OpenHandsRuntimeProvider:
             payload=safe_payload,
         )
 
+    def _record_permission_event(
+        self,
+        request: HarnessRunRequest,
+        *,
+        decision: HarnessPermissionDecision,
+        summary: str,
+        tool_name: str | None = None,
+        action_type: str | None = None,
+        file_path: str | None = None,
+        command: str | None = None,
+    ) -> NativeRuntimeEvent:
+        payload = _safe_permission_payload(
+            {
+                "mode": request.mode,
+                "harness_id": request.profile.harness_id,
+                "provider_id": self.provider_id,
+                "tool_name": tool_name,
+                "action_type": action_type,
+                "file_path": file_path,
+                "command": command,
+                "allowed": decision.allowed,
+                "requires_confirmation": decision.requires_confirmation,
+                "code": decision.code,
+                "reason": decision.reason,
+            }
+        )
+        return self._record_event(
+            request,
+            native_type="harness_permission.allowed" if decision.allowed else "harness_permission.denied",
+            status="completed" if decision.allowed else "blocked",
+            summary=summary,
+            payload=payload,
+        )
+
     def _emit(self, emit: Any | None, event_type: str, message: str, **payload: Any) -> None:
         if emit is None:
             return
@@ -796,6 +906,31 @@ def _safe_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return safe
 
 
+def _safe_permission_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "action_type",
+        "allowed",
+        "code",
+        "command",
+        "file_path",
+        "harness_id",
+        "mode",
+        "provider_id",
+        "reason",
+        "requires_confirmation",
+        "tool_name",
+    }
+    safe: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key not in allowed_keys or value in (None, "", [], {}):
+            continue
+        if key == "command":
+            safe[key] = _command_summary(str(value))
+            continue
+        safe[key] = _compact_trace_value(value)
+    return safe
+
+
 def _compact_trace_value(value: Any) -> Any:
     if isinstance(value, str):
         text = value
@@ -817,10 +952,39 @@ def _compact_trace_value(value: Any) -> Any:
     return _compact_trace_value(str(value))
 
 
+def _command_summary(command: str) -> str:
+    text = " ".join(command.strip().split())
+    text = re.sub(r"(?i)(api[_-]?key|token|secret|password)(\s*=\s*|\s+)[^\s]+", r"\1\2<redacted>", text)
+    text = re.sub(r"(?i)--(api-key|token|secret|password)(=|\s+)[^\s]+", r"--\1\2<redacted>", text)
+    return _compact_trace_value(text)
+
+
 def _candidate_artifact_type(structured_artifact: Any) -> str | None:
     if isinstance(structured_artifact, dict):
         artifact_type = _string_value(structured_artifact.get("artifact_type"))
         return artifact_type or None
+    return None
+
+
+def _denied_runtime_command(
+    *,
+    request: HarnessRunRequest,
+    commands: list[str],
+    sandbox_root: str,
+) -> tuple[HarnessPermissionDecision, str] | None:
+    if request.mode != "task_execution":
+        return None
+    for command in commands:
+        decision = evaluate_harness_permission(
+            mode=request.mode,
+            harness_id=request.profile.harness_id,
+            role="executor",
+            action_type="run_command",
+            command=str(command),
+            sandbox_root=sandbox_root,
+        )
+        if not decision.allowed:
+            return decision, str(command)
     return None
 
 
@@ -842,6 +1006,8 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
                 "Perform only bounded task execution inside the sandbox workspace.",
                 "Do not ask the user any questions.",
                 "Do not commit, push, deploy, publish externally, or write long-term memory.",
+                "Do not read or write sensitive credential files such as .env, .ssh, .aws, .kube, cloud, or Docker credentials.",
+                "Do not open editors, pagers, or interactive commands.",
                 "Return enough structured information for Coder to project a valid execution_result artifact.",
                 "Return a concise completion summary and verification evidence.",
             ]

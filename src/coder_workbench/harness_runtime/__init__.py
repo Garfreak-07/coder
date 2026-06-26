@@ -13,6 +13,7 @@ from .artifact_projector import ArtifactProjectionError, ArtifactProjector
 from .loops import HarnessLoopLimits, HarnessLoopPhase, HarnessLoopStep, HarnessLoopTrace
 from .native_events import NativeRuntimeEvent
 from .openhands_provider import OpenHandsRuntimeProvider
+from .permissions import HarnessPermissionDecision, evaluate_harness_permission
 from .profiles import (
     DEFAULT_HARNESS_RUNTIME_PROFILES,
     HarnessBindings,
@@ -44,6 +45,7 @@ __all__ = [
     "HarnessLoopPhase",
     "HarnessLoopStep",
     "HarnessLoopTrace",
+    "HarnessPermissionDecision",
     "HarnessModeBinding",
     "HarnessRunRequest",
     "HarnessRunResult",
@@ -67,6 +69,7 @@ __all__ = [
     "enforce_harness_safety",
     "enforce_sandbox_policy",
     "evaluate_harness_safety",
+    "evaluate_harness_permission",
     "harness_contract_for_id",
     "harness_runtime_profile_for_id",
     "prepare_sandbox_workspace",
