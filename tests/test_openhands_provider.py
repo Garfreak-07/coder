@@ -29,7 +29,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error["code"], "openhands_sdk_unavailable")
-        self.assertEqual(len(result.native_event_refs), 1)
+        self.assertEqual(len(result.native_event_refs), 2)
 
     def test_manager_falls_back_when_openhands_flag_disabled(self) -> None:
         provider = _FakeOpenHandsProvider()
@@ -72,10 +72,10 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.status, "blocked")
         self.assertEqual(result.error["code"], "openhands_llm_credentials_missing")
         self.assertNotIn("conversation", state)
-        self.assertEqual(
-            [event.native_type for event in store.list_events("run-1")],
-            ["provider.selected", "credentials.missing"],
-        )
+        event_types = [event.native_type for event in store.list_events("run-1")]
+        self.assertIn("harness_loop.started", event_types)
+        self.assertIn("harness_loop.blocked", event_types)
+        self.assertIn("credentials.missing", event_types)
 
     def test_openhands_provider_invokes_fake_sdk_and_returns_execution_result(self) -> None:
         store = NativeRuntimeStore()
@@ -106,10 +106,12 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(state["llm"]["model"], "test-model")
         self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["terminal", "file_editor", "task_tracker"])
         self.assertIn("Do not ask the user", state["conversation"]["prompt"])
-        self.assertEqual(
-            [event.native_type for event in store.list_events("run-1")],
-            ["provider.selected", "sandbox.prepared", "conversation.started", "conversation.completed"],
-        )
+        event_types = [event.native_type for event in store.list_events("run-1")]
+        self.assertIn("provider.selected", event_types)
+        self.assertIn("sandbox.prepared", event_types)
+        self.assertIn("conversation.started", event_types)
+        self.assertIn("conversation.completed", event_types)
+        self.assertIn("harness_loop.completed", event_types)
 
         projected = ArtifactProjector().project(result)
         self.assertEqual(projected["artifact_type"], "execution_result")
@@ -424,6 +426,34 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
         self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
 
+    def test_completed_planner_order_records_loop_trace_events(self) -> None:
+        store = NativeRuntimeStore()
+        state: dict[str, Any] = {}
+        run_output = {
+            "artifact_type": "planner_order",
+            "round": 1,
+            "round_goal": "No executor action required.",
+            "plan_graph": {"work_items": []},
+            "no_work_rationale": "The requested state is already present.",
+        }
+        provider = OpenHandsRuntimeProvider(native_store=store, sdk_loader=lambda: _fake_sdk(state, run_output=run_output))
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_request(input_artifacts={"requested_artifact_type": "planner_order"}))
+
+        self.assertEqual(result.status, "completed")
+        event_types = _native_types(store)
+        for native_type in (
+            "harness_loop.started",
+            "harness_loop.prompt_contract",
+            "harness_loop.artifact_candidate",
+            "harness_loop.artifact_validation",
+            "harness_loop.completed",
+        ):
+            self.assertIn(native_type, event_types)
+        for event in _trace_events(store):
+            self.assertIn(event.event_id, result.native_event_refs)
+
     def test_planner_order_prompt_contains_strict_json_contract(self) -> None:
         state: dict[str, Any] = {}
         run_output = {
@@ -465,6 +495,28 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.error["code"], "insufficient_structured_planner_output")
         self.assertIn("did not return an actionable planner_order", result.error["message"])
         self.assertEqual(result.artifact_type, "planner_order")
+
+    def test_blocked_planner_order_records_loop_trace_events(self) -> None:
+        store = NativeRuntimeStore()
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=store,
+            sdk_loader=lambda: _fake_sdk(state, run_output=SimpleNamespace(summary="Do the requested work.")),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_request(input_artifacts={"requested_artifact_type": "planner_order"}))
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.error["code"], "insufficient_structured_planner_output")
+        event_types = _native_types(store)
+        self.assertIn("harness_loop.artifact_validation", event_types)
+        self.assertIn("harness_loop.blocked", event_types)
+        blocked_trace_refs = [
+            event.event_id for event in _trace_events(store) if event.native_type == "harness_loop.blocked"
+        ]
+        self.assertTrue(blocked_trace_refs)
+        self.assertIn(blocked_trace_refs[0], result.native_event_refs)
 
     def test_explicit_no_work_planner_order_output_can_succeed(self) -> None:
         state: dict[str, Any] = {}
@@ -561,6 +613,69 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         projected = ArtifactProjector().project(result)
         self.assertEqual(projected["plan_graph"]["work_items"][0]["work_item_id"], "executor-work")
 
+    def test_completed_execution_result_records_loop_trace_events(self) -> None:
+        store = NativeRuntimeStore()
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=store,
+            sdk_loader=lambda: _fake_sdk(
+                state,
+                run_output=_execution_result_output(no_op_rationale="No source changes were required."),
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        event_types = _native_types(store)
+        for native_type in (
+            "harness_loop.started",
+            "harness_loop.prompt_contract",
+            "harness_loop.artifact_candidate",
+            "harness_loop.artifact_validation",
+            "harness_loop.completed",
+        ):
+            self.assertIn(native_type, event_types)
+        for event in _trace_events(store):
+            self.assertIn(event.event_id, result.native_event_refs)
+
+    def test_loop_trace_payloads_are_compact_and_safe(self) -> None:
+        store = NativeRuntimeStore()
+        state: dict[str, Any] = {}
+        run_output = _execution_result_output(
+            summary=(
+                "Fake output test-key DEEPSEEK_API_KEY LLM_API_KEY BEGIN RSA "
+                "FULL_PROMPT_MARKER FULL_DIFF_BODY_MARKER"
+            ),
+            no_op_rationale="No source changes were required.",
+        )
+        provider = OpenHandsRuntimeProvider(
+            native_store=store,
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"), _env("DEEPSEEK_API_KEY", None):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        self.assertTrue(_trace_events(store))
+        forbidden = (
+            "test-key",
+            "DEEPSEEK_API_KEY",
+            "LLM_API_KEY",
+            "BEGIN RSA",
+            "FULL_PROMPT_MARKER",
+            "FULL_DIFF_BODY_MARKER",
+        )
+        for event in _trace_events(store):
+            payload_text = _event_payload_text(store, event)
+            self.assertLess(len(payload_text), 8000)
+            for marker in forbidden:
+                self.assertNotIn(marker, payload_text)
+
     def test_invalid_requested_artifact_target_fails_closed(self) -> None:
         state: dict[str, Any] = {}
         provider = OpenHandsRuntimeProvider(native_store=NativeRuntimeStore(), sdk_loader=lambda: _fake_sdk(state))
@@ -586,10 +701,12 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.error["code"], "openhands_run_failed")
-        self.assertEqual(
-            [event.native_type for event in store.list_events("run-1")],
-            ["provider.selected", "sandbox.prepared", "conversation.started", "conversation.failed"],
-        )
+        event_types = [event.native_type for event in store.list_events("run-1")]
+        self.assertIn("provider.selected", event_types)
+        self.assertIn("sandbox.prepared", event_types)
+        self.assertIn("conversation.started", event_types)
+        self.assertIn("harness_loop.failed", event_types)
+        self.assertIn("conversation.failed", event_types)
 
     def test_openhands_imports_stay_inside_provider(self) -> None:
         root = Path(__file__).resolve().parents[1] / "src" / "coder_workbench"
@@ -788,6 +905,20 @@ def _fake_sdk(
         FileEditorTool=SimpleNamespace(name="file_editor"),
         TaskTrackerTool=SimpleNamespace(name="task_tracker"),
     )
+
+
+def _native_types(store: NativeRuntimeStore) -> list[str]:
+    return [event.native_type for event in store.list_events("run-1")]
+
+
+def _trace_events(store: NativeRuntimeStore) -> list[Any]:
+    return [event for event in store.list_events("run-1") if event.native_type.startswith("harness_loop.")]
+
+
+def _event_payload_text(store: NativeRuntimeStore, event: Any) -> str:
+    if event.payload_ref:
+        return store.read_payload(event.payload_ref)
+    return event.payload_preview or ""
 
 
 if __name__ == "__main__":

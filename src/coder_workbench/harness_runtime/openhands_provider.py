@@ -58,6 +58,16 @@ _LEGACY_BLOCKER_TYPES = {
     "ambiguity": "context_missing",
     "plan_conflict": "unknown_error",
 }
+_TRACE_REDACTIONS = (
+    "test-key",
+    "DEEPSEEK_API_KEY",
+    "LLM_API_KEY",
+    "BEGIN RSA",
+    "api_key",
+    "password",
+    "secret",
+    "token",
+)
 
 
 class OpenHandsRuntimeProvider:
@@ -128,6 +138,18 @@ class OpenHandsRuntimeProvider:
                 "profile_id": request.profile.id,
             },
         )
+        loop_started_event = self._record_loop_event(
+            request,
+            phase="started",
+            status="completed",
+            summary="OpenHands harness loop started.",
+            payload={
+                "artifact_target": artifact_type,
+                "profile_id": request.profile.id,
+                "contract_id": request.contract_id,
+            },
+        )
+        loop_refs = [loop_started_event.event_id]
 
         credentials = _llm_credentials()
         if credentials["api_key"] is None:
@@ -138,7 +160,7 @@ class OpenHandsRuntimeProvider:
                 message="OpenHands runtime requires LLM_API_KEY or DEEPSEEK_API_KEY.",
                 native_type="credentials.missing",
                 status="blocked",
-                refs=[selected_event.event_id],
+                refs=[selected_event.event_id, *loop_refs],
             )
 
         contract = harness_contract_for_id(request.contract_id)
@@ -156,7 +178,7 @@ class OpenHandsRuntimeProvider:
                 message=str(exc),
                 native_type="sandbox.unavailable",
                 status="blocked",
-                refs=[selected_event.event_id],
+                refs=[selected_event.event_id, *loop_refs],
             )
 
         try:
@@ -174,6 +196,21 @@ class OpenHandsRuntimeProvider:
                         "workspace": str(workspace),
                     },
                 )
+                prompt = _prompt_for_request(request)
+                prompt_contract_event = self._record_loop_event(
+                    request,
+                    phase="prompt_contract",
+                    status="completed",
+                    summary="OpenHands prompt output contract assembled.",
+                    payload={
+                        "artifact_target": artifact_type,
+                        "has_output_contract": artifact_type in {"planner_order", "execution_result"},
+                        "contract_kind": artifact_type,
+                        "prompt_length_chars": len(prompt),
+                    },
+                )
+                loop_refs.append(prompt_contract_event.event_id)
+                tool_names = self._tool_names_for_request(request, sdk)
                 started_event = self._record_event(
                     request,
                     native_type="conversation.started",
@@ -182,12 +219,25 @@ class OpenHandsRuntimeProvider:
                     payload={
                         "mode": request.mode,
                         "workspace": str(workspace),
-                        "tools": self._tool_names_for_request(request, sdk),
+                        "tools": tool_names,
                         "model": credentials["model"],
                         "base_url_configured": bool(credentials["base_url"]),
                     },
                 )
-                prompt = _prompt_for_request(request)
+                conversation_trace_event = self._record_loop_event(
+                    request,
+                    phase="conversation_started",
+                    status="running",
+                    summary="OpenHands conversation started.",
+                    payload={
+                        "artifact_target": artifact_type,
+                        "workspace_mode": sandbox.workspace_mode,
+                        "tools": tool_names,
+                        "model": credentials["model"],
+                        "base_url_configured": bool(credentials["base_url"]),
+                    },
+                )
+                loop_refs.append(conversation_trace_event.event_id)
                 try:
                     tools = self._tools_for_request(request, sdk)
                     llm = sdk.LLM(
@@ -212,7 +262,12 @@ class OpenHandsRuntimeProvider:
                         code="openhands_run_failed",
                         message=f"OpenHands conversation failed: {exc}",
                         native_type="conversation.failed",
-                        refs=[selected_event.event_id, sandbox_event.event_id, started_event.event_id],
+                        refs=[
+                            selected_event.event_id,
+                            sandbox_event.event_id,
+                            started_event.event_id,
+                            *loop_refs,
+                        ],
                         payload={"error_type": type(exc).__name__, "message": str(exc)},
                     )
 
@@ -225,17 +280,42 @@ class OpenHandsRuntimeProvider:
                 else:
                     structured_artifact = _extract_structured_artifact(run_output, artifact_type=str(artifact_type or ""))
                     execution_extract_error = None
+                candidate_event = self._record_loop_event(
+                    request,
+                    phase="artifact_candidate",
+                    status="completed",
+                    summary="OpenHands output inspected for a structured artifact.",
+                    payload={
+                        "artifact_target": artifact_type,
+                        "output_type": type(run_output).__name__,
+                        "structured_artifact_found": structured_artifact is not None,
+                        "candidate_artifact_type": _candidate_artifact_type(structured_artifact),
+                    },
+                )
+                loop_refs.append(candidate_event.event_id)
                 facts = _merge_runtime_facts(
                     _runtime_facts(run_output),
                     conversation_facts,
                     self._sandbox_facts(request, sandbox),
                 )
                 facts["native_event_refs"] = _dedupe(
-                    [sandbox_event.event_id, started_event.event_id, *facts["native_event_refs"]]
+                    [sandbox_event.event_id, started_event.event_id, *loop_refs, *facts["native_event_refs"]]
                 )
                 execution_result_status = "completed"
                 if artifact_type == "execution_result":
                     if execution_extract_error is not None:
+                        validation_event = self._record_loop_event(
+                            request,
+                            phase="artifact_validation",
+                            status="failed",
+                            summary="OpenHands execution_result validation failed.",
+                            payload={
+                                "artifact_target": artifact_type,
+                                "validation_status": "failed",
+                                "reason": execution_extract_error,
+                            },
+                        )
+                        facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
                         return self._failed(
                             request,
                             emit=emit,
@@ -274,6 +354,18 @@ class OpenHandsRuntimeProvider:
                         facts=facts,
                     )
                     if execution_error is not None:
+                        validation_event = self._record_loop_event(
+                            request,
+                            phase="artifact_validation",
+                            status="failed",
+                            summary="OpenHands execution_result validation failed.",
+                            payload={
+                                "artifact_target": artifact_type,
+                                "validation_status": "failed",
+                                "reason": execution_error,
+                            },
+                        )
+                        facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
                         return self._failed(
                             request,
                             emit=emit,
@@ -297,6 +389,19 @@ class OpenHandsRuntimeProvider:
                         )
                     structured_artifact = execution_artifact
                     execution_result_status = str(execution_artifact.get("status") or "completed")
+                    validation_event = self._record_loop_event(
+                        request,
+                        phase="artifact_validation",
+                        status="completed",
+                        summary="OpenHands execution_result validation passed.",
+                        payload={
+                            "artifact_target": artifact_type,
+                            "validation_status": "passed",
+                            "artifact_type": "execution_result",
+                            "status": execution_result_status,
+                        },
+                    )
+                    facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
                 if artifact_type == "planner_order":
                     planner_artifact, planner_error = _planner_order_artifact_from_structured(
                         structured_artifact,
@@ -304,6 +409,18 @@ class OpenHandsRuntimeProvider:
                         summary=summary,
                     )
                     if planner_error is not None:
+                        validation_event = self._record_loop_event(
+                            request,
+                            phase="artifact_validation",
+                            status="failed",
+                            summary="OpenHands planner_order validation failed.",
+                            payload={
+                                "artifact_target": artifact_type,
+                                "validation_status": "failed",
+                                "reason": planner_error,
+                            },
+                        )
+                        facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
                         return self._failed(
                             request,
                             emit=emit,
@@ -326,6 +443,19 @@ class OpenHandsRuntimeProvider:
                             },
                         )
                     structured_artifact = planner_artifact
+                    validation_event = self._record_loop_event(
+                        request,
+                        phase="artifact_validation",
+                        status="completed",
+                        summary="OpenHands planner_order validation passed.",
+                        payload={
+                            "artifact_target": artifact_type,
+                            "validation_status": "passed",
+                            "artifact_type": "planner_order",
+                            "status": "completed",
+                        },
+                    )
+                    facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
         except SandboxPreparationError as exc:
             return self._failed(
                 request,
@@ -354,7 +484,30 @@ class OpenHandsRuntimeProvider:
                 "evidence_refs": facts["evidence_refs"],
             },
         )
-        refs = [selected_event.event_id, *facts["native_event_refs"], completed_event.event_id]
+        result_status = execution_result_status if artifact_type == "execution_result" else "completed"
+        final_phase = "completed" if result_status == "completed" else "blocked"
+        loop_final_event = self._record_loop_event(
+            request,
+            phase=final_phase,
+            status=result_status,
+            summary="OpenHands harness loop completed." if final_phase == "completed" else "OpenHands harness loop blocked.",
+            payload={
+                "artifact_type": artifact_type,
+                "status": result_status,
+                "evidence_refs_count": len(facts["evidence_refs"]),
+                "diff_refs_count": len(facts["diff_refs"]),
+                "log_refs_count": len(facts["log_refs"]),
+                "changed_files_count": len(facts["changed_files"]),
+                "created_files_count": len(facts["created_files"]),
+                "deleted_files_count": len(facts["deleted_files"]),
+            },
+        )
+        refs = [
+            selected_event.event_id,
+            *facts["native_event_refs"],
+            completed_event.event_id,
+            loop_final_event.event_id,
+        ]
         evidence_refs = _dedupe([*refs, *facts["evidence_refs"]])
         self._emit(
             emit,
@@ -365,7 +518,7 @@ class OpenHandsRuntimeProvider:
             native_event_refs=refs,
         )
         return HarnessRunResult(
-            status=execution_result_status if artifact_type == "execution_result" else "completed",
+            status=result_status,
             artifact_type=artifact_type,
             artifact=_artifact_for_success(
                 request,
@@ -483,6 +636,18 @@ class OpenHandsRuntimeProvider:
         refs: list[str] | None = None,
         payload: dict[str, Any] | None = None,
     ) -> HarnessRunResult:
+        artifact_target = _artifact_type_for_request(request)[0]
+        loop_event = self._record_loop_event(
+            request,
+            phase="blocked" if status == "blocked" else "failed",
+            status=status,
+            summary=message,
+            payload={
+                "code": code,
+                "message": message,
+                "artifact_target": artifact_target,
+            },
+        )
         event = self._record_event(
             request,
             native_type=native_type,
@@ -498,10 +663,10 @@ class OpenHandsRuntimeProvider:
             profile_id=request.profile.id,
             native_event_ref=event.event_id,
         )
-        native_event_refs = [*(refs or []), event.event_id]
+        native_event_refs = _dedupe([*(refs or []), loop_event.event_id, event.event_id])
         return HarnessRunResult(
             status=status,
-            artifact_type=_artifact_type_for_request(request)[0] if status == "blocked" else None,
+            artifact_type=artifact_target if status == "blocked" else None,
             artifact=_artifact_for_blocked(request, message=message, evidence_refs=native_event_refs)
             if status == "blocked"
             else None,
@@ -532,6 +697,33 @@ class OpenHandsRuntimeProvider:
             payload=payload,
         )
 
+    def _record_loop_event(
+        self,
+        request: HarnessRunRequest,
+        *,
+        phase: str,
+        status: str,
+        summary: str,
+        payload: dict[str, Any],
+    ) -> NativeRuntimeEvent:
+        artifact_target = payload.get("artifact_target") or _artifact_type_for_request(request)[0]
+        safe_payload = _safe_trace_payload(
+            {
+                "mode": request.mode,
+                "artifact_target": artifact_target,
+                "harness_id": request.profile.harness_id,
+                "provider_id": self.provider_id,
+                **payload,
+            }
+        )
+        return self._record_event(
+            request,
+            native_type=f"harness_loop.{phase}",
+            status=status,
+            summary=summary,
+            payload=safe_payload,
+        )
+
     def _emit(self, emit: Any | None, event_type: str, message: str, **payload: Any) -> None:
         if emit is None:
             return
@@ -557,6 +749,79 @@ def _normalize_deepseek_model(model: str, *, base_url: str | None) -> str:
     if "deepseek.com" in str(base_url or "").lower() and text.startswith("v"):
         return f"deepseek/{text}"
     return text
+
+
+def _safe_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "artifact_target",
+        "artifact_type",
+        "base_url_configured",
+        "candidate_artifact_type",
+        "changed_files_count",
+        "code",
+        "contract_id",
+        "contract_kind",
+        "created_files_count",
+        "deleted_files_count",
+        "diff_refs",
+        "diff_refs_count",
+        "evidence_refs",
+        "evidence_refs_count",
+        "has_output_contract",
+        "harness_id",
+        "log_refs",
+        "log_refs_count",
+        "message",
+        "mode",
+        "model",
+        "native_event_refs",
+        "output_type",
+        "profile_id",
+        "prompt_length_chars",
+        "provider_id",
+        "reason",
+        "reason_code",
+        "status",
+        "structured_artifact_found",
+        "summary",
+        "tools",
+        "validation_status",
+        "workspace_mode",
+    }
+    safe: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key not in allowed_keys:
+            continue
+        safe[key] = _compact_trace_value(value)
+    return safe
+
+
+def _compact_trace_value(value: Any) -> Any:
+    if isinstance(value, str):
+        text = value
+        for marker in _TRACE_REDACTIONS:
+            text = re.sub(re.escape(marker), "<redacted>", text, flags=re.IGNORECASE)
+        if len(text) > 500:
+            return f"{text[:500]}...<truncated>"
+        return text
+    if isinstance(value, bool) or value is None or isinstance(value, int):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_compact_trace_value(item) for item in list(value)[:20]]
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_trace_value(item)
+            for key, item in list(value.items())[:20]
+            if str(key) not in {"api_key", "secret", "token", "password"}
+        }
+    return _compact_trace_value(str(value))
+
+
+def _candidate_artifact_type(structured_artifact: Any) -> str | None:
+    if isinstance(structured_artifact, dict):
+        artifact_type = _string_value(structured_artifact.get("artifact_type"))
+        return artifact_type or None
+    return None
 
 
 def _prompt_for_request(request: HarnessRunRequest) -> str:

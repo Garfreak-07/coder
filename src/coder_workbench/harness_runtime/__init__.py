@@ -10,6 +10,7 @@ from .contracts import (
 )
 from .manager import HarnessRuntimeManager
 from .artifact_projector import ArtifactProjectionError, ArtifactProjector
+from .loops import HarnessLoopLimits, HarnessLoopPhase, HarnessLoopStep, HarnessLoopTrace
 from .native_events import NativeRuntimeEvent
 from .openhands_provider import OpenHandsRuntimeProvider
 from .profiles import (
@@ -39,6 +40,10 @@ __all__ = [
     "DEFAULT_HARNESS_RUNTIME_PROFILES",
     "HarnessBindings",
     "HarnessContract",
+    "HarnessLoopLimits",
+    "HarnessLoopPhase",
+    "HarnessLoopStep",
+    "HarnessLoopTrace",
     "HarnessModeBinding",
     "HarnessRunRequest",
     "HarnessRunResult",
