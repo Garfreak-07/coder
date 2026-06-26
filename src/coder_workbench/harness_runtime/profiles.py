@@ -112,7 +112,7 @@ DEFAULT_HARNESS_RUNTIME_PROFILES: dict[str, HarnessRuntimeProfile] = {
             harness_id=CONVERSATION_HARNESS_ID,
             mode="planning_chat",
             context_profile="planning-chat",
-            allowed_artifacts=["project_plan_draft", "run_contract_draft"],
+            allowed_artifacts=["project_plan_draft", "run_contract_draft", "planner_chat_turn"],
             tool_policy={"write_files": False, "run_commands": False},
             memory_policy={"read": True, "write": False},
             skill_policy={"inspect": True},
@@ -151,7 +151,7 @@ DEFAULT_HARNESS_RUNTIME_PROFILES: dict[str, HarnessRuntimeProfile] = {
             harness_id=CONVERSATION_HARNESS_ID,
             mode="planning_chat",
             context_profile="planning-chat",
-            allowed_artifacts=["project_plan_draft", "run_contract_draft"],
+            allowed_artifacts=["project_plan_draft", "run_contract_draft", "planner_chat_turn"],
             tool_policy={"write_files": False, "run_commands": False},
         ),
         _profile(

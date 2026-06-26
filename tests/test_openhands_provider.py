@@ -459,6 +459,120 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
         self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
 
+    def test_planning_chat_prompt_contains_planner_chat_turn_contract(self) -> None:
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=_planner_chat_turn_output()),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_planning_chat_request())
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact_type, "planner_chat_turn")
+        prompt = state["conversation"]["prompt"]
+        self.assertIn("OpenHands Structured Planner Chat Turn Contract v1", prompt)
+        self.assertIn("Return exactly one JSON object", prompt)
+        self.assertIn('"artifact_type": "planner_chat_turn"', prompt)
+        self.assertIn("interaction_mode is provided by Coder and must be preserved exactly", prompt)
+        self.assertIn("In discuss mode, never return decision", prompt)
+
+    def test_valid_planner_chat_turn_is_accepted(self) -> None:
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output={"output": _planner_chat_turn_output()}),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_planning_chat_request())
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact["artifact_type"], "planner_chat_turn")
+        self.assertEqual(result.artifact["interaction_mode"], "discuss")
+        self.assertEqual(result.artifact["decision"], "continue_chat")
+
+    def test_unstructured_planner_chat_turn_blocks(self) -> None:
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=SimpleNamespace(summary="I can help plan that.")),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_planning_chat_request())
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.error["code"], "insufficient_structured_planner_chat_turn")
+        self.assertEqual(result.artifact_type, "planner_chat_turn")
+
+    def test_discuss_mode_start_workflow_blocks(self) -> None:
+        state: dict[str, Any] = {}
+        payload = _planner_chat_turn_output(decision="start_workflow")
+        payload["task_state"] = {
+            "goal": "Run the ready workflow.",
+            "success_criteria": ["Workflow starts only in Work mode."],
+            "open_questions": [],
+            "readiness": "ready_to_execute",
+        }
+        payload["handoff"] = {
+            "workflow_request": "Run the ready workflow.",
+            "success_criteria": ["Workflow starts only in Work mode."],
+        }
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=payload),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_planning_chat_request())
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.error["code"], "insufficient_structured_planner_chat_turn")
+        self.assertEqual(result.artifact_type, "planner_chat_turn")
+
+    def test_work_mode_start_workflow_ready_task_succeeds(self) -> None:
+        state: dict[str, Any] = {}
+        payload = _planner_chat_turn_output(interaction_mode="work", decision="start_workflow")
+        payload["visible_thinking"] = {"phase": "ready_to_start", "summary": "Ready to start."}
+        payload["task_state"] = {
+            "goal": "Run the ready workflow.",
+            "scope": ["src"],
+            "success_criteria": ["Workflow starts from the existing path."],
+            "open_questions": [],
+            "readiness": "ready_to_execute",
+        }
+        payload["handoff"] = {
+            "workflow_request": "Run the ready workflow.",
+            "scope": ["src"],
+            "success_criteria": ["Workflow starts from the existing path."],
+        }
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=payload),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_planning_chat_request(interaction_mode="work"))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact["decision"], "start_workflow")
+        self.assertEqual(result.artifact["interaction_mode"], "work")
+
+    def test_planning_chat_tools_exclude_terminal_and_file_editor(self) -> None:
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=_planner_chat_turn_output()),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_planning_chat_request())
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
+
     def test_completed_planner_order_records_loop_trace_events(self) -> None:
         store = NativeRuntimeStore()
         state: dict[str, Any] = {}
@@ -824,6 +938,38 @@ def _request(input_artifacts: dict[str, Any] | None = None) -> HarnessRunRequest
     )
 
 
+def _planning_chat_request(*, interaction_mode: str = "discuss") -> HarnessRunRequest:
+    manager = HarnessRuntimeManager()
+    return manager._request(
+        request_id="request-1",
+        contract_id="conversation-harness",
+        mode="planning_chat",
+        profile_id="openhands-planning-chat-default",
+        context=HarnessRuntimeContext(
+            run_id="run-1",
+            agent_id="planner",
+            workflow_id="workflow-1",
+            harness_id="conversation-harness",
+            mode="planning_chat",
+            profile_id="openhands-planning-chat-default",
+            context_packet={
+                "hot": {
+                    "user_goal": "Plan the work.",
+                    "planner_interaction_mode": interaction_mode,
+                },
+                "warm": {"workflow_summary": {"workflow_id": "workflow-1"}},
+            },
+        ),
+        input_artifacts={
+            "requested_artifact_type": "planner_chat_turn",
+            "user_request": "Plan the work.",
+            "interaction_mode": interaction_mode,
+            "messages": [{"role": "user", "content": "Plan the work."}],
+            "task_state": {"readiness": "not_ready"},
+        },
+    )
+
+
 def _task_request(*, sandbox_root: str | None, repo_root: str = "F:\\repo") -> HarnessRunRequest:
     manager = HarnessRuntimeManager()
     return manager._request(
@@ -885,6 +1031,23 @@ def _execution_result_output(
     if no_op_rationale is not None:
         artifact["no_op_rationale"] = no_op_rationale
     return artifact
+
+
+def _planner_chat_turn_output(*, interaction_mode: str = "discuss", decision: str = "continue_chat") -> dict[str, Any]:
+    return {
+        "artifact_type": "planner_chat_turn",
+        "assistant_message": "What scope should I use for the plan?",
+        "interaction_mode": interaction_mode,
+        "decision": decision,
+        "visible_thinking": {"phase": "clarifying", "summary": "Clarifying scope."},
+        "task_state": {
+            "goal": "Plan the work.",
+            "success_criteria": [],
+            "open_questions": ["What scope should I use?"],
+            "readiness": "needs_clarification",
+        },
+        "handoff": None,
+    }
 
 
 def json_dumps(value: Any) -> str:

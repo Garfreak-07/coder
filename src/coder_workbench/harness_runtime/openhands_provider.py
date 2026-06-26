@@ -9,6 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from coder_workbench.core.artifacts import ArtifactValidationError, validate_artifact
+
 from .contracts import harness_contract_for_id
 from .native_events import NativeRuntimeEvent
 from .permissions import HarnessPermissionDecision, evaluate_harness_permission
@@ -23,6 +25,9 @@ _INSUFFICIENT_PLANNER_OUTPUT_MESSAGE = (
 )
 _INSUFFICIENT_EXECUTION_RESULT_MESSAGE = (
     "OpenHands task executor did not return exactly one structured execution_result artifact."
+)
+_INSUFFICIENT_PLANNER_CHAT_TURN_MESSAGE = (
+    "OpenHands planning chat did not return exactly one structured planner_chat_turn artifact."
 )
 
 _BLOCKER_TYPES = {
@@ -216,7 +221,7 @@ class OpenHandsRuntimeProvider:
                     summary="OpenHands prompt output contract assembled.",
                     payload={
                         "artifact_target": artifact_type,
-                        "has_output_contract": artifact_type in {"planner_order", "execution_result"},
+                        "has_output_contract": artifact_output_contract_available(str(artifact_type or "")),
                         "contract_kind": artifact_type,
                         "prompt_length_chars": len(prompt),
                     },
@@ -300,7 +305,7 @@ class OpenHandsRuntimeProvider:
                     conversation.send_message(prompt)
                     run_output = conversation.run()
                     conversation_facts = _conversation_runtime_facts(conversation)
-                    if artifact_type in {"planner_order", "execution_result"} and _extract_structured_artifact(
+                    if artifact_type in {"planner_order", "execution_result", "planner_chat_turn"} and _extract_structured_artifact(
                         run_output,
                         artifact_type=artifact_type,
                     ) is None:
@@ -322,10 +327,10 @@ class OpenHandsRuntimeProvider:
                     )
 
                 summary = _summarize_run_output(run_output)
-                if artifact_type == "execution_result":
+                if artifact_type in {"execution_result", "planner_chat_turn"}:
                     structured_artifact, execution_extract_error = _extract_single_structured_artifact(
                         run_output,
-                        artifact_type="execution_result",
+                        artifact_type=str(artifact_type),
                     )
                 else:
                     structured_artifact = _extract_structured_artifact(run_output, artifact_type=str(artifact_type or ""))
@@ -540,6 +545,94 @@ class OpenHandsRuntimeProvider:
                             "validation_status": "passed",
                             "artifact_type": "planner_order",
                             "status": "completed",
+                        },
+                    )
+                    facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
+                if artifact_type == "planner_chat_turn":
+                    if execution_extract_error is not None:
+                        validation_event = self._record_loop_event(
+                            request,
+                            phase="artifact_validation",
+                            status="failed",
+                            summary="OpenHands planner_chat_turn validation failed.",
+                            payload={
+                                "artifact_target": artifact_type,
+                                "validation_status": "failed",
+                                "reason": execution_extract_error,
+                            },
+                        )
+                        facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
+                        return self._failed(
+                            request,
+                            emit=emit,
+                            code="insufficient_structured_planner_chat_turn",
+                            message=_INSUFFICIENT_PLANNER_CHAT_TURN_MESSAGE,
+                            native_type="planner_chat_turn.insufficient",
+                            status="blocked",
+                            refs=[
+                                selected_event.event_id,
+                                sandbox_event.event_id,
+                                started_event.event_id,
+                                *facts["native_event_refs"],
+                            ],
+                            payload={
+                                "code": "insufficient_structured_planner_chat_turn",
+                                "message": _INSUFFICIENT_PLANNER_CHAT_TURN_MESSAGE,
+                                "reason": execution_extract_error,
+                                "structured_artifact_found": structured_artifact is not None,
+                                "output_type": type(run_output).__name__,
+                            },
+                        )
+                    chat_artifact, chat_error = _planner_chat_turn_artifact_from_structured(
+                        structured_artifact,
+                        request=request,
+                    )
+                    if chat_error is not None:
+                        validation_event = self._record_loop_event(
+                            request,
+                            phase="artifact_validation",
+                            status="failed",
+                            summary="OpenHands planner_chat_turn validation failed.",
+                            payload={
+                                "artifact_target": artifact_type,
+                                "validation_status": "failed",
+                                "reason": chat_error,
+                            },
+                        )
+                        facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
+                        return self._failed(
+                            request,
+                            emit=emit,
+                            code="insufficient_structured_planner_chat_turn",
+                            message=_INSUFFICIENT_PLANNER_CHAT_TURN_MESSAGE,
+                            native_type="planner_chat_turn.insufficient",
+                            status="blocked",
+                            refs=[
+                                selected_event.event_id,
+                                sandbox_event.event_id,
+                                started_event.event_id,
+                                *facts["native_event_refs"],
+                            ],
+                            payload={
+                                "code": "insufficient_structured_planner_chat_turn",
+                                "message": _INSUFFICIENT_PLANNER_CHAT_TURN_MESSAGE,
+                                "reason": chat_error,
+                                "structured_artifact_found": structured_artifact is not None,
+                                "output_type": type(run_output).__name__,
+                            },
+                        )
+                    structured_artifact = chat_artifact
+                    validation_event = self._record_loop_event(
+                        request,
+                        phase="artifact_validation",
+                        status="completed",
+                        summary="OpenHands planner_chat_turn validation passed.",
+                        payload={
+                            "artifact_target": artifact_type,
+                            "validation_status": "passed",
+                            "artifact_type": "planner_chat_turn",
+                            "decision": chat_artifact.get("decision"),
+                            "interaction_mode": chat_artifact.get("interaction_mode"),
                         },
                     )
                     facts["native_event_refs"] = _dedupe([*facts["native_event_refs"], validation_event.event_id])
@@ -1066,11 +1159,27 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
     lines.extend(
         [
             "You are the Planning Chat Harness.",
-            "Produce a draft only.",
-            "Return enough structured information for Coder to project a valid project_plan_draft artifact.",
             "Do not execute commands, modify files, or start the live run.",
         ]
     )
+    if artifact_target == "planner_chat_turn":
+        lines.extend(
+            [
+                "Talk with the user, maintain task state, and decide whether the task is ready for Work mode handoff.",
+                "Return enough structured information for Coder to project a valid planner_chat_turn artifact.",
+            ]
+        )
+        _append_artifact_output_contract(lines, artifact_target)
+        _append_section(lines, "Interaction mode", _planner_interaction_mode(request))
+        _append_section(lines, "Recent messages", request.input_artifacts.get("messages"))
+        _append_section(lines, "Current task state", request.input_artifacts.get("task_state"))
+    else:
+        lines.extend(
+            [
+                "Produce a draft only.",
+                "Return enough structured information for Coder to project a valid project_plan_draft artifact.",
+            ]
+        )
     _append_section(lines, "User request", request.input_artifacts.get("user_request") or _dig(context_packet, "hot", "user_goal"))
     _append_section(lines, "Workflow summary", _dig(context_packet, "warm", "workflow_summary"))
     _append_section(lines, "Selected knowledge pack IDs", _dig(context_packet, "hot", "selected_knowledge_pack_ids"))
@@ -1084,10 +1193,58 @@ def _append_artifact_output_contract(lines: list[str], artifact_target: str) -> 
         _append_planner_order_output_contract(lines)
     elif artifact_target == "execution_result":
         _append_execution_result_output_contract(lines)
+    elif artifact_target == "planner_chat_turn":
+        _append_planner_chat_turn_output_contract(lines)
 
 
 def artifact_output_contract_available(artifact_target: str) -> bool:
-    return artifact_target in {"planner_order", "execution_result"}
+    return artifact_target in {"planner_order", "execution_result", "planner_chat_turn"}
+
+
+def _append_planner_chat_turn_output_contract(lines: list[str]) -> None:
+    lines.extend(
+        [
+            "OpenHands Structured Planner Chat Turn Contract v1:",
+            "Return exactly one JSON object.",
+            "Do not return prose before or after the JSON object.",
+            "Do not wrap the JSON in Markdown unless the runtime forces Markdown formatting.",
+            'The JSON object must have "artifact_type": "planner_chat_turn".',
+            "interaction_mode is provided by Coder and must be preserved exactly.",
+            'In discuss mode, never return decision = "start_workflow".',
+            'In work mode, return decision = "start_workflow" only when task_state.readiness = "ready_to_execute".',
+            'If the task is not ready, ask a concise clarifying question and use decision = "continue_chat" or "blocked_needs_clarification".',
+            "visible_thinking is a short user-visible status summary, not private chain-of-thought.",
+            "Do not include private chain-of-thought, hidden scratchpads, raw prompts, logs, diffs, secrets, or model internals.",
+            "task_state is the source of truth for the evolving plan.",
+            _safe_json(
+                {
+                    "artifact_type": "planner_chat_turn",
+                    "assistant_message": "Concise user-facing response.",
+                    "interaction_mode": "discuss",
+                    "decision": "continue_chat",
+                    "visible_thinking": {
+                        "phase": "clarifying",
+                        "summary": "Clarifying the task scope.",
+                    },
+                    "task_state": {
+                        "goal": "User goal if known.",
+                        "user_intent": "Brief interpretation of the user's intent.",
+                        "scope": [],
+                        "constraints": [],
+                        "success_criteria": [],
+                        "known_context": [],
+                        "missing_context": [],
+                        "open_questions": ["One concise question if clarification is needed."],
+                        "assumptions": [],
+                        "risks": [],
+                        "plan_steps": [],
+                        "readiness": "needs_clarification",
+                    },
+                    "handoff": None,
+                }
+            ),
+        ]
+    )
 
 
 def _append_planner_order_output_contract(lines: list[str]) -> None:
@@ -1477,7 +1634,7 @@ def _artifact_type_from_legacy_operation(operation: str) -> str | None:
 
 def _validate_requested_artifact_type(mode: str, artifact_type: str) -> tuple[str | None, str | None]:
     allowed = {
-        "planning_chat": {"project_plan_draft"},
+        "planning_chat": {"project_plan_draft", "planner_chat_turn"},
         "task_execution": {"execution_result"},
         "workflow_supervisor": {"planner_order", "planner_decision", "final_report"},
     }.get(mode, set())
@@ -1507,6 +1664,8 @@ def _artifact_for_success(
             return _final_report_artifact_from_structured(structured_artifact, summary=summary, evidence_refs=evidence_refs)
         if artifact_type == "project_plan_draft":
             return _project_plan_draft_from_structured(structured_artifact, request=request, summary=summary)
+        if artifact_type == "planner_chat_turn":
+            return dict(structured_artifact)
 
     if artifact_type == "execution_result":
         checks_run = _check_records(facts.get("checks_run"))
@@ -1932,6 +2091,12 @@ def _artifact_like_dict(value: dict[str, Any], *, artifact_type: str) -> dict[st
         artifact = dict(value)
         artifact["artifact_type"] = "project_plan_draft"
         return artifact
+    if artifact_type == "planner_chat_turn" and any(
+        key in value for key in ("assistant_message", "interaction_mode", "decision", "task_state")
+    ):
+        artifact = dict(value)
+        artifact["artifact_type"] = "planner_chat_turn"
+        return artifact
     return None
 
 
@@ -2005,6 +2170,35 @@ def _planner_order_artifact_from_structured(
             [*artifact["expected_outputs"], "No executor output is expected because no executor work is needed."]
         )
     return artifact, None
+
+
+def _planner_chat_turn_artifact_from_structured(
+    structured_artifact: dict[str, Any] | None,
+    *,
+    request: HarnessRunRequest,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if structured_artifact is None:
+        return None, "no structured planner_chat_turn artifact was found"
+    expected_mode = _planner_interaction_mode(request)
+    actual_mode = _string_value(structured_artifact.get("interaction_mode"))
+    if actual_mode != expected_mode:
+        return None, "planner_chat_turn.interaction_mode must preserve the requested interaction mode"
+    try:
+        artifact = validate_artifact(dict(structured_artifact), expected_type="planner_chat_turn")
+    except ArtifactValidationError as exc:
+        return None, str(exc.errors)
+    return artifact, None
+
+
+def _planner_interaction_mode(request: HarnessRunRequest) -> str:
+    for value in (
+        request.input_artifacts.get("interaction_mode"),
+        _dig(request.context.context_packet or {}, "hot", "planner_interaction_mode"),
+    ):
+        text = _string_value(value)
+        if text in {"discuss", "work"}:
+            return text
+    return "discuss"
 
 
 def _planner_order_work_items(structured_artifact: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, str | None]:
