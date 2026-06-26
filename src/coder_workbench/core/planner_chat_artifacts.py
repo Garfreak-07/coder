@@ -69,6 +69,7 @@ class PlannerWorkflowHandoff(BaseModel):
 class PlannerChatTurn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    artifact_id: str | None = None
     artifact_type: Literal["planner_chat_turn"] = "planner_chat_turn"
     assistant_message: str = Field(min_length=1)
     interaction_mode: PlannerInteractionMode

@@ -21,9 +21,11 @@ from coder_workbench.core import (
     validate_agent_workflow_payload,
 )
 from coder_workbench.core.artifacts import validate_artifact
+from coder_workbench.core.planner_chat_artifacts import PlannerChatTurn, PlannerTaskState
 from coder_workbench.context import build_harness_context_packet
 from coder_workbench.extensions import builtin_plugin_manifests, extension_search
 from coder_workbench.harness_runtime import (
+    ArtifactProjectionError,
     ArtifactProjector,
     HarnessRunResult,
     HarnessRuntimeContext,
@@ -33,6 +35,12 @@ from coder_workbench.harness_runtime import (
 from coder_workbench.harness_runtime.fallback_provider import InternalFallbackProvider
 from coder_workbench.server.agent_manager import AgentGraphRunManager
 from coder_workbench.server.library import LibraryStore
+from coder_workbench.server.planner_chat_sessions import (
+    PlannerChatSessionCreateRequest,
+    PlannerChatSessionRecord,
+    PlannerChatTurnRequest,
+    message_record,
+)
 from coder_workbench.server.settings import ProviderSettingsStore, provider_status
 from coder_workbench.server.storage import RunStore
 from coder_workbench.skills import (
@@ -167,6 +175,7 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     )
     artifact_projector = ArtifactProjector()
     planner_chat_drafts: dict[str, dict[str, Any]] = {}
+    planner_chat_sessions: dict[str, PlannerChatSessionRecord] = {}
 
     @app.get("/api/v2/health")
     def health() -> dict[str, Any]:
@@ -611,6 +620,168 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
             "status": live.status,
         }
 
+    @app.post("/api/v2/planner-chat/sessions")
+    def create_planner_chat_session(body: PlannerChatSessionCreateRequest) -> dict[str, Any]:
+        try:
+            if body.agent_workflow is None:
+                agent_workflow = _load_agent_workflow_for_planner_chat(library, body.workflow_id)
+                workflow_payload = agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True)
+            else:
+                workflow_payload = body.agent_workflow
+                agent_workflow = AgentWorkflowSpec.model_validate(workflow_payload)
+            _raise_agent_workflow_validation(workflow_payload)
+        except AgentWorkflowValidationError as exc:
+            raise HTTPException(status_code=400, detail=exc.result.model_dump(mode="json")) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        planner = next((agent for agent in agent_workflow.agents if agent.id == body.planner_agent_id), None)
+        if planner is None or planner.role != "planner":
+            raise HTTPException(status_code=400, detail="planner_agent_id must point to a Planner agent")
+
+        session = PlannerChatSessionRecord(
+            session_id=str(uuid4()),
+            workflow_id=agent_workflow.id,
+            planner_agent_id=planner.id,
+            agent_workflow=agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+            repo=body.repo,
+            scopes=list(body.scopes),
+            knowledge_pack_ids=list(body.knowledge_pack_ids),
+            skill_pack_ids=list(body.skill_pack_ids),
+            memory_pack_ids=list(body.memory_pack_ids),
+            interaction_mode=body.interaction_mode,
+        )
+        planner_chat_sessions[session.session_id] = session
+        return session.model_dump(mode="json")
+
+    @app.get("/api/v2/planner-chat/sessions/{session_id}")
+    def get_planner_chat_session(session_id: str) -> dict[str, Any]:
+        session = planner_chat_sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="planner chat session not found")
+        return session.model_dump(mode="json")
+
+    @app.post("/api/v2/planner-chat/sessions/{session_id}/turn")
+    def send_planner_chat_turn(session_id: str, body: PlannerChatTurnRequest) -> dict[str, Any]:
+        session = planner_chat_sessions.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="planner chat session not found")
+        message = body.message.strip()
+        if not message:
+            raise HTTPException(status_code=400, detail="message is required")
+
+        interaction_mode = body.interaction_mode or session.interaction_mode
+        session.interaction_mode = interaction_mode
+        session.messages.append(message_record("user", message))
+        agent_workflow = AgentWorkflowSpec.model_validate(session.agent_workflow)
+        planner = next((agent for agent in agent_workflow.agents if agent.id == session.planner_agent_id), None)
+        if planner is None or planner.role != "planner":
+            raise HTTPException(status_code=400, detail="planner_agent_id must point to a Planner agent")
+
+        context_packet = build_harness_context_packet(
+            mode="planning_chat",
+            user_goal=message,
+            workflow_id=agent_workflow.id,
+            agent_id=planner.id,
+            planner_agent_id=planner.id,
+            workflow_summary={
+                "workflow_id": agent_workflow.id,
+                "workflow_name": agent_workflow.name,
+                "planner_agent_id": planner.id,
+                "agent_count": len(agent_workflow.agents),
+            },
+            user_constraints=_planner_chat_mode_constraints(interaction_mode),
+            selected_knowledge_pack_ids=session.knowledge_pack_ids,
+            selected_skill_pack_ids=session.skill_pack_ids,
+            selected_memory_pack_ids=session.memory_pack_ids,
+        )
+        context_packet.setdefault("hot", {})["planner_interaction_mode"] = interaction_mode
+        runtime_context = HarnessRuntimeContext(
+            run_id=f"planner-chat-session-{session.session_id}",
+            agent_id=planner.id,
+            workflow_id=agent_workflow.id,
+            harness_id="conversation-harness",
+            mode="planning_chat",
+            profile_id=agent_workflow.harness_bindings.planning_chat.profile_id,
+            repo_root=session.repo,
+            context_packet=context_packet,
+        )
+        fallback_turn = _fallback_planner_chat_turn_payload(
+            message=message,
+            interaction_mode=interaction_mode,
+            task_state=session.task_state.model_dump(mode="json"),
+        )
+        runtime_result = harness_runtime_manager.run_planning_chat(
+            context=runtime_context,
+            profile_id=agent_workflow.harness_bindings.planning_chat.profile_id,
+            input_artifacts={
+                "requested_artifact_type": "planner_chat_turn",
+                "legacy_operation": "planning_chat",
+                "legacy_kwargs": {"turn_payload": fallback_turn},
+                "user_request": message,
+                "interaction_mode": interaction_mode,
+                "messages": [item.model_dump(mode="json") for item in session.messages[-12:]],
+                "task_state": session.task_state.model_dump(mode="json"),
+                "workflow_summary": {"workflow_id": agent_workflow.id, "workflow_name": agent_workflow.name},
+            },
+        )
+        if runtime_result.status != "completed":
+            session.status = "blocked"
+            raise HTTPException(status_code=502, detail=runtime_result.error or {"message": "planner chat turn failed"})
+        try:
+            turn_payload = artifact_projector.project(
+                runtime_result,
+                artifact_type="planner_chat_turn",
+                artifact_id=f"{session.session_id}:turn-{session.generation + 1}",
+            )
+        except ArtifactProjectionError as exc:
+            session.status = "blocked"
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+        turn = PlannerChatTurn.model_validate(turn_payload)
+        session.last_turn = turn
+        session.task_state = PlannerTaskState.model_validate(turn_payload["task_state"])
+        session.messages.append(message_record("assistant", turn.assistant_message))
+        session.generation += 1
+        if session.task_state.readiness == "ready_to_execute":
+            session.status = "ready"
+        else:
+            session.status = "chatting"
+
+        run_id: str | None = None
+        if (
+            interaction_mode == "work"
+            and body.start_if_ready
+            and turn.decision == "start_workflow"
+            and turn.handoff is not None
+        ):
+            try:
+                live = _start_planner_chat_session_workflow(
+                    session=session,
+                    agent_workflow=agent_workflow,
+                    request_text=turn.handoff.workflow_request,
+                    turn_payload=turn.model_dump(mode="json"),
+                    agent_manager=agent_manager,
+                    skill_store=skill_store,
+                    store_root=store_root,
+                )
+            except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+                session.status = "blocked"
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            run_id = live.id
+            session.run_id = live.id
+            session.status = "running"
+
+        planner_chat_sessions[session.session_id] = session
+        return {
+            "session_id": session.session_id,
+            "generation": session.generation,
+            "status": session.status,
+            "run_id": run_id or session.run_id,
+            "turn": turn.model_dump(mode="json"),
+            "session": session.model_dump(mode="json"),
+        }
+
     @app.get("/api/v2/runs")
     def list_runs() -> dict[str, Any]:
         return {"runs": store.list()}
@@ -822,14 +993,21 @@ def create_app(store_root: str | Path = ".coder", frontend_dist: str | Path | No
     return app
 
 
-def _planning_chat_fallback_runner(*, draft_payload: dict[str, Any], emit: Any | None = None) -> dict[str, Any]:
+def _planning_chat_fallback_runner(
+    *,
+    draft_payload: dict[str, Any] | None = None,
+    turn_payload: dict[str, Any] | None = None,
+    emit: Any | None = None,
+) -> dict[str, Any]:
     if emit is not None:
         emit(
             "harness_runtime.fallback.planning_chat",
-            "InternalFallbackProvider generated a deterministic planning chat draft",
+            "InternalFallbackProvider generated deterministic planning chat output",
             mode="planning_chat",
         )
-    return dict(draft_payload)
+    if turn_payload is not None:
+        return dict(turn_payload)
+    return dict(draft_payload or {})
 
 
 def _planner_chat_draft_payloads(
@@ -885,6 +1063,109 @@ def _planner_chat_draft_payloads(
         artifact_id=f"{draft_id}:run_contract",
     )
     return plan_draft, run_contract_draft
+
+
+def _planner_chat_mode_constraints(interaction_mode: str) -> list[str]:
+    constraints = [
+        "Planning Chat Mode must not write files or run commands.",
+        "Do not expose private chain-of-thought, raw prompts, logs, diffs, secrets, or model internals.",
+    ]
+    if interaction_mode == "discuss":
+        constraints.append("Discuss mode must never start workflow execution.")
+    else:
+        constraints.append("Work mode may start the existing workflow only when the task is ready_to_execute.")
+    return constraints
+
+
+def _fallback_planner_chat_turn_payload(
+    *,
+    message: str,
+    interaction_mode: str,
+    task_state: dict[str, Any],
+) -> dict[str, Any]:
+    current = dict(task_state or {})
+    goal = str(current.get("goal") or message).strip()
+    success_criteria = [str(item) for item in current.get("success_criteria", []) if str(item).strip()]
+    open_questions = [str(item) for item in current.get("open_questions", []) if str(item).strip()]
+    readiness = str(current.get("readiness") or "not_ready")
+    can_start = (
+        interaction_mode == "work"
+        and readiness == "ready_to_execute"
+        and bool(goal)
+        and bool(success_criteria)
+        and not open_questions
+    )
+    if can_start:
+        return validate_artifact(
+            {
+                "artifact_type": "planner_chat_turn",
+                "assistant_message": "I have enough detail and will start the workflow.",
+                "interaction_mode": interaction_mode,
+                "decision": "start_workflow",
+                "visible_thinking": {"phase": "ready_to_start", "summary": "Ready to start the workflow."},
+                "task_state": {**current, "goal": goal, "success_criteria": success_criteria, "open_questions": [], "readiness": "ready_to_execute"},
+                "handoff": {
+                    "workflow_request": goal,
+                    "scope": [str(item) for item in current.get("scope", []) if str(item).strip()],
+                    "success_criteria": success_criteria,
+                    "risks": [str(item) for item in current.get("risks", []) if str(item).strip()],
+                },
+            },
+            expected_type="planner_chat_turn",
+        )
+    question = "What success criteria should I use before starting work?"
+    next_state = {
+        **current,
+        "goal": goal,
+        "open_questions": open_questions or [question],
+        "readiness": "needs_clarification",
+    }
+    return validate_artifact(
+        {
+            "artifact_type": "planner_chat_turn",
+            "assistant_message": question if interaction_mode == "work" else f"I can help plan this. {question}",
+            "interaction_mode": interaction_mode,
+            "decision": "blocked_needs_clarification" if interaction_mode == "work" else "continue_chat",
+            "visible_thinking": {"phase": "clarifying", "summary": "Clarifying success criteria."},
+            "task_state": next_state,
+            "handoff": None,
+        },
+        expected_type="planner_chat_turn",
+    )
+
+
+def _start_planner_chat_session_workflow(
+    *,
+    session: PlannerChatSessionRecord,
+    agent_workflow: AgentWorkflowSpec,
+    request_text: str,
+    turn_payload: dict[str, Any],
+    agent_manager: AgentGraphRunManager,
+    skill_store: InstalledSkillStore,
+    store_root: str | Path,
+):
+    repo = session.repo or "."
+    repo_root = resolve_existing_dir(str(repo))
+    normalized_scopes = normalize_scope_paths(repo_root, session.scopes)
+    initial_data = {
+        "request": request_text,
+        "approved": True,
+        "preapprove_all": True,
+        "scopes": normalized_scopes,
+        "planner_chat_turn": turn_payload,
+        "planner_task_state": turn_payload.get("task_state") or {},
+        "planner_interaction_mode": session.interaction_mode,
+        "planner_chat_session_id": session.session_id,
+        "agent_workflow": agent_workflow.model_dump(mode="json", by_alias=True, exclude_none=True),
+        "skill_index": build_skill_index(skill_store.list_installed()).model_dump(mode="json"),
+        "skill_store_root": str(Path(store_root)),
+    }
+    return agent_manager.start(
+        agent_workflow=agent_workflow,
+        repo_root=str(repo_root),
+        request=request_text,
+        initial_data=initial_data,
+    )
 
 
 def _raise_agent_workflow_validation(agent_workflow: dict[str, Any]) -> None:
