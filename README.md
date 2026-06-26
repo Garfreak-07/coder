@@ -54,6 +54,24 @@ output contract. OpenHands must return exactly one `planner_order` object with
 planner output still fails closed with
 `insufficient_structured_planner_output`.
 
+Harness dry-run readiness is available through
+`run_harness_dry_run(request)`. It reports `ready`, `warning`, or `blocked`
+for a requested harness run by checking artifact targets, profile bindings,
+OpenHands SDK importability, credential presence, model/base URL configuration,
+prompt contract availability, sandbox readiness, permission policy readiness,
+trace support, and license metadata. Dry-run is diagnostic only: it does not
+call a model, execute tools, start an OpenHands conversation, prepare or copy a
+workspace, or include secrets, prompts, model output, logs, or diffs in the
+report.
+
+OpenHands model configuration now resolves through additive LLM provider
+profiles. The default `deepseek-default` profile preserves DeepSeek-first
+behavior, including `LLM_API_KEY` or `DEEPSEEK_API_KEY`,
+`https://api.deepseek.com`, and DeepSeek model alias normalization. Set
+`CODER_LLM_PROVIDER_PROFILE=openai-compatible-env` to use the generic
+OpenAI-compatible env profile, or leave it unset for DeepSeek. Existing
+`LLM_MODEL` and `LLM_BASE_URL` overrides still take precedence.
+
 The ordinary Planner Chat path is explicit:
 
 ```text
@@ -356,6 +374,7 @@ For OpenHands runtime smoke tests, prefer local environment variables rather
 than committed files:
 
 ```powershell
+$env:CODER_LLM_PROVIDER_PROFILE="deepseek-default"
 $env:DEEPSEEK_API_KEY="..."
 $env:LLM_API_KEY=$env:DEEPSEEK_API_KEY
 $env:LLM_BASE_URL="https://api.deepseek.com"

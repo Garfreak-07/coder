@@ -13,7 +13,13 @@ from .contracts import harness_contract_for_id
 from .loops import HarnessLoopPhase, HarnessLoopTrace
 from .openhands_provider import artifact_output_contract_available
 from .permissions import evaluate_harness_permission
-from .profiles import OPENHANDS_PROVIDER_ID, default_harness_runtime_profiles
+from .profiles import (
+    LLMProviderProfile,
+    OPENHANDS_PROVIDER_ID,
+    default_harness_runtime_profiles,
+    normalize_llm_model,
+    resolve_llm_provider_profile,
+)
 from .runtime_context import HarnessRunRequest
 from .sandbox import sandbox_policy_for_profile
 
@@ -81,6 +87,7 @@ def run_harness_dry_run(request: HarnessRunRequest) -> HarnessDryRunReport:
         _artifact_target_check(request, artifact_target),
         _profile_binding_check(request, artifact_target),
         _openhands_sdk_check(request),
+        _llm_provider_profile_check(request),
         _llm_credentials_check(request),
         _llm_model_check(request),
         _prompt_contract_check(),
@@ -244,14 +251,26 @@ def _module_importable(name: str) -> bool:
 
 
 def _llm_credentials_check(request: HarnessRunRequest) -> HarnessDryRunCheck:
-    credential_source = _credential_source(("LLM_API_KEY", "DEEPSEEK_API_KEY"))
+    profile, error = _llm_profile()
+    if error is not None or profile is None:
+        return _check(
+            "llm_credentials",
+            "blocked",
+            "LLM provider profile could not be resolved.",
+            next_actions=["Set CODER_LLM_PROVIDER_PROFILE to a known provider profile."],
+            metadata={"profile_error": error},
+        )
+    credential_source = _credential_source(profile.auth_env_candidates)
     if credential_source or request.profile.provider_id != OPENHANDS_PROVIDER_ID:
         return _check(
             "llm_credentials",
             "ready",
             "OpenHands LLM credential presence was checked.",
             metadata={
-                "credential_env_candidates": ["LLM_API_KEY", "DEEPSEEK_API_KEY"],
+                "llm_profile_id": profile.id,
+                "provider": profile.provider,
+                "api_format": profile.api_format,
+                "credential_env_candidates": list(profile.auth_env_candidates),
                 "credential_source": credential_source,
                 "credential_present": credential_source is not None,
             },
@@ -260,9 +279,12 @@ def _llm_credentials_check(request: HarnessRunRequest) -> HarnessDryRunCheck:
         "llm_credentials",
         "blocked",
         "OpenHands LLM credentials are missing.",
-        next_actions=["Set LLM_API_KEY or DEEPSEEK_API_KEY in the current shell."],
+        next_actions=[f"Set one of {', '.join(profile.auth_env_candidates)} in the current shell."],
         metadata={
-            "credential_env_candidates": ["LLM_API_KEY", "DEEPSEEK_API_KEY"],
+            "llm_profile_id": profile.id,
+            "provider": profile.provider,
+            "api_format": profile.api_format,
+            "credential_env_candidates": list(profile.auth_env_candidates),
             "credential_source": None,
             "credential_present": False,
         },
@@ -270,18 +292,56 @@ def _llm_credentials_check(request: HarnessRunRequest) -> HarnessDryRunCheck:
 
 
 def _llm_model_check(request: HarnessRunRequest) -> HarnessDryRunCheck:
-    base_url = os.getenv("LLM_BASE_URL") or "https://api.deepseek.com"
-    model = (os.getenv("LLM_MODEL") or "deepseek-v4-flash").strip() or "deepseek-v4-flash"
+    profile, error = _llm_profile()
+    if error is not None or profile is None:
+        return _check(
+            "llm_model_base_url",
+            "blocked",
+            "LLM provider profile could not be resolved.",
+            next_actions=["Set CODER_LLM_PROVIDER_PROFILE to a known provider profile."],
+            metadata={"profile_error": error},
+        )
+    base_url = os.getenv("LLM_BASE_URL") or profile.base_url
+    model = normalize_llm_model(os.getenv("LLM_MODEL") or profile.default_model, profile=profile, base_url=base_url)
     return _check(
         "llm_model_base_url",
         "ready",
         "OpenHands LLM model and base URL configuration were resolved without exposing credentials.",
         metadata={
+            "llm_profile_id": profile.id,
+            "provider": profile.provider,
+            "api_format": profile.api_format,
             "model_configured": bool(os.getenv("LLM_MODEL")),
-            "model": _normalize_deepseek_model(model, base_url=base_url),
+            "model": model,
             "base_url_configured": bool(os.getenv("LLM_BASE_URL")),
             "base_url_host": _url_host(base_url),
             "provider_id": request.profile.provider_id,
+        },
+    )
+
+
+def _llm_provider_profile_check(request: HarnessRunRequest) -> HarnessDryRunCheck:
+    profile, error = _llm_profile()
+    if error is not None or profile is None:
+        return _check(
+            "llm_provider_profile",
+            "blocked",
+            "LLM provider profile could not be resolved.",
+            next_actions=["Set CODER_LLM_PROVIDER_PROFILE to a known provider profile."],
+            metadata={"profile_error": error, "provider_id": request.profile.provider_id},
+        )
+    return _check(
+        "llm_provider_profile",
+        "ready",
+        "LLM provider profile resolved.",
+        metadata={
+            "llm_profile_id": profile.id,
+            "provider": profile.provider,
+            "api_format": profile.api_format,
+            "auth_env_candidates": list(profile.auth_env_candidates),
+            "default_model": profile.default_model,
+            "base_url_host": _url_host(profile.base_url),
+            "capabilities": dict(profile.capabilities),
         },
     )
 
@@ -503,17 +563,6 @@ def _credential_source(candidates: tuple[str, ...] | list[str]) -> str | None:
     return None
 
 
-def _normalize_deepseek_model(model: str, *, base_url: str | None) -> str:
-    text = model.strip() or "deepseek-v4-flash"
-    if "/" in text:
-        return text
-    if text.startswith("deepseek-") or text in {"deepseek-chat", "deepseek-reasoner"}:
-        return f"deepseek/{text}"
-    if "deepseek.com" in str(base_url or "").lower() and text.startswith("v"):
-        return f"deepseek/{text}"
-    return text
-
-
 def _url_host(value: str | None) -> str | None:
     if not value:
         return None
@@ -554,6 +603,13 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _secret_values() -> set[str]:
     return {value for name in _SECRET_ENV_NAMES if (value := os.getenv(name))}
+
+
+def _llm_profile() -> tuple[LLMProviderProfile | None, str | None]:
+    try:
+        return resolve_llm_provider_profile(), None
+    except ValueError as exc:
+        return None, str(exc)
 
 
 def _sanitize_dict(value: dict[str, Any], *, secret_values: set[str]) -> dict[str, Any]:

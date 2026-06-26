@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -52,6 +53,20 @@ class HarnessRuntimeProfile(BaseModel):
     sandbox_policy: dict[str, Any] = Field(default_factory=dict)
     safety_policy: dict[str, Any] = Field(default_factory=dict)
     evaluation_profile: dict[str, Any] = Field(default_factory=dict)
+
+
+class LLMProviderProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    provider: str
+    api_format: str = "openai"
+    auth_env_candidates: list[str] = Field(default_factory=list)
+    default_model: str
+    base_url: str | None = None
+    model_aliases: dict[str, str] = Field(default_factory=dict)
+    credential_slot: str | None = None
+    capabilities: dict[str, Any] = Field(default_factory=dict)
 
 
 def _profile(
@@ -163,8 +178,46 @@ DEFAULT_HARNESS_RUNTIME_PROFILES: dict[str, HarnessRuntimeProfile] = {
 }
 
 
+DEFAULT_LLM_PROVIDER_PROFILES: dict[str, LLMProviderProfile] = {
+    "deepseek-default": LLMProviderProfile(
+        id="deepseek-default",
+        provider="deepseek",
+        api_format="openai",
+        auth_env_candidates=["LLM_API_KEY", "DEEPSEEK_API_KEY"],
+        default_model="deepseek-v4-flash",
+        base_url="https://api.deepseek.com",
+        model_aliases={
+            "deepseek-v4-flash": "deepseek/deepseek-v4-flash",
+            "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+            "deepseek-chat": "deepseek/deepseek-chat",
+            "deepseek-reasoner": "deepseek/deepseek-reasoner",
+        },
+        capabilities={
+            "structured_json_contracts": True,
+            "tool_use": True,
+        },
+    ),
+    "openai-compatible-env": LLMProviderProfile(
+        id="openai-compatible-env",
+        provider="openai-compatible",
+        api_format="openai",
+        auth_env_candidates=["LLM_API_KEY"],
+        default_model="gpt-5.5",
+        base_url=None,
+        capabilities={
+            "structured_json_contracts": True,
+            "tool_use": True,
+        },
+    ),
+}
+
+
 def default_harness_runtime_profiles() -> dict[str, HarnessRuntimeProfile]:
     return dict(DEFAULT_HARNESS_RUNTIME_PROFILES)
+
+
+def default_llm_provider_profiles() -> dict[str, LLMProviderProfile]:
+    return dict(DEFAULT_LLM_PROVIDER_PROFILES)
 
 
 def harness_runtime_profile_for_id(profile_id: str) -> HarnessRuntimeProfile:
@@ -174,13 +227,43 @@ def harness_runtime_profile_for_id(profile_id: str) -> HarnessRuntimeProfile:
         raise ValueError(f"unknown harness runtime profile {profile_id!r}") from exc
 
 
+def llm_provider_profile_for_id(profile_id: str) -> LLMProviderProfile:
+    try:
+        return DEFAULT_LLM_PROVIDER_PROFILES[profile_id]
+    except KeyError as exc:
+        raise ValueError(f"unknown LLM provider profile {profile_id!r}") from exc
+
+
+def resolve_llm_provider_profile(profile_id: str | None = None) -> LLMProviderProfile:
+    selected = (profile_id or os.getenv("CODER_LLM_PROVIDER_PROFILE") or "deepseek-default").strip()
+    return llm_provider_profile_for_id(selected or "deepseek-default")
+
+
+def normalize_llm_model(model: str, *, profile: LLMProviderProfile, base_url: str | None = None) -> str:
+    text = model.strip() or profile.default_model
+    if "/" in text:
+        return text
+    alias = profile.model_aliases.get(text)
+    if alias:
+        return alias
+    if profile.provider == "deepseek" and "deepseek.com" in str(base_url or profile.base_url or "").lower() and text.startswith("v"):
+        return f"deepseek/{text}"
+    return text
+
+
 __all__ = [
     "DEFAULT_HARNESS_RUNTIME_PROFILES",
+    "DEFAULT_LLM_PROVIDER_PROFILES",
     "INTERNAL_FALLBACK_PROVIDER_ID",
     "OPENHANDS_PROVIDER_ID",
     "HarnessBindings",
     "HarnessModeBinding",
     "HarnessRuntimeProfile",
+    "LLMProviderProfile",
     "default_harness_runtime_profiles",
+    "default_llm_provider_profiles",
     "harness_runtime_profile_for_id",
+    "llm_provider_profile_for_id",
+    "normalize_llm_model",
+    "resolve_llm_provider_profile",
 ]

@@ -12,7 +12,7 @@ from typing import Any, Callable
 from .contracts import harness_contract_for_id
 from .native_events import NativeRuntimeEvent
 from .permissions import HarnessPermissionDecision, evaluate_harness_permission
-from .profiles import OPENHANDS_PROVIDER_ID
+from .profiles import OPENHANDS_PROVIDER_ID, normalize_llm_model, resolve_llm_provider_profile
 from .runtime_context import HarnessRunRequest, HarnessRunResult
 from .sandbox import SandboxPreparationError, collect_workspace_changes, prepare_sandbox_workspace
 from .store import NativeRuntimeStore
@@ -152,7 +152,18 @@ class OpenHandsRuntimeProvider:
         )
         loop_refs = [loop_started_event.event_id]
 
-        credentials = _llm_credentials()
+        try:
+            credentials = _llm_credentials()
+        except ValueError as exc:
+            return self._failed(
+                request,
+                emit=emit,
+                code="openhands_llm_provider_profile_invalid",
+                message=str(exc),
+                native_type="credentials.profile_invalid",
+                status="blocked",
+                refs=[selected_event.event_id, *loop_refs],
+            )
         if credentials["api_key"] is None:
             return self._failed(
                 request,
@@ -841,13 +852,21 @@ class OpenHandsRuntimeProvider:
 
 
 def _llm_credentials() -> dict[str, str | None]:
-    base_url = os.getenv("LLM_BASE_URL") or "https://api.deepseek.com"
-    model = _normalize_deepseek_model(os.getenv("LLM_MODEL") or "deepseek-v4-flash", base_url=base_url)
+    profile = resolve_llm_provider_profile()
+    base_url = os.getenv("LLM_BASE_URL") or profile.base_url
+    model = normalize_llm_model(os.getenv("LLM_MODEL") or profile.default_model, profile=profile, base_url=base_url)
     return {
-        "api_key": os.getenv("LLM_API_KEY") or os.getenv("DEEPSEEK_API_KEY"),
+        "api_key": _credential_for_profile(profile.auth_env_candidates),
         "model": model,
         "base_url": base_url,
     }
+
+
+def _credential_for_profile(candidates: list[str]) -> str | None:
+    for name in candidates:
+        if value := os.getenv(name):
+            return value
+    return None
 
 
 def _normalize_deepseek_model(model: str, *, base_url: str | None) -> str:

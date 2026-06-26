@@ -11,6 +11,13 @@ from coder_workbench.harness_runtime import HarnessRuntimeContext, HarnessRuntim
 
 
 class HarnessDryRunTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._profile_env = _env("CODER_LLM_PROVIDER_PROFILE", None)
+        self._profile_env.__enter__()
+
+    def tearDown(self) -> None:
+        self._profile_env.__exit__()
+
     def test_dry_run_does_not_invoke_openhands_conversation_or_prepare_sandbox(self) -> None:
         request = _request(input_artifacts={"requested_artifact_type": "planner_order"})
 

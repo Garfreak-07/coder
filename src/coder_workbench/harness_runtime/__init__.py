@@ -24,11 +24,17 @@ from .openhands_provider import OpenHandsRuntimeProvider
 from .permissions import HarnessPermissionDecision, evaluate_harness_permission
 from .profiles import (
     DEFAULT_HARNESS_RUNTIME_PROFILES,
+    DEFAULT_LLM_PROVIDER_PROFILES,
     HarnessBindings,
     HarnessModeBinding,
     HarnessRuntimeProfile,
+    LLMProviderProfile,
     default_harness_runtime_profiles,
+    default_llm_provider_profiles,
     harness_runtime_profile_for_id,
+    llm_provider_profile_for_id,
+    normalize_llm_model,
+    resolve_llm_provider_profile,
 )
 from .runtime_context import HarnessRunRequest, HarnessRunResult, HarnessRuntimeContext
 from .safety import SafetyDecision, enforce_harness_safety, evaluate_harness_safety
@@ -47,6 +53,7 @@ __all__ = [
     "CONVERSATION_HARNESS",
     "CONVERSATION_HARNESS_ID",
     "DEFAULT_HARNESS_RUNTIME_PROFILES",
+    "DEFAULT_LLM_PROVIDER_PROFILES",
     "HarnessDryRunCheck",
     "HarnessDryRunReport",
     "HarnessBindings",
@@ -62,6 +69,7 @@ __all__ = [
     "HarnessRuntimeContext",
     "HarnessRuntimeManager",
     "HarnessRuntimeProfile",
+    "LLMProviderProfile",
     "LEGACY_HARNESS_ALIASES",
     "ArtifactProjectionError",
     "ArtifactProjector",
@@ -76,6 +84,7 @@ __all__ = [
     "TASK_EXECUTION_HARNESS_ID",
     "collect_workspace_changes",
     "default_harness_runtime_profiles",
+    "default_llm_provider_profiles",
     "dry_run_harness_request",
     "enforce_harness_safety",
     "enforce_sandbox_policy",
@@ -83,8 +92,11 @@ __all__ = [
     "evaluate_harness_permission",
     "harness_contract_for_id",
     "harness_runtime_profile_for_id",
+    "llm_provider_profile_for_id",
+    "normalize_llm_model",
     "prepare_sandbox_workspace",
     "resolve_harness_id",
+    "resolve_llm_provider_profile",
     "run_harness_dry_run",
     "sandbox_policy_for_profile",
     "sanitize_dry_run_metadata",
