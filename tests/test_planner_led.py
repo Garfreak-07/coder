@@ -21,6 +21,7 @@ class PlannerLedArtifactTests(unittest.TestCase):
                 "planner_order",
                 "execution_result",
                 "planner_decision",
+                "planner_chat_turn",
                 "round_summary",
                 "final_report",
             },

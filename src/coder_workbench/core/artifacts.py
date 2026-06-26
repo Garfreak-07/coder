@@ -2,8 +2,13 @@
 
 from typing import Any, Literal
 
+from pydantic import BaseModel
 from pydantic import ValidationError
 
+from coder_workbench.core.planner_chat_artifacts import (
+    PLANNER_CHAT_ARTIFACT_MODELS,
+    planner_chat_artifact_summary,
+)
 from coder_workbench.core.planner_artifacts import (
     PLANNER_ARTIFACT_MODELS,
     PlannerArtifactType,
@@ -18,12 +23,14 @@ ArtifactType = Literal[
     "planner_order",
     "execution_result",
     "planner_decision",
+    "planner_chat_turn",
     "round_summary",
     "final_report",
 ]
 
-ARTIFACT_MODELS = {
+ARTIFACT_MODELS: dict[str, type[BaseModel]] = {
     **PLANNER_ARTIFACT_MODELS,
+    **PLANNER_CHAT_ARTIFACT_MODELS,
 }
 
 
@@ -72,6 +79,8 @@ def artifact_summary(artifact: dict[str, Any]) -> dict[str, Any]:
     }
     if artifact_type in PLANNER_ARTIFACT_MODELS:
         summary.update(planner_artifact_summary(artifact))
+    if artifact_type in PLANNER_CHAT_ARTIFACT_MODELS:
+        summary.update(planner_chat_artifact_summary(artifact))
     return {key: value for key, value in summary.items() if value not in (None, "", [])}
 
 
