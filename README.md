@@ -358,4 +358,8 @@ $env:CODER_ENABLE_OPENHANDS_RUNTIME="1"
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+License: AGPL-3.0-or-later. See [LICENSE](LICENSE).
+
+Earlier versions of this repository were released under the MIT License. This
+license change applies to this version and later versions; it does not revoke
+rights already granted for earlier MIT-licensed versions.

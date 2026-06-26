@@ -36,6 +36,12 @@ from coder_workbench.runtime_state import SharedRunState, build_executor_state_v
 ModelFactory = Any
 
 
+class AgentRunBlocked(RuntimeError):
+    def __init__(self, message: str, *, status_code: str = "agent_run_blocked") -> None:
+        self.status_code = status_code
+        super().__init__(message)
+
+
 class AgentRun:
     """Runs Agent work through HarnessRuntimeManager and compatibility fallback providers."""
 
@@ -335,6 +341,11 @@ class AgentRun:
         return self._planner_decision_from_harness_result(result)
 
     def _planner_order_from_harness_result(self, result: HarnessRunResult) -> PlannerOrder:
+        if result.status == "blocked":
+            raise AgentRunBlocked(
+                _harness_result_message(result, "Harness runtime blocked planner_order generation."),
+                status_code=str((result.error or {}).get("code") or "planner_order_blocked"),
+            )
         artifact = self.artifact_projector.project(result, artifact_type="planner_order")
         graph_payload = {
             "artifact_type": "planner_order",
@@ -577,6 +588,14 @@ class AgentRun:
 def _optional_string(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _harness_result_message(result: HarnessRunResult, default: str) -> str:
+    if result.error and result.error.get("message"):
+        return str(result.error["message"])
+    if result.artifact and result.artifact.get("summary"):
+        return str(result.artifact["summary"])
+    return default
 
 
 def _runtime_profile_id(profile: Any, default: str) -> str:

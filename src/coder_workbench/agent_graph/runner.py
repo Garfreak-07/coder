@@ -14,7 +14,7 @@ from coder_workbench.actions import (
     action_started_payload,
 )
 from coder_workbench.agent_graph.artifacts import AgentGraphArtifactRecorder, graph_artifact_id
-from coder_workbench.agent_graph.agent_run import AgentRun
+from coder_workbench.agent_graph.agent_run import AgentRun, AgentRunBlocked
 from coder_workbench.agent_graph.round_working_set import RoundWorkingSet
 from coder_workbench.agent_graph.context import upstream_refs_for_item
 from coder_workbench.agent_graph.effects import apply_hidden_effects
@@ -518,6 +518,12 @@ class AgentGraphRunner:
             status = "blocked"
             status_reason = str(exc)
             status_code = str(getattr(exc, "status_code", "agent_graph_blocked"))
+            blocked_node_id = self.agent_workflow.primary_planner_id
+            result_resume_checkpoint = {"data": data}
+        except AgentRunBlocked as exc:
+            status = "blocked"
+            status_reason = str(exc)
+            status_code = str(getattr(exc, "status_code", "agent_run_blocked"))
             blocked_node_id = self.agent_workflow.primary_planner_id
             result_resume_checkpoint = {"data": data}
         except RunCancelled as exc:

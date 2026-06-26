@@ -176,7 +176,17 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
 
     def test_workflow_supervisor_requested_artifact_target_drives_output(self) -> None:
         state: dict[str, Any] = {}
-        provider = OpenHandsRuntimeProvider(native_store=NativeRuntimeStore(), sdk_loader=lambda: _fake_sdk(state))
+        run_output = {
+            "artifact_type": "planner_order",
+            "round": 1,
+            "round_goal": "Nothing to execute.",
+            "plan_graph": {"work_items": []},
+            "no_work_rationale": "The request is already satisfied; no executor work is needed.",
+        }
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
 
         with _env("LLM_API_KEY", "test-key"):
             result = provider.run(_request(input_artifacts={"requested_artifact_type": "planner_order"}))
@@ -187,6 +197,86 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertIn("Current Coder artifact target: planner_order", state["conversation"]["prompt"])
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
         self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
+
+    def test_unstructured_planner_order_output_blocks_instead_of_empty_success(self) -> None:
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=SimpleNamespace(summary="Do the requested work.")),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_request(input_artifacts={"requested_artifact_type": "planner_order"}))
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.error["code"], "insufficient_structured_planner_output")
+        self.assertIn("did not return an actionable planner_order", result.error["message"])
+        self.assertEqual(result.artifact_type, "planner_order")
+
+    def test_explicit_no_work_planner_order_output_can_succeed(self) -> None:
+        state: dict[str, Any] = {}
+        run_output = """```json
+{
+  "artifact_type": "planner_order",
+  "round": 1,
+  "round_goal": "No executor action required.",
+  "plan_graph": {"work_items": []},
+  "no_work_rationale": "The requested state is already present."
+}
+```"""
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_request(input_artifacts={"requested_artifact_type": "planner_order"}))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact_type, "planner_order")
+        self.assertEqual(result.artifact["plan_graph"]["work_items"], [])
+        self.assertIn("already present", result.artifact["instructions_for_executor"][0])
+        projected = ArtifactProjector().project(result)
+        self.assertEqual(projected["artifact_type"], "planner_order")
+
+    def test_structured_planner_order_output_with_work_items_succeeds(self) -> None:
+        state: dict[str, Any] = {}
+        run_output = SimpleNamespace(
+            output={
+                "artifact_type": "planner_order",
+                "round": 1,
+                "round_goal": "Execute one task.",
+                "plan_graph": {
+                    "work_items": [
+                        {
+                            "work_item_id": "executor-work",
+                            "merge_index": 1,
+                            "assignee_agent_id": "executor",
+                            "task_summary": "Perform the scoped change.",
+                            "depends_on": [],
+                        }
+                    ]
+                },
+                "instructions_for_executor": ["Stay in scope."],
+                "allowed_actions": ["modify_files"],
+                "forbidden_actions": ["commit", "push"],
+                "expected_outputs": ["execution_result"],
+                "risk_level": "low",
+            }
+        )
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_request(input_artifacts={"requested_artifact_type": "planner_order"}))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact_type, "planner_order")
+        self.assertEqual(result.artifact["plan_graph"]["work_items"][0]["work_item_id"], "executor-work")
+        projected = ArtifactProjector().project(result)
+        self.assertEqual(projected["plan_graph"]["work_items"][0]["work_item_id"], "executor-work")
 
     def test_invalid_requested_artifact_target_fails_closed(self) -> None:
         state: dict[str, Any] = {}

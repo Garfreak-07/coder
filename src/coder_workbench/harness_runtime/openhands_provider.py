@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -14,6 +15,11 @@ from .profiles import OPENHANDS_PROVIDER_ID
 from .runtime_context import HarnessRunRequest, HarnessRunResult
 from .sandbox import SandboxPreparationError, collect_workspace_changes, prepare_sandbox_workspace
 from .store import NativeRuntimeStore
+
+
+_INSUFFICIENT_PLANNER_OUTPUT_MESSAGE = (
+    "OpenHands workflow supervisor did not return an actionable planner_order or an explicit no-work rationale."
+)
 
 
 class OpenHandsRuntimeProvider:
@@ -167,6 +173,7 @@ class OpenHandsRuntimeProvider:
                     )
 
                 summary = _summarize_run_output(run_output)
+                structured_artifact = _extract_structured_artifact(run_output, artifact_type=str(artifact_type or ""))
                 facts = _merge_runtime_facts(
                     _runtime_facts(run_output),
                     self._sandbox_facts(request, sandbox),
@@ -174,6 +181,35 @@ class OpenHandsRuntimeProvider:
                 facts["native_event_refs"] = _dedupe(
                     [sandbox_event.event_id, started_event.event_id, *facts["native_event_refs"]]
                 )
+                if artifact_type == "planner_order":
+                    planner_artifact, planner_error = _planner_order_artifact_from_structured(
+                        structured_artifact,
+                        request=request,
+                        summary=summary,
+                    )
+                    if planner_error is not None:
+                        return self._failed(
+                            request,
+                            emit=emit,
+                            code="insufficient_structured_planner_output",
+                            message=_INSUFFICIENT_PLANNER_OUTPUT_MESSAGE,
+                            native_type="planner_output.insufficient",
+                            status="blocked",
+                            refs=[
+                                selected_event.event_id,
+                                sandbox_event.event_id,
+                                started_event.event_id,
+                                *facts["native_event_refs"],
+                            ],
+                            payload={
+                                "code": "insufficient_structured_planner_output",
+                                "message": _INSUFFICIENT_PLANNER_OUTPUT_MESSAGE,
+                                "reason": planner_error,
+                                "structured_artifact_found": structured_artifact is not None,
+                                "output_type": type(run_output).__name__,
+                            },
+                        )
+                    structured_artifact = planner_artifact
         except SandboxPreparationError as exc:
             return self._failed(
                 request,
@@ -221,6 +257,7 @@ class OpenHandsRuntimeProvider:
                 summary=summary,
                 evidence_refs=evidence_refs,
                 facts=facts,
+                structured_artifact=structured_artifact,
             ),
             native_event_refs=refs,
             evidence_refs=evidence_refs,
@@ -553,7 +590,18 @@ def _artifact_for_success(
     summary: str,
     evidence_refs: list[str],
     facts: dict[str, Any],
+    structured_artifact: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if structured_artifact is not None:
+        if artifact_type == "planner_order":
+            return structured_artifact
+        if artifact_type == "planner_decision":
+            return _planner_decision_artifact_from_structured(structured_artifact, request=request, summary=summary)
+        if artifact_type == "final_report":
+            return _final_report_artifact_from_structured(structured_artifact, summary=summary, evidence_refs=evidence_refs)
+        if artifact_type == "project_plan_draft":
+            return _project_plan_draft_from_structured(structured_artifact, request=request, summary=summary)
+
     if artifact_type == "execution_result":
         checks_run = _check_records(facts.get("checks_run"))
         verification_status = "pass" if _has_passing_check(checks_run) else "skipped"
@@ -785,6 +833,300 @@ def _has_runtime_evidence(facts: dict[str, Any]) -> bool:
             "checks_run",
         )
     )
+
+
+def _extract_structured_artifact(run_output: Any, *, artifact_type: str) -> dict[str, Any] | None:
+    seen: set[int] = set()
+    for source in _structured_sources(run_output):
+        candidate = _structured_candidate(source, artifact_type=artifact_type, seen=seen)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _structured_sources(run_output: Any) -> list[Any]:
+    sources = [run_output]
+    for attr in (
+        "artifact",
+        "artifacts",
+        "structured_output",
+        "output",
+        "result",
+        "final_message",
+        "message",
+        "content",
+        "summary",
+    ):
+        if isinstance(run_output, dict):
+            if attr in run_output:
+                sources.append(run_output[attr])
+            continue
+        value = getattr(run_output, attr, None)
+        if value is not None:
+            sources.append(value)
+    return sources
+
+
+def _structured_candidate(value: Any, *, artifact_type: str, seen: set[int]) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    value_id = id(value)
+    if value_id in seen:
+        return None
+    seen.add(value_id)
+
+    if isinstance(value, dict):
+        artifact = _artifact_like_dict(value, artifact_type=artifact_type)
+        if artifact is not None:
+            return artifact
+        for key in ("artifact", "structured_output", "output", "result"):
+            nested = _structured_candidate(value.get(key), artifact_type=artifact_type, seen=seen)
+            if nested is not None:
+                return nested
+        artifacts = value.get("artifacts")
+        nested = _structured_candidate(artifacts, artifact_type=artifact_type, seen=seen)
+        if nested is not None:
+            return nested
+        return None
+
+    if isinstance(value, list):
+        for item in value:
+            nested = _structured_candidate(item, artifact_type=artifact_type, seen=seen)
+            if nested is not None:
+                return nested
+        return None
+
+    if isinstance(value, tuple):
+        for item in value:
+            nested = _structured_candidate(item, artifact_type=artifact_type, seen=seen)
+            if nested is not None:
+                return nested
+        return None
+
+    if isinstance(value, str):
+        for record in _json_objects_from_text(value):
+            nested = _structured_candidate(record, artifact_type=artifact_type, seen=seen)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _artifact_like_dict(value: dict[str, Any], *, artifact_type: str) -> dict[str, Any] | None:
+    current_type = str(value.get("artifact_type") or "").strip()
+    if current_type:
+        return dict(value) if current_type == artifact_type else None
+    if artifact_type == "planner_order" and any(
+        key in value for key in ("plan_graph", "work_items", "no_work_rationale", "no_work_reason", "no_executor_work_rationale")
+    ):
+        artifact = dict(value)
+        artifact["artifact_type"] = "planner_order"
+        return artifact
+    if artifact_type == "planner_decision" and any(key in value for key in ("next_action", "task_done", "final_status")):
+        artifact = dict(value)
+        artifact["artifact_type"] = "planner_decision"
+        return artifact
+    if artifact_type == "final_report" and any(key in value for key in ("completed", "blocked_by", "failed_by", "checks")):
+        artifact = dict(value)
+        artifact["artifact_type"] = "final_report"
+        return artifact
+    if artifact_type == "project_plan_draft" and any(key in value for key in ("draft_id", "proposed_scope", "success_criteria")):
+        artifact = dict(value)
+        artifact["artifact_type"] = "project_plan_draft"
+        return artifact
+    return None
+
+
+def _json_objects_from_text(text: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for match in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.IGNORECASE | re.DOTALL):
+        parsed = _parse_json_object(match.group(1))
+        if parsed is not None:
+            records.append(parsed)
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            parsed, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            records.append(parsed)
+    return records
+
+
+def _parse_json_object(text: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _planner_order_artifact_from_structured(
+    structured_artifact: dict[str, Any] | None,
+    *,
+    request: HarnessRunRequest,
+    summary: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if structured_artifact is None:
+        return None, "no structured planner_order artifact was found"
+
+    work_items, work_item_error = _planner_order_work_items(structured_artifact)
+    no_work_rationale = _no_work_rationale(structured_artifact)
+    if work_items is None:
+        return None, work_item_error or "planner_order work_items are invalid"
+    if not work_items and not no_work_rationale:
+        return None, "planner_order has no work_items and no explicit no-work rationale"
+
+    round_goal = _string_value(structured_artifact.get("round_goal")) or no_work_rationale or summary
+    artifact = {
+        "artifact_type": "planner_order",
+        "round": _positive_int(structured_artifact.get("round"), request.context.round or 1),
+        "round_goal": round_goal or "OpenHands workflow supervisor produced a planner_order.",
+        "plan_graph": {"work_items": work_items},
+        "instructions_for_executor": _string_list_value(structured_artifact.get("instructions_for_executor")),
+        "allowed_actions": _string_list_value(structured_artifact.get("allowed_actions")),
+        "forbidden_actions": _string_list_value(structured_artifact.get("forbidden_actions")),
+        "target_files_or_outputs": _string_list_value(structured_artifact.get("target_files_or_outputs")),
+        "expected_outputs": _string_list_value(structured_artifact.get("expected_outputs")),
+        "risk_level": _risk_level(structured_artifact.get("risk_level")),
+        "requires_human_confirmation": bool(structured_artifact.get("requires_human_confirmation") or False),
+        "stop_and_return_to_planner_when": _string_list_value(
+            structured_artifact.get("stop_and_return_to_planner_when")
+        ),
+    }
+    if no_work_rationale and not work_items:
+        artifact["instructions_for_executor"] = _dedupe(
+            [*artifact["instructions_for_executor"], no_work_rationale]
+        )
+        artifact["expected_outputs"] = _dedupe(
+            [*artifact["expected_outputs"], "No executor output is expected because no executor work is needed."]
+        )
+    return artifact, None
+
+
+def _planner_order_work_items(structured_artifact: dict[str, Any]) -> tuple[list[dict[str, Any]] | None, str | None]:
+    plan_graph = structured_artifact.get("plan_graph")
+    if isinstance(plan_graph, dict):
+        raw_items = plan_graph.get("work_items")
+    else:
+        raw_items = structured_artifact.get("work_items")
+    if raw_items is None:
+        return [], None
+    if not isinstance(raw_items, list):
+        return None, "planner_order work_items must be a list"
+
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            return None, f"work_item {index} is not an object"
+        work_item_id = _string_value(item.get("work_item_id"))
+        assignee_agent_id = _string_value(item.get("assignee_agent_id"))
+        task_summary = _string_value(item.get("task_summary"))
+        if not (work_item_id and assignee_agent_id and task_summary):
+            return None, f"work_item {index} missing work_item_id, assignee_agent_id, or task_summary"
+        merge_index = _positive_int(item.get("merge_index", item.get("order_index")), index)
+        depends_on = _string_list_value(item.get("depends_on"))
+        items.append(
+            {
+                "work_item_id": work_item_id,
+                "merge_index": merge_index,
+                "assignee_agent_id": assignee_agent_id,
+                "task_summary": task_summary,
+                "depends_on": depends_on,
+            }
+        )
+    return items, None
+
+
+def _no_work_rationale(value: dict[str, Any]) -> str:
+    for key in ("no_work_rationale", "no_work_reason", "no_executor_work_rationale"):
+        text = _string_value(value.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _planner_decision_artifact_from_structured(
+    structured_artifact: dict[str, Any],
+    *,
+    request: HarnessRunRequest,
+    summary: str,
+) -> dict[str, Any]:
+    artifact = dict(structured_artifact)
+    artifact["artifact_type"] = "planner_decision"
+    artifact.setdefault("round", request.context.round or 1)
+    artifact.setdefault("task_done", artifact.get("next_action") == "finish")
+    artifact.setdefault("next_action", "finish")
+    artifact.setdefault("risk_level", "low")
+    artifact.setdefault("requires_human_confirmation", False)
+    artifact.setdefault("reason", summary or "OpenHands workflow supervisor completed.")
+    artifact.setdefault("next_round_goal", "")
+    artifact.setdefault("remaining_auto_rounds", 0)
+    artifact.setdefault("human_message", None)
+    return artifact
+
+
+def _final_report_artifact_from_structured(
+    structured_artifact: dict[str, Any],
+    *,
+    summary: str,
+    evidence_refs: list[str],
+) -> dict[str, Any]:
+    artifact = dict(structured_artifact)
+    artifact["artifact_type"] = "final_report"
+    artifact.setdefault("status", "completed")
+    artifact.setdefault("summary", summary or "OpenHands workflow supervisor completed.")
+    artifact.setdefault("checks", [])
+    artifact.setdefault("completed", [artifact["summary"]] if artifact.get("status") == "completed" else [])
+    artifact.setdefault("blocked_by", [])
+    artifact.setdefault("failed_by", [])
+    artifact.setdefault("warnings", [])
+    artifact.setdefault("notes", [])
+    artifact.setdefault("next_steps", [])
+    artifact.setdefault("evidence_refs", evidence_refs)
+    return artifact
+
+
+def _project_plan_draft_from_structured(
+    structured_artifact: dict[str, Any],
+    *,
+    request: HarnessRunRequest,
+    summary: str,
+) -> dict[str, Any]:
+    artifact = dict(structured_artifact)
+    artifact["artifact_type"] = "project_plan_draft"
+    artifact.setdefault("draft_id", request.request_id)
+    artifact.setdefault("summary", summary or "OpenHands produced a planning draft.")
+    artifact.setdefault("proposed_scope", [])
+    artifact.setdefault("success_criteria", ["Confirm the draft before execution."])
+    artifact.setdefault("risks", [])
+    artifact.setdefault("requires_confirmation", True)
+    return artifact
+
+
+def _string_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _string_list_value(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return max(1, int(default))
+
+
+def _risk_level(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in {"low", "medium", "high"} else "low"
 
 
 def _string_list_fact(run_output: Any, *names: str) -> list[str]:
