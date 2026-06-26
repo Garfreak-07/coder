@@ -157,6 +157,7 @@ class PlannerOrderArtifact(PlannerArtifactBase):
     round: int = Field(default=1, ge=1)
     round_goal: str
     plan_graph: PlannerOrderPlanGraph | None = None
+    no_work_rationale: str | None = None
     instructions_for_executor: list[str] = Field(default_factory=list)
     allowed_actions: list[str] = Field(default_factory=list)
     forbidden_actions: list[str] = Field(default_factory=list)

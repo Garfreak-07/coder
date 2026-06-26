@@ -198,6 +198,33 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
         self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
 
+    def test_planner_order_prompt_contains_strict_json_contract(self) -> None:
+        state: dict[str, Any] = {}
+        run_output = {
+            "artifact_type": "planner_order",
+            "round": 1,
+            "round_goal": "No executor action required.",
+            "plan_graph": {"work_items": []},
+            "no_work_rationale": "The requested state is already present.",
+        }
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_request(input_artifacts={"requested_artifact_type": "planner_order"}))
+
+        self.assertEqual(result.status, "completed")
+        prompt = state["conversation"]["prompt"]
+        self.assertIn("Return exactly one JSON object", prompt)
+        self.assertIn('"artifact_type": "planner_order"', prompt)
+        self.assertIn('"plan_graph"', prompt)
+        self.assertIn('"work_items"', prompt)
+        self.assertIn('"no_work_rationale"', prompt)
+        self.assertIn("Do not return prose", prompt)
+        self.assertIn("Never return an empty work_items list unless no_work_rationale is present", prompt)
+
     def test_unstructured_planner_order_output_blocks_instead_of_empty_success(self) -> None:
         state: dict[str, Any] = {}
         provider = OpenHandsRuntimeProvider(
@@ -238,6 +265,36 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertIn("already present", result.artifact["instructions_for_executor"][0])
         projected = ArtifactProjector().project(result)
         self.assertEqual(projected["artifact_type"], "planner_order")
+
+    def test_planner_order_output_from_conversation_events_can_succeed(self) -> None:
+        state: dict[str, Any] = {}
+        event = SimpleNamespace(
+            source="agent",
+            llm_message=SimpleNamespace(
+                content=[
+                    SimpleNamespace(
+                        text=(
+                            '{"artifact_type":"planner_order","round":1,'
+                            '"round_goal":"No executor action required.",'
+                            '"plan_graph":{"work_items":[]},'
+                            '"no_work_rationale":"The requested state is already present."}'
+                        )
+                    )
+                ]
+            ),
+        )
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=None, conversation_events=[event]),
+        )
+
+        with _env("LLM_API_KEY", "test-key"):
+            result = provider.run(_request(input_artifacts={"requested_artifact_type": "planner_order"}))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact_type, "planner_order")
+        self.assertEqual(result.artifact["plan_graph"]["work_items"], [])
+        self.assertIn("already present", result.artifact["no_work_rationale"])
 
     def test_structured_planner_order_output_with_work_items_succeeds(self) -> None:
         state: dict[str, Any] = {}
@@ -425,6 +482,7 @@ def _fake_sdk(
     run_error: Exception | None = None,
     run_output: Any | None = None,
     on_run: Any | None = None,
+    conversation_events: list[Any] | None = None,
 ) -> Any:
     class FakeLLM:
         def __init__(self, **kwargs: Any) -> None:
@@ -441,6 +499,7 @@ def _fake_sdk(
     class FakeConversation:
         def __init__(self, *, agent: Any, workspace: str) -> None:
             state["conversation"] = {"agent": agent, "workspace": workspace}
+            self.state = SimpleNamespace(events=conversation_events or [])
 
         def send_message(self, prompt: str) -> None:
             state["conversation"]["prompt"] = prompt

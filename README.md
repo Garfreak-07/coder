@@ -47,6 +47,13 @@ integration has been import-verified with `openhands-sdk` and `openhands-tools`
 1.29.2, but those packages remain optional until the adapter is fully wired and
 validated.
 
+Workflow Supervisor `planner_order` calls now include a strict Coder JSON
+output contract. OpenHands must return exactly one `planner_order` object with
+`plan_graph.work_items`; an empty work list is accepted only when
+`no_work_rationale` explains why no executor work is needed. Unstructured
+planner output still fails closed with
+`insufficient_structured_planner_output`.
+
 The ordinary Planner Chat path is explicit:
 
 ```text

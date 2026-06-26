@@ -161,6 +161,8 @@ class OpenHandsRuntimeProvider:
                     conversation = sdk.Conversation(agent=agent, workspace=str(workspace))
                     conversation.send_message(prompt)
                     run_output = conversation.run()
+                    if artifact_type == "planner_order":
+                        run_output = _with_conversation_event_sources(run_output, conversation)
                 except Exception as exc:
                     return self._failed(
                         request,
@@ -494,6 +496,7 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
         _append_section(lines, "Native runtime refs", _cold_refs(context_packet, "native_runtime"))
         _append_section(lines, "Diff refs", _cold_refs(context_packet, "diff"))
         _append_section(lines, "Log refs", _cold_refs(context_packet, "log"))
+        _append_artifact_output_contract(lines, artifact_target)
         return "\n\n".join(lines)
     lines.extend(
         [
@@ -510,6 +513,74 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
     _append_section(lines, "Selected memory pack IDs", _dig(context_packet, "hot", "selected_memory_pack_ids"))
     return "\n\n".join(lines)
 
+
+def _append_artifact_output_contract(lines: list[str], artifact_target: str) -> None:
+    if artifact_target == "planner_order":
+        _append_planner_order_output_contract(lines)
+
+
+def _append_planner_order_output_contract(lines: list[str]) -> None:
+    lines.extend(
+        [
+            "Output contract for Coder:",
+            "Return exactly one JSON object.",
+            "Do not return prose before or after the JSON object.",
+            "Do not wrap the JSON in Markdown unless the runtime forces Markdown formatting.",
+            "The JSON object must be one of the following two shapes.",
+            "",
+            "Shape A: actionable planner_order with executor work:",
+            _safe_json(
+                {
+                    "artifact_type": "planner_order",
+                    "round": 1,
+                    "round_goal": "One concise sentence describing the current execution round.",
+                    "plan_graph": {
+                        "work_items": [
+                            {
+                                "work_item_id": "executor-work-1",
+                                "merge_index": 1,
+                                "assignee_agent_id": "executor",
+                                "task_summary": "Concrete executor task summary.",
+                                "depends_on": [],
+                            }
+                        ]
+                    },
+                    "instructions_for_executor": ["Concrete bounded implementation instructions."],
+                    "allowed_actions": ["modify_files", "run_commands"],
+                    "forbidden_actions": ["commit", "push", "deploy"],
+                    "expected_outputs": ["execution_result with evidence refs"],
+                    "risk_level": "low",
+                    "requires_human_confirmation": False,
+                }
+            ),
+            "",
+            "Shape B: explicit no-work planner_order:",
+            _safe_json(
+                {
+                    "artifact_type": "planner_order",
+                    "round": 1,
+                    "round_goal": "No executor action is required.",
+                    "plan_graph": {"work_items": []},
+                    "no_work_rationale": (
+                        "Explain why the request is already satisfied or why no executor work is needed."
+                    ),
+                    "instructions_for_executor": [],
+                    "allowed_actions": [],
+                    "forbidden_actions": ["write_files", "run_commands", "commit", "push", "deploy"],
+                    "expected_outputs": ["No executor output is expected."],
+                    "risk_level": "low",
+                    "requires_human_confirmation": False,
+                }
+            ),
+            "",
+            "Rules:",
+            "- Use Shape A when the user request requires repository changes, checks, investigation, or implementation.",
+            "- Use Shape B only when no executor work is genuinely needed.",
+            "- Never return an empty work_items list unless no_work_rationale is present.",
+            "- If you cannot produce one of these JSON objects, return the closest valid blocked planner_order JSON instead of prose.",
+            "- The JSON is the answer. Do not add explanation outside it.",
+        ]
+    )
 
 def _append_section(lines: list[str], title: str, value: Any) -> None:
     if value in (None, "", [], {}):
@@ -542,6 +613,57 @@ def _cold_refs(context_packet: dict[str, Any], ref_type: str) -> list[str]:
         if isinstance(record, dict) and record.get("ref_type") == ref_type and isinstance(record.get("refs"), list):
             refs.extend(str(ref) for ref in record["refs"])
     return refs
+
+
+def _with_conversation_event_sources(run_output: Any, conversation: Any) -> Any:
+    event_texts = _conversation_agent_event_texts(conversation)
+    if not event_texts:
+        return run_output
+    if run_output is None:
+        return event_texts
+    return [run_output, *event_texts]
+
+
+def _conversation_agent_event_texts(conversation: Any) -> list[str]:
+    state = getattr(conversation, "state", None)
+    events = getattr(state, "events", None)
+    if events is None:
+        return []
+    try:
+        event_list = list(events)
+    except TypeError:
+        return []
+
+    texts: list[str] = []
+    for event in reversed(event_list):
+        if str(getattr(event, "source", "")).lower() != "agent":
+            continue
+        message = getattr(event, "llm_message", None)
+        text = _content_text(getattr(message, "content", None))
+        if text:
+            texts.append(text)
+    return texts
+
+
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if isinstance(item, str):
+            parts.append(item)
+            continue
+        if isinstance(item, dict):
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+            continue
+        text = getattr(item, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return "\n".join(part.strip() for part in parts if part.strip())
 
 
 def _artifact_type_for_request(request: HarnessRunRequest) -> tuple[str | None, str | None]:
@@ -998,6 +1120,7 @@ def _planner_order_artifact_from_structured(
         ),
     }
     if no_work_rationale and not work_items:
+        artifact["no_work_rationale"] = no_work_rationale
         artifact["instructions_for_executor"] = _dedupe(
             [*artifact["instructions_for_executor"], no_work_rationale]
         )
