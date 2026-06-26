@@ -20,6 +20,44 @@ from .store import NativeRuntimeStore
 _INSUFFICIENT_PLANNER_OUTPUT_MESSAGE = (
     "OpenHands workflow supervisor did not return an actionable planner_order or an explicit no-work rationale."
 )
+_INSUFFICIENT_EXECUTION_RESULT_MESSAGE = (
+    "OpenHands task executor did not return exactly one structured execution_result artifact."
+)
+
+_BLOCKER_TYPES = {
+    "test_failed",
+    "command_failed",
+    "schema_validation_failed",
+    "command_unavailable",
+    "missing_dependency",
+    "missing_file",
+    "scope_violation",
+    "risk_path_blocked",
+    "permission_boundary",
+    "missing_secret",
+    "network_required",
+    "external_account_required",
+    "timeout",
+    "context_missing",
+    "tool_unavailable",
+    "sandbox_unavailable",
+    "unknown_error",
+}
+_LEGACY_BLOCKER_TYPES = {
+    "dependency_missing": "missing_dependency",
+    "technical_blocker": "unknown_error",
+    "verification_failed": "test_failed",
+    "permission_blocked": "permission_boundary",
+    "tool_error": "tool_unavailable",
+    "out_of_contract": "scope_violation",
+    "scope_boundary": "scope_violation",
+    "risk_boundary": "risk_path_blocked",
+    "unsafe_action": "risk_path_blocked",
+    "patch_rejected": "risk_path_blocked",
+    "transient_error_exhausted": "unknown_error",
+    "ambiguity": "context_missing",
+    "plan_conflict": "unknown_error",
+}
 
 
 class OpenHandsRuntimeProvider:
@@ -161,7 +199,11 @@ class OpenHandsRuntimeProvider:
                     conversation = sdk.Conversation(agent=agent, workspace=str(workspace))
                     conversation.send_message(prompt)
                     run_output = conversation.run()
-                    if artifact_type == "planner_order":
+                    conversation_facts = _conversation_runtime_facts(conversation)
+                    if artifact_type in {"planner_order", "execution_result"} and _extract_structured_artifact(
+                        run_output,
+                        artifact_type=artifact_type,
+                    ) is None:
                         run_output = _with_conversation_event_sources(run_output, conversation)
                 except Exception as exc:
                     return self._failed(
@@ -175,14 +217,86 @@ class OpenHandsRuntimeProvider:
                     )
 
                 summary = _summarize_run_output(run_output)
-                structured_artifact = _extract_structured_artifact(run_output, artifact_type=str(artifact_type or ""))
+                if artifact_type == "execution_result":
+                    structured_artifact, execution_extract_error = _extract_single_structured_artifact(
+                        run_output,
+                        artifact_type="execution_result",
+                    )
+                else:
+                    structured_artifact = _extract_structured_artifact(run_output, artifact_type=str(artifact_type or ""))
+                    execution_extract_error = None
                 facts = _merge_runtime_facts(
                     _runtime_facts(run_output),
+                    conversation_facts,
                     self._sandbox_facts(request, sandbox),
                 )
                 facts["native_event_refs"] = _dedupe(
                     [sandbox_event.event_id, started_event.event_id, *facts["native_event_refs"]]
                 )
+                execution_result_status = "completed"
+                if artifact_type == "execution_result":
+                    if execution_extract_error is not None:
+                        return self._failed(
+                            request,
+                            emit=emit,
+                            code="insufficient_structured_execution_result",
+                            message=_INSUFFICIENT_EXECUTION_RESULT_MESSAGE,
+                            native_type="execution_result.insufficient",
+                            status="blocked",
+                            refs=[
+                                selected_event.event_id,
+                                sandbox_event.event_id,
+                                started_event.event_id,
+                                *facts["native_event_refs"],
+                            ],
+                            payload={
+                                "code": "insufficient_structured_execution_result",
+                                "message": _INSUFFICIENT_EXECUTION_RESULT_MESSAGE,
+                                "reason": execution_extract_error,
+                                "structured_artifact_found": structured_artifact is not None,
+                                "output_type": type(run_output).__name__,
+                            },
+                        )
+                    provisional_refs = _dedupe(
+                        [
+                            selected_event.event_id,
+                            sandbox_event.event_id,
+                            started_event.event_id,
+                            *facts["native_event_refs"],
+                            *facts["evidence_refs"],
+                        ]
+                    )
+                    execution_artifact, execution_error = _execution_result_artifact_from_structured(
+                        structured_artifact,
+                        request=request,
+                        summary=summary,
+                        evidence_refs=provisional_refs,
+                        facts=facts,
+                    )
+                    if execution_error is not None:
+                        return self._failed(
+                            request,
+                            emit=emit,
+                            code="insufficient_structured_execution_result",
+                            message=_INSUFFICIENT_EXECUTION_RESULT_MESSAGE,
+                            native_type="execution_result.insufficient",
+                            status="blocked",
+                            refs=[
+                                selected_event.event_id,
+                                sandbox_event.event_id,
+                                started_event.event_id,
+                                *facts["native_event_refs"],
+                            ],
+                            payload={
+                                "code": "insufficient_structured_execution_result",
+                                "message": _INSUFFICIENT_EXECUTION_RESULT_MESSAGE,
+                                "reason": execution_error,
+                                "structured_artifact_found": structured_artifact is not None,
+                                "output_type": type(run_output).__name__,
+                            },
+                        )
+                    structured_artifact = execution_artifact
+                    execution_result_status = str(execution_artifact.get("status") or "completed")
                 if artifact_type == "planner_order":
                     planner_artifact, planner_error = _planner_order_artifact_from_structured(
                         structured_artifact,
@@ -251,7 +365,7 @@ class OpenHandsRuntimeProvider:
             native_event_refs=refs,
         )
         return HarnessRunResult(
-            status="completed",
+            status=execution_result_status if artifact_type == "execution_result" else "completed",
             artifact_type=artifact_type,
             artifact=_artifact_for_success(
                 request,
@@ -467,6 +581,7 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
                 "Return a concise completion summary and verification evidence.",
             ]
         )
+        _append_artifact_output_contract(lines, artifact_target)
         _append_section(lines, "Work item", request.input_artifacts.get("work_item") or _dig(context_packet, "hot", "work_item"))
         _append_section(
             lines,
@@ -517,6 +632,8 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
 def _append_artifact_output_contract(lines: list[str], artifact_target: str) -> None:
     if artifact_target == "planner_order":
         _append_planner_order_output_contract(lines)
+    elif artifact_target == "execution_result":
+        _append_execution_result_output_contract(lines)
 
 
 def _append_planner_order_output_contract(lines: list[str]) -> None:
@@ -582,6 +699,112 @@ def _append_planner_order_output_contract(lines: list[str]) -> None:
         ]
     )
 
+
+def _append_execution_result_output_contract(lines: list[str]) -> None:
+    lines.extend(
+        [
+            "OpenHands Structured Execution Result Contract v1:",
+            "Return exactly one JSON object.",
+            "Do not return prose before or after the JSON object.",
+            "Do not wrap the JSON in Markdown unless the runtime forces Markdown formatting.",
+            'The JSON object must include "artifact_type": "execution_result".',
+            "The JSON object must be one of the following three shapes.",
+            "",
+            "Shape A: completed execution_result with evidence:",
+            _safe_json(
+                {
+                    "artifact_type": "execution_result",
+                    "round": 1,
+                    "work_item_id": "executor-work-1",
+                    "agent_id": "executor",
+                    "status": "completed",
+                    "summary": "Implemented the requested change.",
+                    "changed_files": ["path/to/file.py"],
+                    "created_files": [],
+                    "deleted_files": [],
+                    "patch_refs": [],
+                    "attempted_actions": ["python -m unittest discover tests"],
+                    "evidence_refs": [],
+                    "verification": {
+                        "status": "pass",
+                        "checks_run": [
+                            {
+                                "check_id": "check-1",
+                                "kind": "command",
+                                "command": "python -m unittest discover tests",
+                                "status": "pass",
+                                "summary": "All tests passed.",
+                            }
+                        ],
+                        "evidence_refs": [],
+                        "confidence": "medium",
+                    },
+                }
+            ),
+            "",
+            "Shape B: completed no-op execution_result:",
+            _safe_json(
+                {
+                    "artifact_type": "execution_result",
+                    "round": 1,
+                    "work_item_id": "executor-work-1",
+                    "agent_id": "executor",
+                    "status": "completed",
+                    "summary": "No changes were needed.",
+                    "changed_files": [],
+                    "created_files": [],
+                    "deleted_files": [],
+                    "patch_refs": [],
+                    "attempted_actions": [],
+                    "evidence_refs": [],
+                    "no_op_rationale": "Explain why no changes were needed.",
+                    "verification": {
+                        "status": "skipped",
+                        "checks_run": [],
+                        "no_check_rationale": "Explain why no checks were run.",
+                        "evidence_refs": [],
+                        "confidence": "medium",
+                    },
+                }
+            ),
+            "",
+            "Shape C: blocked execution_result:",
+            _safe_json(
+                {
+                    "artifact_type": "execution_result",
+                    "round": 1,
+                    "work_item_id": "executor-work-1",
+                    "agent_id": "executor",
+                    "status": "blocked",
+                    "summary": "Execution could not proceed.",
+                    "blocker_type": "test_failed",
+                    "blocker_reason": "Explain the blocker.",
+                    "executor_recovery_exhausted": True,
+                    "planner_recommendation": "finish",
+                    "remaining_work": ["Describe remaining work."],
+                    "unexpected_issues": ["Describe unexpected issue."],
+                    "evidence_refs": [],
+                    "verification": {
+                        "status": "blocked",
+                        "checks_run": [],
+                        "evidence_refs": [],
+                        "confidence": "medium",
+                        "remaining_work": ["Describe remaining work."],
+                    },
+                }
+            ),
+            "",
+            "Rules:",
+            "- Runtime-observed file changes, patch refs, logs, evidence refs, commands, and checks are the source of truth.",
+            "- verification.status may be pass only when an explicit check command actually passed.",
+            "- If no checks were run, use verification.status skipped and include no_check_rationale.",
+            "- If no files changed, no commands ran, no checks ran, and no no_op_rationale applies, return Shape C.",
+            "- Do not claim commits, pushes, deploys, user interaction, or long-term memory writes.",
+            "- The JSON is the answer. Do not add explanation outside it.",
+        ]
+    )
+
+
 def _append_section(lines: list[str], title: str, value: Any) -> None:
     if value in (None, "", [], {}):
         return
@@ -625,24 +848,129 @@ def _with_conversation_event_sources(run_output: Any, conversation: Any) -> Any:
 
 
 def _conversation_agent_event_texts(conversation: Any) -> list[str]:
-    state = getattr(conversation, "state", None)
-    events = getattr(state, "events", None)
-    if events is None:
-        return []
-    try:
-        event_list = list(events)
-    except TypeError:
+    event_list = _conversation_events(conversation)
+    if not event_list:
         return []
 
     texts: list[str] = []
     for event in reversed(event_list):
         if str(getattr(event, "source", "")).lower() != "agent":
             continue
+        finish_message = _finish_action_message(event)
+        if finish_message:
+            texts.append(finish_message)
+            continue
         message = getattr(event, "llm_message", None)
         text = _content_text(getattr(message, "content", None))
         if text:
             texts.append(text)
     return texts
+
+
+def _conversation_runtime_facts(conversation: Any) -> dict[str, Any]:
+    facts = _empty_runtime_facts()
+    action_by_id: dict[str, str] = {}
+    for event in _conversation_events(conversation):
+        event_id = _string_value(getattr(event, "id", None))
+        tool_name = str(getattr(event, "tool_name", "") or "").strip().lower()
+        source = str(getattr(event, "source", "") or "").strip().lower()
+        action = getattr(event, "action", None)
+        if source == "agent" and action is not None:
+            action_summary = _action_attempt_summary(tool_name, action)
+            if action_summary:
+                facts["commands_run"].append(action_summary)
+                if event_id:
+                    action_by_id[event_id] = action_summary
+            continue
+
+        observation = getattr(event, "observation", None)
+        if observation is None:
+            continue
+        if tool_name != "terminal":
+            continue
+        command = _string_value(getattr(observation, "command", None)) or action_by_id.get(
+            _string_value(getattr(event, "action_id", None)),
+            "",
+        )
+        if not command:
+            continue
+        facts["checks_run"].append(_terminal_check_record(command, observation, event_id=event_id))
+    facts["commands_run"] = _dedupe(facts["commands_run"])
+    facts["checks_run"] = _dedupe_checks(facts["checks_run"])
+    return facts
+
+
+def _conversation_events(conversation: Any) -> list[Any]:
+    state = getattr(conversation, "state", None)
+    events = getattr(state, "events", None)
+    if events is None:
+        return []
+    try:
+        return list(events)
+    except TypeError:
+        return []
+
+
+def _finish_action_message(event: Any) -> str:
+    if str(getattr(event, "tool_name", "")).lower() != "finish":
+        return ""
+    action = getattr(event, "action", None)
+    return _string_value(getattr(action, "message", None))
+
+
+def _action_attempt_summary(tool_name: str, action: Any) -> str:
+    if tool_name == "terminal":
+        command = _string_value(getattr(action, "command", None))
+        if not command or getattr(action, "is_input", False):
+            return ""
+        return command
+    if tool_name == "file_editor":
+        command = _string_value(getattr(action, "command", None))
+        path = _string_value(getattr(action, "path", None))
+        if not command or command == "view":
+            return ""
+        return " ".join(part for part in ("file_editor", command, path) if part)
+    return ""
+
+
+def _terminal_check_record(command: str, observation: Any, *, event_id: str) -> dict[str, Any]:
+    exit_code = _observation_exit_code(observation)
+    is_error = bool(getattr(observation, "is_error", False))
+    timeout = bool(getattr(observation, "timeout", False))
+    if timeout or exit_code == -1:
+        status = "blocked"
+    elif is_error or (exit_code is not None and exit_code != 0):
+        status = "fail"
+    elif exit_code == 0:
+        status = "pass"
+    else:
+        status = "skipped"
+    return {
+        "check_id": event_id or None,
+        "kind": "command",
+        "command": command,
+        "status": status,
+        "summary": _observation_summary(observation) or command,
+    }
+
+
+def _observation_exit_code(observation: Any) -> int | None:
+    value = getattr(observation, "exit_code", None)
+    if value is None:
+        metadata = getattr(observation, "metadata", None)
+        value = getattr(metadata, "exit_code", None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _observation_summary(observation: Any) -> str:
+    text = _string_value(getattr(observation, "text", None))
+    if not text:
+        return ""
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    return first_line[:240]
 
 
 def _content_text(content: Any) -> str:
@@ -716,6 +1044,8 @@ def _artifact_for_success(
 ) -> dict[str, Any]:
     if structured_artifact is not None:
         if artifact_type == "planner_order":
+            return structured_artifact
+        if artifact_type == "execution_result":
             return structured_artifact
         if artifact_type == "planner_decision":
             return _planner_decision_artifact_from_structured(structured_artifact, request=request, summary=summary)
@@ -903,6 +1233,8 @@ def _summarize_run_output(run_output: Any) -> str:
 
 
 def _runtime_facts(run_output: Any) -> dict[str, Any]:
+    if _is_model_declared_execution_result(run_output):
+        return _empty_runtime_facts()
     return {
         "changed_files": _string_list_fact(run_output, "changed_files"),
         "created_files": _string_list_fact(run_output, "created_files"),
@@ -914,6 +1246,10 @@ def _runtime_facts(run_output: Any) -> dict[str, Any]:
         "checks_run": _check_records(_fact_value(run_output, "checks_run")),
         "native_event_refs": [],
     }
+
+
+def _is_model_declared_execution_result(run_output: Any) -> bool:
+    return isinstance(run_output, dict) and str(run_output.get("artifact_type") or "") == "execution_result"
 
 
 def _empty_runtime_facts() -> dict[str, Any]:
@@ -966,6 +1302,33 @@ def _extract_structured_artifact(run_output: Any, *, artifact_type: str) -> dict
     return None
 
 
+def _extract_single_structured_artifact(
+    run_output: Any,
+    *,
+    artifact_type: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    candidates = _structured_artifacts(run_output, artifact_type=artifact_type)
+    if len(candidates) == 1:
+        return candidates[0], None
+    if not candidates:
+        return None, f"no structured {artifact_type} artifact was found"
+    return None, f"expected exactly one structured {artifact_type} artifact, found {len(candidates)}"
+
+
+def _structured_artifacts(run_output: Any, *, artifact_type: str) -> list[dict[str, Any]]:
+    seen_ids: set[int] = set()
+    seen_payloads: set[str] = set()
+    artifacts: list[dict[str, Any]] = []
+    for source in _structured_sources(run_output):
+        for candidate in _structured_candidates(source, artifact_type=artifact_type, seen=seen_ids):
+            payload_key = json.dumps(candidate, sort_keys=True, default=str)
+            if payload_key in seen_payloads:
+                continue
+            seen_payloads.add(payload_key)
+            artifacts.append(candidate)
+    return artifacts
+
+
 def _structured_sources(run_output: Any) -> list[Any]:
     sources = [run_output]
     for attr in (
@@ -987,6 +1350,66 @@ def _structured_sources(run_output: Any) -> list[Any]:
         if value is not None:
             sources.append(value)
     return sources
+
+
+def _structured_candidates(value: Any, *, artifact_type: str, seen: set[int]) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    value_id = id(value)
+    if value_id in seen:
+        return []
+    seen.add(value_id)
+
+    if isinstance(value, dict):
+        artifact = _artifact_like_dict(value, artifact_type=artifact_type)
+        if artifact is not None:
+            return [artifact]
+        candidates: list[dict[str, Any]] = []
+        for key in ("artifact", "structured_output", "output", "result", "final_message", "message"):
+            candidates.extend(_structured_candidates(value.get(key), artifact_type=artifact_type, seen=seen))
+        candidates.extend(_structured_candidates(value.get("artifacts"), artifact_type=artifact_type, seen=seen))
+        return candidates
+
+    if isinstance(value, list):
+        candidates = []
+        for item in value:
+            candidates.extend(_structured_candidates(item, artifact_type=artifact_type, seen=seen))
+        return candidates
+
+    if isinstance(value, tuple):
+        candidates = []
+        for item in value:
+            candidates.extend(_structured_candidates(item, artifact_type=artifact_type, seen=seen))
+        return candidates
+
+    if isinstance(value, str):
+        final_message_candidates = _final_message_structured_candidates(
+            value,
+            artifact_type=artifact_type,
+            seen=seen,
+        )
+        if final_message_candidates:
+            return final_message_candidates
+        candidates = []
+        for record in _json_objects_from_text(value):
+            candidates.extend(_structured_candidates(record, artifact_type=artifact_type, seen=seen))
+        return candidates
+
+    return []
+
+
+def _final_message_structured_candidates(text: str, *, artifact_type: str, seen: set[int]) -> list[dict[str, Any]]:
+    marker = "Finish with message:"
+    marker_index = text.rfind(marker)
+    if marker_index < 0:
+        return []
+    final_text = text[marker_index + len(marker) :].strip()
+    if not final_text:
+        return []
+    candidates: list[dict[str, Any]] = []
+    for record in _json_objects_from_text(final_text):
+        candidates.extend(_structured_candidates(record, artifact_type=artifact_type, seen=seen))
+    return candidates
 
 
 def _structured_candidate(value: Any, *, artifact_type: str, seen: set[int]) -> dict[str, Any] | None:
@@ -1172,6 +1595,200 @@ def _no_work_rationale(value: dict[str, Any]) -> str:
     return ""
 
 
+def _execution_result_artifact_from_structured(
+    structured_artifact: dict[str, Any] | None,
+    *,
+    request: HarnessRunRequest,
+    summary: str,
+    evidence_refs: list[str],
+    facts: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    if structured_artifact is None:
+        return None, "no structured execution_result artifact was found"
+
+    status = str(structured_artifact.get("status") or "").strip().lower()
+    if status not in {"completed", "blocked"}:
+        return None, "execution_result.status must be completed or blocked"
+
+    checks_run = _check_records(facts.get("checks_run"))
+    failed_checks = [check for check in checks_run if check.get("status") in {"fail", "blocked"}]
+    if status == "blocked":
+        return _blocked_execution_result_artifact_from_structured(
+            structured_artifact,
+            request=request,
+            summary=summary,
+            evidence_refs=evidence_refs,
+            facts=facts,
+            checks_run=checks_run,
+        )
+    if failed_checks:
+        return _runtime_failed_check_artifact(
+            request=request,
+            summary=summary,
+            evidence_refs=evidence_refs,
+            facts=facts,
+            checks_run=checks_run,
+            failed_checks=failed_checks,
+        ), None
+
+    no_op_rationale = _string_value(structured_artifact.get("no_op_rationale"))
+    if not _has_runtime_action_facts(facts) and not no_op_rationale:
+        return None, (
+            "completed execution_result has no runtime file changes, commands, checks, "
+            "or explicit no_op_rationale"
+        )
+
+    verification_status = "pass" if _has_passing_check(checks_run) else "skipped"
+    no_check_rationale = None
+    if verification_status == "skipped":
+        no_check_rationale = _execution_no_check_rationale(structured_artifact, checks_run=checks_run)
+
+    runtime_evidence_refs = _runtime_evidence_refs(evidence_refs=evidence_refs, facts=facts)
+    artifact = {
+        "artifact_type": "execution_result",
+        "round": _positive_int(structured_artifact.get("round"), request.context.round or 1),
+        "work_item_id": _execution_work_item_id(structured_artifact, request),
+        "merge_index": _execution_merge_index(structured_artifact, request),
+        "agent_id": request.context.agent_id,
+        "status": "completed",
+        "summary": _string_value(structured_artifact.get("summary")) or summary or "OpenHands task execution completed.",
+        "changed_files": list(facts["changed_files"]),
+        "created_files": list(facts["created_files"]),
+        "deleted_files": list(facts["deleted_files"]),
+        "patch_refs": list(facts["diff_refs"]),
+        "attempted_actions": list(facts["commands_run"]),
+        "evidence_refs": runtime_evidence_refs,
+        "no_op_rationale": no_op_rationale or None,
+        "verification": {
+            "status": verification_status,
+            "checks_run": checks_run,
+            "evidence_refs": runtime_evidence_refs,
+            "confidence": _confidence(structured_artifact.get("verification")),
+            "remaining_work": [],
+            "no_check_rationale": no_check_rationale,
+            "repair_attempted": False,
+            "repair_summary": None,
+        },
+    }
+    return artifact, None
+
+
+def _blocked_execution_result_artifact_from_structured(
+    structured_artifact: dict[str, Any],
+    *,
+    request: HarnessRunRequest,
+    summary: str,
+    evidence_refs: list[str],
+    facts: dict[str, Any],
+    checks_run: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str | None]:
+    blocker_type = _blocker_type_value(structured_artifact.get("blocker_type"))
+    blocker_reason = _string_value(structured_artifact.get("blocker_reason")) or _string_value(
+        structured_artifact.get("summary")
+    )
+    remaining_work = _string_list_or_single(structured_artifact.get("remaining_work"))
+    executor_recovery_exhausted = structured_artifact.get("executor_recovery_exhausted") is True
+    planner_recommendation = _planner_recommendation(structured_artifact.get("planner_recommendation"))
+
+    if not blocker_type:
+        return None, "blocked execution_result requires blocker_type"
+    if not blocker_reason:
+        return None, "blocked execution_result requires blocker_reason"
+    if not remaining_work:
+        return None, "blocked execution_result requires remaining_work"
+    if not executor_recovery_exhausted:
+        return None, "blocked execution_result requires executor_recovery_exhausted=true"
+    if not planner_recommendation:
+        return None, "blocked execution_result requires planner_recommendation"
+
+    runtime_evidence_refs = _runtime_evidence_refs(evidence_refs=evidence_refs, facts=facts)
+    artifact = {
+        "artifact_type": "execution_result",
+        "round": _positive_int(structured_artifact.get("round"), request.context.round or 1),
+        "work_item_id": _execution_work_item_id(structured_artifact, request),
+        "merge_index": _execution_merge_index(structured_artifact, request),
+        "agent_id": request.context.agent_id,
+        "status": "blocked",
+        "summary": _string_value(structured_artifact.get("summary")) or summary or blocker_reason,
+        "changed_files": list(facts["changed_files"]),
+        "created_files": list(facts["created_files"]),
+        "deleted_files": list(facts["deleted_files"]),
+        "patch_refs": list(facts["diff_refs"]),
+        "attempted_actions": list(facts["commands_run"]),
+        "evidence_refs": runtime_evidence_refs,
+        "remaining_work": remaining_work,
+        "unexpected_issues": _dedupe([blocker_reason, *_string_list_or_single(structured_artifact.get("unexpected_issues"))]),
+        "needs_planner_decision": True,
+        "blocker_type": blocker_type,
+        "executor_recovery_exhausted": True,
+        "blocker_reason": blocker_reason,
+        "planner_recommendation": planner_recommendation,
+        "affected_files": _dedupe(
+            [
+                *facts["changed_files"],
+                *facts["created_files"],
+                *facts["deleted_files"],
+                *_string_list_or_single(structured_artifact.get("affected_files")),
+            ]
+        ),
+        "verification": {
+            "status": "blocked",
+            "checks_run": checks_run,
+            "evidence_refs": runtime_evidence_refs,
+            "confidence": _confidence(structured_artifact.get("verification")),
+            "remaining_work": remaining_work,
+            "no_check_rationale": None,
+            "repair_attempted": False,
+            "repair_summary": None,
+        },
+    }
+    return artifact, None
+
+
+def _runtime_failed_check_artifact(
+    *,
+    request: HarnessRunRequest,
+    summary: str,
+    evidence_refs: list[str],
+    facts: dict[str, Any],
+    checks_run: list[dict[str, Any]],
+    failed_checks: list[dict[str, Any]],
+) -> dict[str, Any]:
+    reason = str(failed_checks[0].get("summary") or "Runtime check evidence did not pass.")
+    runtime_evidence_refs = _runtime_evidence_refs(evidence_refs=evidence_refs, facts=facts)
+    return {
+        "artifact_type": "execution_result",
+        "round": request.context.round or 1,
+        "work_item_id": str(request.input_artifacts.get("work_item_id") or "") or None,
+        "agent_id": request.context.agent_id,
+        "status": "blocked",
+        "summary": summary or reason,
+        "changed_files": list(facts["changed_files"]),
+        "created_files": list(facts["created_files"]),
+        "deleted_files": list(facts["deleted_files"]),
+        "patch_refs": list(facts["diff_refs"]),
+        "attempted_actions": list(facts["commands_run"]),
+        "evidence_refs": runtime_evidence_refs,
+        "remaining_work": ["Return to the planner because runtime verification did not pass."],
+        "unexpected_issues": [reason],
+        "needs_planner_decision": True,
+        "blocker_type": "test_failed",
+        "executor_recovery_exhausted": True,
+        "blocker_reason": reason,
+        "planner_recommendation": "replan_once",
+        "verification": {
+            "status": "blocked",
+            "checks_run": checks_run,
+            "evidence_refs": runtime_evidence_refs,
+            "confidence": "medium",
+            "remaining_work": ["Return to the planner because runtime verification did not pass."],
+            "no_check_rationale": None,
+            "repair_attempted": False,
+            "repair_summary": None,
+        },
+    }
+
+
 def _planner_decision_artifact_from_structured(
     structured_artifact: dict[str, Any],
     *,
@@ -1240,6 +1857,18 @@ def _string_list_value(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _string_list_or_single(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
 def _positive_int(value: Any, default: int) -> int:
     try:
         return max(1, int(value))
@@ -1250,6 +1879,91 @@ def _positive_int(value: Any, default: int) -> int:
 def _risk_level(value: Any) -> str:
     text = str(value or "").strip().lower()
     return text if text in {"low", "medium", "high"} else "low"
+
+
+def _confidence(value: Any) -> str:
+    if isinstance(value, dict):
+        value = value.get("confidence")
+    text = str(value or "").strip().lower()
+    return text if text in {"low", "medium", "high"} else "medium"
+
+
+def _blocker_type_value(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    text = _LEGACY_BLOCKER_TYPES.get(text, text)
+    return text if text in _BLOCKER_TYPES else None
+
+
+def _planner_recommendation(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in {"replan_once", "finish"} else None
+
+
+def _execution_work_item_id(structured_artifact: dict[str, Any], request: HarnessRunRequest) -> str | None:
+    for value in (
+        structured_artifact.get("work_item_id"),
+        request.input_artifacts.get("work_item_id"),
+        _dig(request.context.context_packet or {}, "hot", "work_item", "work_item_id"),
+        _dig(request.context.context_packet or {}, "hot", "task_envelope", "work_item_id"),
+    ):
+        text = _string_value(value)
+        if text:
+            return text
+    return None
+
+
+def _execution_merge_index(structured_artifact: dict[str, Any], request: HarnessRunRequest) -> int | None:
+    for value in (
+        structured_artifact.get("merge_index", structured_artifact.get("order_index")),
+        request.input_artifacts.get("merge_index"),
+        _dig(request.context.context_packet or {}, "hot", "work_item", "merge_index"),
+        _dig(request.context.context_packet or {}, "hot", "task_envelope", "merge_index"),
+    ):
+        if value is None:
+            continue
+        return _positive_int(value, 1)
+    return None
+
+
+def _execution_no_check_rationale(structured_artifact: dict[str, Any], *, checks_run: list[dict[str, Any]]) -> str:
+    verification = structured_artifact.get("verification")
+    if isinstance(verification, dict):
+        rationale = _string_value(verification.get("no_check_rationale"))
+        if rationale:
+            return rationale
+    rationale = _string_value(structured_artifact.get("no_check_rationale"))
+    if rationale:
+        return rationale
+    if checks_run:
+        return "OpenHands did not provide explicit passing check evidence."
+    return "OpenHands did not run or report any verification checks."
+
+
+def _has_runtime_action_facts(facts: dict[str, Any]) -> bool:
+    return any(
+        facts.get(key)
+        for key in (
+            "changed_files",
+            "created_files",
+            "deleted_files",
+            "commands_run",
+            "checks_run",
+        )
+    )
+
+
+def _runtime_evidence_refs(*, evidence_refs: list[str], facts: dict[str, Any]) -> list[str]:
+    return _dedupe(
+        [
+            *evidence_refs,
+            *facts.get("evidence_refs", []),
+            *facts.get("diff_refs", []),
+            *facts.get("log_refs", []),
+            *facts.get("native_event_refs", []),
+        ]
+    )
 
 
 def _string_list_fact(run_output: Any, *names: str) -> list[str]:

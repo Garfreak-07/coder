@@ -82,6 +82,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         state: dict[str, Any] = {}
         run_output = SimpleNamespace(
             summary="Fake OpenHands completed.",
+            output=_execution_result_output(summary="Fake OpenHands completed."),
             changed_files=["src/app.py"],
             diff_refs=["diff-ref"],
             log_refs=["log-ref"],
@@ -96,7 +97,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.artifact_type, "execution_result")
         self.assertEqual(result.artifact["verification"]["status"], "skipped")
-        self.assertIn("no explicit passing check evidence", result.artifact["verification"]["no_check_rationale"])
+        self.assertTrue(result.artifact["verification"]["no_check_rationale"])
         self.assertEqual(result.artifact["changed_files"], ["src/app.py"])
         self.assertEqual(result.artifact["patch_refs"], ["diff-ref"])
         self.assertEqual(result.diff_refs, ["diff-ref"])
@@ -116,7 +117,13 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
 
     def test_openhands_provider_normalizes_bare_deepseek_model_for_litellm(self) -> None:
         state: dict[str, Any] = {}
-        provider = OpenHandsRuntimeProvider(native_store=NativeRuntimeStore(), sdk_loader=lambda: _fake_sdk(state))
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(
+                state,
+                run_output=_execution_result_output(no_op_rationale="No source changes were required."),
+            ),
+        )
 
         with tempfile.TemporaryDirectory() as sandbox:
             with (
@@ -140,7 +147,11 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
 
         provider = OpenHandsRuntimeProvider(
             native_store=store,
-            sdk_loader=lambda: _fake_sdk(state, on_run=mutate_workspace),
+            sdk_loader=lambda: _fake_sdk(
+                state,
+                run_output=_execution_result_output(summary="Sandbox files updated."),
+                on_run=mutate_workspace,
+            ),
         )
 
         with tempfile.TemporaryDirectory() as repo:
@@ -161,6 +172,221 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertNotEqual(Path(state["conversation"]["workspace"]), repo_root)
         self.assertFalse(Path(state["conversation"]["workspace"]).exists())
         self.assertIn("sandbox.diff", [event.native_type for event in store.list_events("run-1")])
+
+    def test_task_execution_prompt_contains_strict_execution_result_json_contract(self) -> None:
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(
+                state,
+                run_output=_execution_result_output(no_op_rationale="No source changes were required."),
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        prompt = state["conversation"]["prompt"]
+        self.assertIn("OpenHands Structured Execution Result Contract v1", prompt)
+        self.assertIn("Return exactly one JSON object", prompt)
+        self.assertIn("Do not return prose before or after the JSON object", prompt)
+        self.assertIn('"artifact_type": "execution_result"', prompt)
+        self.assertIn('"no_op_rationale"', prompt)
+        self.assertIn('"blocker_type"', prompt)
+        self.assertIn('"executor_recovery_exhausted"', prompt)
+        self.assertIn('"planner_recommendation"', prompt)
+        self.assertIn("verification.status may be pass only when an explicit check command actually passed", prompt)
+
+    def test_structured_execution_result_json_is_accepted(self) -> None:
+        state: dict[str, Any] = {}
+        run_output = json_dumps(
+            _execution_result_output(no_op_rationale="The requested state is already present.")
+        )
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact_type, "execution_result")
+        self.assertEqual(result.artifact["artifact_type"], "execution_result")
+        self.assertEqual(result.artifact["status"], "completed")
+        self.assertEqual(result.artifact["verification"]["status"], "skipped")
+        self.assertIn("already present", result.artifact["no_op_rationale"])
+
+    def test_execution_result_from_openhands_finish_message_uses_final_json(self) -> None:
+        state: dict[str, Any] = {}
+        trace_artifact = _execution_result_output(
+            summary="Trace copy should not be used.",
+            no_op_rationale="Intermediate trace artifact.",
+        )
+        final_artifact = _execution_result_output(
+            summary="Final finish message artifact.",
+            no_op_rationale="Final no-op result.",
+        )
+        run_output = (
+            f"Trace included this earlier JSON: {json_dumps(trace_artifact)}\n"
+            f"Finish with message:\n{json_dumps(final_artifact)}"
+        )
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact["summary"], "Final finish message artifact.")
+        self.assertEqual(result.artifact["no_op_rationale"], "Final no-op result.")
+
+    def test_execution_result_output_from_finish_action_event_can_succeed(self) -> None:
+        state: dict[str, Any] = {}
+        event = SimpleNamespace(
+            source="agent",
+            tool_name="finish",
+            action=SimpleNamespace(
+                message=json_dumps(
+                    _execution_result_output(no_op_rationale="Finished through the OpenHands finish action.")
+                )
+            ),
+        )
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=None, conversation_events=[event]),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        self.assertIn("finish action", result.artifact["no_op_rationale"])
+
+    def test_terminal_observation_provides_passing_check_evidence(self) -> None:
+        state: dict[str, Any] = {}
+        run_output = _execution_result_output(summary="Terminal verification passed.")
+        run_output.pop("no_op_rationale", None)
+        events = [
+            SimpleNamespace(
+                source="agent",
+                id="action-1",
+                tool_name="terminal",
+                action=SimpleNamespace(command="python -m unittest smoke", is_input=False),
+            ),
+            SimpleNamespace(
+                source="environment",
+                id="observation-1",
+                tool_name="terminal",
+                action_id="action-1",
+                observation=SimpleNamespace(
+                    command="python -m unittest smoke",
+                    exit_code=0,
+                    is_error=False,
+                    timeout=False,
+                    text="OK",
+                ),
+            ),
+        ]
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output, conversation_events=events),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact["attempted_actions"], ["python -m unittest smoke"])
+        self.assertEqual(result.artifact["verification"]["status"], "pass")
+        self.assertEqual(result.artifact["verification"]["checks_run"][0]["status"], "pass")
+
+    def test_runtime_facts_override_model_declared_changed_files_and_patch_refs(self) -> None:
+        state: dict[str, Any] = {}
+
+        def mutate_workspace(workspace: Path) -> None:
+            (workspace / "src" / "app.py").write_text("changed\n", encoding="utf-8")
+
+        run_output = _execution_result_output(summary="Model claimed a different file.")
+        run_output["changed_files"] = ["hallucinated.py"]
+        run_output["patch_refs"] = ["model-patch-ref"]
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output, on_run=mutate_workspace),
+        )
+
+        with tempfile.TemporaryDirectory() as repo:
+            repo_root = Path(repo)
+            (repo_root / "src").mkdir()
+            (repo_root / "src" / "app.py").write_text("original\n", encoding="utf-8")
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(repo_root=str(repo_root), sandbox_root=None))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact["changed_files"], ["src/app.py"])
+        self.assertNotIn("hallucinated.py", result.artifact["changed_files"])
+        self.assertEqual(result.artifact["patch_refs"], result.diff_refs)
+        self.assertNotIn("model-patch-ref", result.artifact["patch_refs"])
+
+    def test_execution_result_pass_without_passing_runtime_check_is_downgraded_to_skipped(self) -> None:
+        state: dict[str, Any] = {}
+        run_output = _execution_result_output(no_op_rationale="The requested state is already present.")
+        run_output["verification"] = {
+            "status": "pass",
+            "checks_run": [{"name": "claimed check", "status": "pass", "summary": "Model claimed this passed."}],
+            "confidence": "high",
+        }
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.artifact["verification"]["status"], "skipped")
+        self.assertEqual(result.artifact["verification"]["checks_run"], [])
+        self.assertIn("did not run or report", result.artifact["verification"]["no_check_rationale"])
+
+    def test_blocked_execution_result_preserves_blocker_fields(self) -> None:
+        state: dict[str, Any] = {}
+        run_output = _execution_result_output(status="blocked", summary="Dependency is missing.")
+        run_output.update(
+            {
+                "blocker_type": "missing_dependency",
+                "blocker_reason": "pytest is not available in the sandbox.",
+                "executor_recovery_exhausted": True,
+                "planner_recommendation": "replan_once",
+                "remaining_work": ["Install pytest or choose a verification path."],
+                "unexpected_issues": ["Dependency unavailable."],
+            }
+        )
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(state, run_output=run_output),
+        )
+
+        with tempfile.TemporaryDirectory() as sandbox:
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(_task_request(sandbox_root=sandbox))
+
+        self.assertEqual(result.status, "blocked")
+        self.assertEqual(result.artifact["status"], "blocked")
+        self.assertEqual(result.artifact["blocker_type"], "missing_dependency")
+        self.assertEqual(result.artifact["blocker_reason"], "pytest is not available in the sandbox.")
+        self.assertTrue(result.artifact["executor_recovery_exhausted"])
+        self.assertEqual(result.artifact["planner_recommendation"], "replan_once")
+        self.assertEqual(result.artifact["remaining_work"], ["Install pytest or choose a verification path."])
 
     def test_openhands_provider_uses_task_tracker_only_for_conversation_modes(self) -> None:
         state: dict[str, Any] = {}
@@ -474,6 +700,47 @@ def _task_request(*, sandbox_root: str | None, repo_root: str = "F:\\repo") -> H
         ),
         input_artifacts={"work_item_id": "work-1", "success_criteria": ["Return evidence."]},
     )
+
+
+def _execution_result_output(
+    *,
+    status: str = "completed",
+    summary: str = "Fake OpenHands completed.",
+    no_op_rationale: str | None = None,
+) -> dict[str, Any]:
+    artifact: dict[str, Any] = {
+        "artifact_type": "execution_result",
+        "round": 1,
+        "work_item_id": "work-1",
+        "agent_id": "executor",
+        "status": status,
+        "summary": summary,
+        "changed_files": [],
+        "created_files": [],
+        "deleted_files": [],
+        "patch_refs": [],
+        "attempted_actions": [],
+        "evidence_refs": [],
+        "verification": {
+            "status": "skipped" if status == "completed" else "blocked",
+            "checks_run": [],
+            "evidence_refs": [],
+            "confidence": "medium",
+            "no_check_rationale": "No checks were run for this test fixture."
+            if status == "completed"
+            else None,
+            "remaining_work": [],
+        },
+    }
+    if no_op_rationale is not None:
+        artifact["no_op_rationale"] = no_op_rationale
+    return artifact
+
+
+def json_dumps(value: Any) -> str:
+    import json
+
+    return json.dumps(value)
 
 
 def _fake_sdk(
