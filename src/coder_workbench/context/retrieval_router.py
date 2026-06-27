@@ -3,33 +3,9 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
-
 from coder_workbench.memory.hybrid_retriever import is_code_like_query
 
-
-class RetrievalIntent(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    needs_code_fact: bool = False
-    needs_current_file_state: bool = False
-    needs_external_docs: bool = False
-    needs_project_memory: bool = False
-    needs_user_notes: bool = False
-    needs_prior_run_context: bool = False
-    query_is_code_like: bool = False
-
-
-class ContextRetrievalDecision(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    use_repo_discovery: bool = False
-    use_repo_search: bool = False
-    use_repo_read: bool = False
-    use_rag: bool = False
-    rag_is_hint_only: bool = True
-    requires_repo_verification: bool = False
-    reason: str
+from .router_models import ContextRetrievalDecision, RetrievalIntent
 
 
 class ContextRetrievalRouter:
@@ -90,14 +66,26 @@ class ContextRetrievalRouter:
             marker in lowered
             for marker in ("api docs", "sdk docs", "external docs", "documentation", "library usage")
         )
+        intent_type = "ambiguous"
+        if modifies_code:
+            intent_type = "code_modification"
+        elif code_like:
+            intent_type = "code_fact"
+        elif knowledge:
+            intent_type = "project_memory"
+        elif external_docs:
+            intent_type = "external_docs"
         return RetrievalIntent(
+            intent_type=intent_type,
             needs_code_fact=code_like or modifies_code,
             needs_current_file_state=file_state,
+            needs_runtime_evidence=mode == "workflow_supervisor",
             needs_external_docs=external_docs,
             needs_project_memory=knowledge,
             needs_user_notes="notes" in lowered or "obsidian" in lowered,
             needs_prior_run_context="prior run" in lowered or "history" in lowered,
             query_is_code_like=code_like,
+            reason=f"legacy retrieval router intent={intent_type}",
         )
 
     def decide(
@@ -140,6 +128,11 @@ class ContextRetrievalRouter:
             use_rag=rag_needed,
             rag_is_hint_only=True,
             requires_repo_verification=requires_verification,
+            initial_source="native_repo" if repo_needed else ("hybrid_rag" if rag_needed else "none"),
+            selected_sources=[
+                *([] if not repo_needed else ["native_repo"]),
+                *([] if not rag_needed else ["hybrid_rag"]),
+            ],
             reason="; ".join(reasons),
         )
 

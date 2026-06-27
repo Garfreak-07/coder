@@ -3,6 +3,7 @@ from .compaction import CompactionResult, ContextCompactor
 from .evidence_policy import EvidenceKind, KnowledgeHint
 from .external_refs import ContextExternalRefStore, ExternalRef
 from .harness_packets import build_harness_context_packet
+from .agentic_router import AgenticContextRouter
 from .repo_context_service import NativeRepoContextService
 from .repo_discovery import RepoFileDiscoveryService
 from .repo_evidence import RepoEvidenceStore
@@ -10,6 +11,8 @@ from .repo_models import RepoEvidenceRef, RepoFileRef, RepoReadSnippet, RepoScop
 from .repo_read import RepoReadService
 from .repo_search import RepoTextSearchService
 from .retrieval_router import ContextRetrievalDecision, ContextRetrievalRouter, RetrievalIntent
+from .router_models import AgenticContextRouterState, RouterRoleProfile, RouterSource
+from .router_profiles import router_profile_for_mode
 
 
 def __getattr__(name: str):
@@ -21,6 +24,8 @@ def __getattr__(name: str):
 
 __all__ = [
     "AgentContextBuildResult",
+    "AgenticContextRouter",
+    "AgenticContextRouterState",
     "CompactionResult",
     "ContextBudget",
     "ContextCompactor",
@@ -44,4 +49,7 @@ __all__ = [
     "RepoSearchHit",
     "RepoTextSearchService",
     "RetrievalIntent",
+    "RouterRoleProfile",
+    "RouterSource",
+    "router_profile_for_mode",
 ]
