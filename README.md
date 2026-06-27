@@ -77,7 +77,9 @@ memory records plus `memory.read` and `memory.write.proposed` event helpers,
 without vector retrieval. Rust API callers can load repo-local project memory
 through `POST /api/v3/memory/project/load`; when a run id is supplied the server
 records a bounded `memory.read` event without embedding full memory content in
-the event log.
+the event log. Project memory write proposals are exposed through
+`POST /api/v3/memory/project/propose-write`, which records a bounded
+`memory.write.proposed` event but does not commit long-term memory directly.
 `coder-tools` starts the Rust-native repo evidence layer with path-safe
 file discovery, UTF-8 `read_file`, bounded line-range reads, bounded
 `search_text`, `git_status`, bounded `git_diff`, `patch-preview`,

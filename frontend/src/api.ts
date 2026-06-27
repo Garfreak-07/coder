@@ -32,6 +32,8 @@ import type {
   RustPatchPreviewRequest,
   RustProjectMemoryLoadRequest,
   RustProjectMemoryLoadResponse,
+  RustProjectMemoryWriteProposalRequest,
+  RustProjectMemoryWriteProposalResponse,
   RustRunArtifactResponse,
   RustRunCheckpointListResponse,
   RustRunCheckpointResponse,
@@ -312,6 +314,19 @@ export function loadRustProjectMemory(
     headers: jsonHeaders,
     body: JSON.stringify(request)
   });
+}
+
+export function proposeRustProjectMemoryWrite(
+  request: RustProjectMemoryWriteProposalRequest
+): Promise<RustProjectMemoryWriteProposalResponse> {
+  return requestJson<RustProjectMemoryWriteProposalResponse>(
+    "/api/v3/memory/project/propose-write",
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(request)
+    }
+  );
 }
 
 export async function getRustRuns(): Promise<RustRunSummary[]> {

@@ -146,6 +146,17 @@ export interface RustProjectMemoryLoadResponse {
   memory: RustProjectMemoryFile;
 }
 
+export interface RustProjectMemoryWriteProposalRequest {
+  run_id: string;
+  record: RustMemoryRecord;
+}
+
+export interface RustProjectMemoryWriteProposalResponse {
+  run_id: string;
+  event_count: number;
+  event: RustCoderEvent;
+}
+
 export interface RustAgentSpec {
   role: string;
   model: string;

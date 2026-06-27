@@ -11,7 +11,10 @@ use coder_config::{
     validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel, ValidationReport,
 };
 use coder_core::{FinalReport, RunId, RunState, RunStatus};
-use coder_memory::{load_project_memory_file, memory_read_event, MemoryError, ProjectMemoryFile};
+use coder_memory::{
+    load_project_memory_file, memory_read_event, memory_write_proposed_event, MemoryError,
+    MemoryRecord, MemoryScope, ProjectMemoryFile,
+};
 use coder_store::{
     RepoEvidenceKind, RepoEvidenceRef, RunCheckpointRef, RunStore, StoreError, StoredRunSummary,
 };
@@ -38,6 +41,10 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/api/v3/health", get(health))
         .route("/api/v3/memory/project/load", post(load_project_memory))
+        .route(
+            "/api/v3/memory/project/propose-write",
+            post(propose_project_memory_write),
+        )
         .route("/api/v3/config/validate", post(validate_config))
         .route("/api/v3/workflows/validate", post(validate_workflow))
         .route("/api/v3/runs", get(list_runs))
@@ -120,6 +127,32 @@ async fn load_project_memory(
         record_count: memory.records.len(),
         event_recorded,
         memory,
+    }))
+}
+
+async fn propose_project_memory_write(
+    State(state): State<ApiState>,
+    Json(request): Json<ProjectMemoryWriteProposalRequest>,
+) -> Result<Json<ProjectMemoryWriteProposalResponse>, ApiError> {
+    if request.record.scope != MemoryScope::Project {
+        return Err(ApiError::bad_request(
+            "project memory write proposals require scope 'project'",
+        ));
+    }
+    let run_id = RunId::from_string(request.run_id);
+    if !stored_run_exists(&state.store, &run_id)? {
+        return Err(ApiError::not_found(format!(
+            "run '{}' was not found",
+            run_id.as_str()
+        )));
+    }
+    let sequence = state.store.read_events(&run_id)?.len() as u64 + 1;
+    let event = memory_write_proposed_event(run_id.clone(), sequence, &request.record);
+    state.store.append_event(&run_id, &event)?;
+    Ok(Json(ProjectMemoryWriteProposalResponse {
+        run_id: run_id.to_string(),
+        event_count: sequence as usize,
+        event,
     }))
 }
 
@@ -509,6 +542,19 @@ pub struct ProjectMemoryLoadResponse {
     pub record_count: usize,
     pub event_recorded: bool,
     pub memory: ProjectMemoryFile,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectMemoryWriteProposalRequest {
+    pub run_id: String,
+    pub record: MemoryRecord,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectMemoryWriteProposalResponse {
+    pub run_id: String,
+    pub event_count: usize,
+    pub event: coder_events::CoderEvent,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1002,6 +1048,48 @@ mod tests {
         assert_eq!(events[0].payload["records"][0]["key"], "architecture");
         assert!(!events[0].payload.to_string().contains("control plane"));
         let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn project_memory_write_proposal_records_bounded_event_only() {
+        let store_root = temp_root();
+        let store = RunStore::new(&store_root);
+        let run_id = RunId::from_string("run-1");
+        let state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        store.write_metadata(&state).unwrap();
+        let app = router(ApiState::new(store.clone()));
+        let content = format!("{}tail-marker", "x".repeat(520));
+
+        let response = post_json(
+            app,
+            "/api/v3/memory/project/propose-write",
+            json!({
+                "run_id": "run-1",
+                "record": {
+                    "id": "mem_2",
+                    "scope": "project",
+                    "key": "migration-note",
+                    "content": content,
+                    "tags": ["rust"],
+                    "evidence_refs": [{"kind": "doc", "reference": "docs/memory-spec.md"}],
+                    "source_ref": "memory://project/migration-note"
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["run_id"], "run-1");
+        assert_eq!(body["event"]["kind"], "memory.write.proposed");
+        assert_eq!(body["event"]["payload"]["record"]["key"], "migration-note");
+        assert_eq!(body["event"]["payload"]["content_truncated"], true);
+        assert!(!body["event"]["payload"].to_string().contains("tail-marker"));
+        let events = store.read_events(&run_id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "memory.write.proposed");
+        assert!(!events[0].payload.to_string().contains("tail-marker"));
         let _ = fs::remove_dir_all(store_root);
     }
 
