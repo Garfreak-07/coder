@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,12 @@ from coder_workbench.agent_harness.contracts import (
 from coder_workbench.agent_model import RuntimeProfileCache, RuntimeProfileCompiler, recipe_from_workflow_agent
 from coder_workbench.budget import BudgetBroker
 from coder_workbench.config import RuntimeConfig, load_runtime_config
-from coder_workbench.context import build_harness_context_packet
+from coder_workbench.context import (
+    ContextRetrievalRouter,
+    NativeRepoContextService,
+    build_harness_context_packet,
+)
+from coder_workbench.context.repo_safety import normalize_repo_path
 from coder_workbench.core import AgentWorkflowAgent, AgentWorkflowSpec
 from coder_workbench.harness_runtime import (
     ArtifactProjector,
@@ -496,6 +502,12 @@ class AgentRun:
             work_item=work_item,
             task_envelope=task_envelope,
         )
+        native_repo_context = self._native_repo_context_for_harness(
+            mode=mode,
+            user_goal=user_goal,
+            work_item=work_item,
+            task_envelope=task_envelope,
+        )
         context_packet = build_harness_context_packet(
             mode=mode,
             user_goal=user_goal,
@@ -517,6 +529,7 @@ class AgentRun:
             diff_refs=diff_refs,
             log_refs=log_refs,
             **memory_context,
+            **native_repo_context,
         )
         return HarnessRuntimeContext(
             run_id=self.run_id or str(self.initial_data.get("run_id") or self.agent_workflow.id),
@@ -597,6 +610,97 @@ class AgentRun:
         except Exception:
             return {}
 
+    def _native_repo_context_for_harness(
+        self,
+        *,
+        mode: str,
+        user_goal: str,
+        work_item: WorkItem | None,
+        task_envelope: AgentTaskEnvelope | None,
+    ) -> dict[str, Any]:
+        repo_root = Path(str(self.initial_data.get("repo_root") or ".")).expanduser().resolve(strict=False)
+        if not repo_root.exists():
+            return {}
+        query = _repo_context_query(user_goal, work_item=work_item, task_envelope=task_envelope)
+        decision = ContextRetrievalRouter().decide(
+            query,
+            mode=mode,
+            work_item=work_item,
+            task_envelope=task_envelope,
+        )
+        if not (decision.use_repo_discovery or decision.use_repo_search or decision.use_repo_read):
+            return {}
+        try:
+            service = NativeRepoContextService(
+                coder_store_root=self._memory_store_root(),
+                repo_root=repo_root,
+                run_id=_native_context_run_id(self.run_id, self.initial_data, self.agent_workflow.id),
+                scope_paths=_scopes_from_data(self.initial_data),
+            )
+            repo_evidence: list[dict[str, Any]] = []
+            repo_evidence_refs: list[str] = []
+            file_path = _extract_repo_file_path(query)
+            search_pattern = _extract_repo_search_pattern(query, file_path=file_path)
+            if decision.use_repo_discovery:
+                files, ref = service.find_files(query=file_path or None, max_results=50)
+                repo_evidence_refs.append(ref.ref_id)
+                repo_evidence.append(
+                    {
+                        "ref_id": ref.ref_id,
+                        "kind": ref.kind,
+                        "evidence_kind": "repo_evidence",
+                        "summary": ref.summary,
+                        "source_refs": [item.path for item in files[:10]],
+                    }
+                )
+            if decision.use_repo_search and search_pattern:
+                hits, ref = service.search_text(search_pattern, max_results=30)
+                repo_evidence_refs.append(ref.ref_id)
+                if hits:
+                    for hit in hits[:10]:
+                        repo_evidence.append(
+                            {
+                                "evidence_ref": ref.ref_id,
+                                "kind": "repo_text_search",
+                                "evidence_kind": "repo_evidence",
+                                "path": hit.path,
+                                "line": hit.line,
+                                "summary": hit.text,
+                            }
+                        )
+                else:
+                    repo_evidence.append(
+                        {
+                            "ref_id": ref.ref_id,
+                            "kind": ref.kind,
+                            "evidence_kind": "repo_evidence",
+                            "summary": ref.summary,
+                        }
+                    )
+            if decision.use_repo_read and file_path:
+                snippet, ref = service.read_file_range(file_path, max_lines=80)
+                repo_evidence_refs.append(ref.ref_id)
+                repo_evidence.append(
+                    {
+                        "evidence_ref": ref.ref_id,
+                        "kind": "repo_read",
+                        "evidence_kind": "repo_evidence",
+                        "path": snippet.path,
+                        "start_line": snippet.start_line,
+                        "end_line": snippet.end_line,
+                        "text": snippet.text,
+                        "truncated": snippet.truncated,
+                    }
+                )
+            if not repo_evidence and not repo_evidence_refs:
+                return {}
+            return {
+                "repo_evidence": repo_evidence,
+                "repo_evidence_refs": _unique_strings(repo_evidence_refs),
+            }
+        except Exception:
+            return {}
+
     def _memory_store_root(self) -> Path:
         for key in ("memory_store_root", "coder_store_root", "skill_store_root"):
             value = self.initial_data.get(key)
@@ -669,6 +773,77 @@ class AgentRun:
 def _optional_string(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _repo_context_query(
+    user_goal: str,
+    *,
+    work_item: WorkItem | None,
+    task_envelope: AgentTaskEnvelope | None,
+) -> str:
+    parts = [user_goal]
+    if work_item is not None:
+        parts.append(work_item.task_summary)
+    if task_envelope is not None:
+        parts.append(task_envelope.task_summary)
+        parts.extend(task_envelope.constraints[:5])
+    return " ".join(part for part in parts if str(part).strip())
+
+
+def _native_context_run_id(run_id: str | None, data: dict[str, Any], workflow_id: str) -> str:
+    raw = str(run_id or data.get("run_id") or f"workflow-{workflow_id}" or "run").strip()
+    safe = re.sub(r"[^A-Za-z0-9_.:-]+", "-", raw).strip(".-:")
+    return safe[:120] or "run"
+
+
+def _extract_repo_file_path(text: str) -> str | None:
+    match = re.search(r"(?:^|\s)([A-Za-z0-9_.\-/\\]+\.[A-Za-z0-9]{1,8})(?=\s|$|[:),.])", text)
+    if not match:
+        return None
+    value = normalize_repo_path(match.group(1).strip("`'\".,:;)("))
+    return value or None
+
+
+def _extract_repo_search_pattern(text: str, *, file_path: str | None) -> str | None:
+    quoted = re.search(r"['\"]([^'\"]{2,120})['\"]", text)
+    if quoted:
+        return quoted.group(1)
+    tokens = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,80}\b", text)
+    stop_words = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "what",
+        "where",
+        "does",
+        "this",
+        "that",
+        "current",
+        "implementation",
+        "implement",
+        "modify",
+        "update",
+        "work",
+        "item",
+    }
+    code_tokens = [
+        token
+        for token in tokens
+        if token.lower() not in stop_words
+        and (
+            "_" in token
+            or any(char.isupper() for char in token[1:])
+            or token.isupper()
+            or token.startswith("test")
+        )
+    ]
+    if code_tokens:
+        return code_tokens[0]
+    if file_path:
+        stem = Path(file_path).stem
+        return stem if stem else None
+    return None
 
 
 def _planner_task_state_from_data(data: dict[str, Any]) -> dict[str, Any] | None:

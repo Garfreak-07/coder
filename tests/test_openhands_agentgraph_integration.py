@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 
 from coder_workbench.agent_graph.agent_run import AgentRun
@@ -122,6 +123,86 @@ class OpenHandsAgentGraphIntegrationTests(unittest.TestCase):
         self.assertFalse(task_request.profile.safety_policy.get("git_commit"))
         self.assertFalse(task_request.profile.safety_policy.get("git_push"))
         self.assertFalse(task_request.profile.safety_policy.get("deploy"))
+
+    def test_code_like_planning_context_injects_repo_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("def target_function():\n    return 1\n", encoding="utf-8")
+            context = AgentRun(
+                default_planner_led_agent_workflow(),
+                initial_data={"repo_root": str(root), "coder_store_root": str(root / ".coder")},
+            )._harness_context(
+                agent_id="planner",
+                harness_id="conversation-harness",
+                mode="planning_chat",
+                profile_id="openhands-planning-chat-default",
+                round_number=1,
+                state_view={},
+                capability_set={},
+                request_text="Where is target_function defined?",
+            )
+
+        packet = context.context_packet or {}
+        self.assertIn("repo_evidence", packet["warm"])
+        self.assertIn({"ref_type": "repo_evidence", "refs": packet["cold_refs"][0]["refs"]}, packet["cold_refs"])
+        self.assertIn("src/app.py", str(packet["warm"]["repo_evidence"]))
+
+    def test_roadmap_planning_context_does_not_force_repo_search(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("def target_function():\n    return 1\n", encoding="utf-8")
+            context = AgentRun(
+                default_planner_led_agent_workflow(),
+                initial_data={"repo_root": str(root), "coder_store_root": str(root / ".coder")},
+            )._harness_context(
+                agent_id="planner",
+                harness_id="conversation-harness",
+                mode="planning_chat",
+                profile_id="openhands-planning-chat-default",
+                round_number=1,
+                state_view={},
+                capability_set={},
+                request_text="What is the roadmap for Obsidian notes?",
+            )
+
+        packet = context.context_packet or {}
+        self.assertNotIn("repo_evidence", packet.get("warm", {}))
+
+    def test_task_execution_context_gets_bounded_repo_evidence_for_file_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "src").mkdir()
+            (root / "src" / "app.py").write_text("def app_entry():\n    return 1\n", encoding="utf-8")
+            item = WorkItem(
+                work_item_id="executor-work",
+                merge_index=1,
+                assignee_agent_id="executor",
+                task_summary="Update src/app.py.",
+                depends_on=[],
+            )
+            envelope = _task_envelope(item)
+            envelope = envelope.model_copy(update={"task_summary": "Update src/app.py."})
+            context = AgentRun(
+                default_planner_led_agent_workflow(),
+                initial_data={"repo_root": str(root), "coder_store_root": str(root / ".coder")},
+            )._harness_context(
+                agent_id="executor",
+                harness_id="task-execution-harness",
+                mode="task_execution",
+                profile_id="openhands-task-executor-default",
+                round_number=1,
+                state_view={},
+                capability_set={},
+                work_item=item,
+                task_envelope=envelope,
+            )
+
+        packet = context.context_packet or {}
+        self.assertIn("repo_evidence", packet["warm"])
+        self.assertIn("repo_read", str(packet["warm"]["repo_evidence"]))
+        self.assertIn("src/app.py", str(packet["warm"]["repo_evidence"]))
 
 
 class FakeOpenHandsProvider:

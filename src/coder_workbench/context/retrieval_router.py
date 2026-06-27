@@ -160,7 +160,7 @@ def _combined_query(query: str, *, work_item: Any | None, task_envelope: Any | N
 
 
 def _mentions_file_path(text: str) -> bool:
-    return bool(re.search(r"(?:^|\s)[A-Za-z0-9_.\-/\\]+\.[A-Za-z0-9]{1,8}(?=\s|$|[:),])", text))
+    return bool(re.search(r"(?:^|\s)[A-Za-z0-9_.\-/\\]+\.[A-Za-z0-9]{1,8}(?=\s|$|[:),.])", text))
 
 
 def _mentions_code_fact(text: str) -> bool:
