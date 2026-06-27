@@ -38,6 +38,10 @@ enum Command {
         #[command(subcommand)]
         command: OpenHandsCommand,
     },
+    Runs {
+        #[command(subcommand)]
+        command: RunsCommand,
+    },
     Tools {
         #[command(subcommand)]
         command: ToolsCommand,
@@ -102,6 +106,19 @@ enum OpenHandsCommand {
         #[arg(long, default_value = ".coder-rust-openhands")]
         store: PathBuf,
         task: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RunsCommand {
+    List {
+        #[arg(long, default_value = ".coder-rust")]
+        store: PathBuf,
+    },
+    Show {
+        #[arg(long, default_value = ".coder-rust")]
+        store: PathBuf,
+        run_id: String,
     },
 }
 
@@ -377,6 +394,27 @@ fn print_openhands_run_output(output: &OpenHandsRecordedRunOutput) {
     println!("events_websocket_url={}", output.websocket_url);
 }
 
+fn run_list_json(store: &RunStore) -> anyhow::Result<serde_json::Value> {
+    Ok(json!({
+        "runs": store.list_run_summaries()?,
+    }))
+}
+
+fn run_detail_json(store: &RunStore, run_id: &RunId) -> anyhow::Result<serde_json::Value> {
+    let metadata = store.read_metadata(run_id)?;
+    let events = store.read_events(run_id)?;
+    let report = store.read_report(run_id)?;
+    if metadata.is_none() && events.is_empty() && report.is_none() {
+        anyhow::bail!("run '{}' was not found", run_id.as_str());
+    }
+    Ok(json!({
+        "run_id": run_id.as_str(),
+        "metadata": metadata,
+        "events": events,
+        "report": report,
+    }))
+}
+
 fn write_optional_repo_evidence(
     args: &EvidenceRecordArgs,
     kind: RepoEvidenceKind,
@@ -526,6 +564,18 @@ async fn main() -> anyhow::Result<()> {
             })
             .await?;
             print_openhands_run_output(&output);
+        }
+        Command::Runs {
+            command: RunsCommand::List { store },
+        } => {
+            let output = run_list_json(&RunStore::new(store))?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        Command::Runs {
+            command: RunsCommand::Show { store, run_id },
+        } => {
+            let output = run_detail_json(&RunStore::new(store), &RunId::from_string(run_id))?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
         Command::Tools {
             command:
@@ -771,6 +821,46 @@ mod tests {
             .to_string()
             .contains("use --store and --run-id together"));
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn run_list_and_detail_helpers_return_stored_run_json() {
+        let store_root = temp_root("coder-cli-store");
+        let store = RunStore::new(&store_root);
+        let run_id = RunId::from_string("run-1");
+        let mut state = RunState::new(run_id.clone(), WorkflowId::new("workflow"));
+        state.status = RunStatus::Completed;
+        store.write_metadata(&state).unwrap();
+        store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(run_id.clone(), 1, "run.started", json!({})),
+            )
+            .unwrap();
+        store
+            .write_report(&run_id, &coder_core::FinalReport::completed("done"))
+            .unwrap();
+
+        let list = run_list_json(&store).unwrap();
+        let detail = run_detail_json(&store, &run_id).unwrap();
+
+        assert_eq!(list["runs"][0]["run_id"], "run-1");
+        assert_eq!(list["runs"][0]["metadata"]["status"], "completed");
+        assert_eq!(detail["run_id"], "run-1");
+        assert_eq!(detail["events"][0]["kind"], "run.started");
+        assert_eq!(detail["report"]["summary"], "done");
+        let _ = std::fs::remove_dir_all(store_root);
+    }
+
+    #[test]
+    fn run_detail_helper_reports_missing_run() {
+        let store_root = temp_root("coder-cli-store");
+        let store = RunStore::new(&store_root);
+
+        let error = run_detail_json(&store, &RunId::from_string("missing")).unwrap_err();
+
+        assert!(error.to_string().contains("run 'missing' was not found"));
+        let _ = std::fs::remove_dir_all(store_root);
     }
 
     fn temp_root(prefix: &str) -> PathBuf {

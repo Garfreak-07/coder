@@ -49,7 +49,7 @@ behavior is covered by a Rust equivalent and tests listed here.
 | Skills | `skills/*` | Rust skill store/router | Preserve discover/install/update/pin/rollback | Skill lifecycle tests pass |
 | MCP | `tools/mcp.py`, registries | Rust MCP registry/server/client | Keep deny-by-default, expose later | Manifest validation and no-auto-enable tests pass |
 | Provider settings | `server/settings.py`, frontend settings | `coder-model` profiles and Rust settings API | Keep secret refs only, redact values | Provider status/test behavior has Rust parity |
-| Python CLI | `cli.py` | `coder-cli` | Add Rust commands while keeping Python CLI | Rust CLI can run mock and OpenHands spike workflows |
+| Python CLI | `cli.py` | `coder-cli` | Add Rust commands while keeping Python CLI | Rust CLI can run and inspect mock/OpenHands spike workflows |
 | FastAPI server | `server/app.py` | `coder-server` Axum API v3 | Add v3 endpoints; preserve v2 until frontend migrates | Frontend can run against Rust server for main flow |
 | React app | `frontend/src` | Same app with Rust API adapter | Avoid rewrite; add adapter layer | Main pages validated through browser smoke |
 | Tests | `tests/`, frontend build, future Cargo tests | Multi-language CI gates | Keep Python tests until parity tests replace them | Equivalent Rust/frontend tests exist before deleting Python tests |

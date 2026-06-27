@@ -117,6 +117,8 @@ Classification values:
   stored repo evidence payload retrieval by ref.
 - `coder-memory`: project memory file loading, bounded memory write previews,
   and content-free memory read events.
+- `coder-cli`: mock/OpenHands run commands plus stored run list/show
+  inspection helpers.
 - `coder-tools`: path-safe read-only repo file discovery, full-file reads,
   bounded line-range reads, bounded text search, read-only git status evidence,
   and bounded git diff previews. The first Rust slice skips runtime/vendor
