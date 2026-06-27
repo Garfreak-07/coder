@@ -47,6 +47,10 @@ file discovery, UTF-8 `read_file`, bounded line-range reads, bounded
 `search_text`, `git_status`, and bounded `git_diff` helpers. These tools skip
 runtime/vendor directories and sensitive paths, and they do not include write,
 patch, command, or network effects.
+`coder-store` can persist sanitized repo evidence payloads under
+`runs/{run_id}/repo_evidence/`, append `index.jsonl`, and return refs such as
+`repo-read:*`, `repo-text-search:*`, and `repo-file-list:*` for later reports
+and context packets.
 
 Rust checks:
 

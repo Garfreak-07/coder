@@ -6,9 +6,24 @@ use std::{
 
 use coder_core::{FinalReport, RunId, RunState};
 use coder_events::{CoderEvent, LargePayloadRef, DEFAULT_LARGE_PAYLOAD_PREVIEW_LIMIT};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+use time::OffsetDateTime;
+
+const MAX_REPO_EVIDENCE_STRING_CHARS: usize = 16_000;
+const MAX_REPO_EVIDENCE_LIST_ITEMS: usize = 300;
+const MAX_REPO_EVIDENCE_JSON_CHARS: usize = 256_000;
+const REPO_EVIDENCE_SECRET_MARKERS: &[&str] = &[
+    "deepseek_api_key",
+    "llm_api_key",
+    "api_key",
+    "password",
+    "begin rsa",
+    "secret_key",
+    "private_key",
+];
 
 #[derive(Debug, Clone)]
 pub struct RunStore {
@@ -55,6 +70,89 @@ impl RunStore {
 
     pub fn write_report(&self, run_id: &RunId, report: &FinalReport) -> Result<String, StoreError> {
         self.write_artifact(run_id, "final-report.json", report)
+    }
+
+    pub fn write_repo_evidence(
+        &self,
+        run_id: &RunId,
+        kind: RepoEvidenceKind,
+        repo_root: impl Into<String>,
+        scope_paths: Vec<String>,
+        summary: impl Into<String>,
+        payload: Value,
+    ) -> Result<RepoEvidenceRef, StoreError> {
+        let safe_run_id = safe_store_segment(run_id.as_str(), "run_id")?;
+        let evidence_dir = self
+            .root
+            .join("runs")
+            .join(&safe_run_id)
+            .join("repo_evidence");
+        fs::create_dir_all(&evidence_dir)?;
+
+        let prefix = kind.prefix();
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let ref_id = format!("{prefix}:{suffix}");
+        let payload_path = evidence_dir.join(format!("{prefix}-{suffix}.json"));
+        let sanitized = sanitize_repo_evidence_payload(payload)?;
+        let payload_text = serde_json::to_string_pretty(&sanitized)?;
+        if payload_text.chars().count() > MAX_REPO_EVIDENCE_JSON_CHARS {
+            return Err(StoreError::RepoEvidencePayloadTooLarge {
+                max_chars: MAX_REPO_EVIDENCE_JSON_CHARS,
+            });
+        }
+
+        fs::write(&payload_path, format!("{payload_text}\n"))?;
+        let reference = RepoEvidenceRef {
+            ref_id,
+            kind,
+            repo_root: repo_root.into(),
+            scope_paths,
+            summary: compact_string(&summary.into(), 500),
+            payload_path: payload_path.display().to_string(),
+            created_at: OffsetDateTime::now_utc(),
+            token_estimate: token_estimate(&payload_text),
+        };
+        let index_path = evidence_dir.join("index.jsonl");
+        let mut index = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(index_path)?;
+        index.write_all(serde_json::to_string(&reference)?.as_bytes())?;
+        index.write_all(b"\n")?;
+        Ok(reference)
+    }
+
+    pub fn read_repo_evidence(&self, ref_id: &str) -> Result<Value, StoreError> {
+        let safe_ref_id = safe_store_segment(ref_id, "ref_id")?;
+        let runs_dir = self.root.join("runs");
+        if !runs_dir.exists() {
+            return Err(StoreError::RepoEvidenceNotFound(safe_ref_id));
+        }
+        for run_entry in fs::read_dir(runs_dir)? {
+            let run_entry = run_entry?;
+            let evidence_dir = run_entry.path().join("repo_evidence");
+            let index_path = evidence_dir.join("index.jsonl");
+            if !index_path.exists() {
+                continue;
+            }
+            let file = fs::File::open(&index_path)?;
+            let reader = BufReader::new(file);
+            for line in reader.lines() {
+                let line = line?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let record: RepoEvidenceRef = serde_json::from_str(&line)?;
+                if record.ref_id != safe_ref_id {
+                    continue;
+                }
+                let payload_path = PathBuf::from(&record.payload_path);
+                ensure_path_under(&payload_path, &evidence_dir)?;
+                let payload_text = fs::read_to_string(payload_path)?;
+                return Ok(serde_json::from_str(&payload_text)?);
+            }
+        }
+        Err(StoreError::RepoEvidenceNotFound(safe_ref_id))
     }
 
     pub fn read_report(&self, run_id: &RunId) -> Result<Option<FinalReport>, StoreError> {
@@ -109,6 +207,42 @@ impl RunStore {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoEvidenceKind {
+    RepoFileList,
+    RepoTextSearch,
+    RepoRead,
+    RepoTest,
+    RepoDiff,
+}
+
+impl RepoEvidenceKind {
+    fn prefix(self) -> &'static str {
+        match self {
+            Self::RepoFileList => "repo-file-list",
+            Self::RepoTextSearch => "repo-text-search",
+            Self::RepoRead => "repo-read",
+            Self::RepoTest => "repo-test",
+            Self::RepoDiff => "repo-diff",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoEvidenceRef {
+    pub ref_id: String,
+    pub kind: RepoEvidenceKind,
+    pub repo_root: String,
+    #[serde(default)]
+    pub scope_paths: Vec<String>,
+    pub summary: String,
+    pub payload_path: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    pub token_estimate: usize,
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("io error: {0}")]
@@ -117,6 +251,16 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("invalid file name: {0}")]
     InvalidFileName(String),
+    #[error("invalid store segment for {label}: {value}")]
+    InvalidStoreSegment { label: String, value: String },
+    #[error("repo evidence payload contains secret-like text")]
+    RepoEvidenceSecretLikeText,
+    #[error("repo evidence payload is over limit {max_chars} chars")]
+    RepoEvidencePayloadTooLarge { max_chars: usize },
+    #[error("repo evidence not found: {0}")]
+    RepoEvidenceNotFound(String),
+    #[error("repo evidence payload path escaped repo_evidence directory: {0}")]
+    RepoEvidencePathEscape(String),
 }
 
 fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> Result<(), StoreError> {
@@ -154,6 +298,93 @@ fn safe_file_name(value: &str) -> Result<String, StoreError> {
         return Err(StoreError::InvalidFileName(value.to_owned()));
     }
     Ok(value.to_owned())
+}
+
+fn safe_store_segment(value: &str, label: &str) -> Result<String, StoreError> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || !value
+            .chars()
+            .all(|item| item.is_ascii_alphanumeric() || matches!(item, '_' | '.' | ':' | '-'))
+    {
+        return Err(StoreError::InvalidStoreSegment {
+            label: label.to_owned(),
+            value: value.to_owned(),
+        });
+    }
+    Ok(value.to_owned())
+}
+
+fn sanitize_repo_evidence_payload(value: Value) -> Result<Value, StoreError> {
+    match value {
+        Value::Object(object) => object
+            .into_iter()
+            .map(|(key, value)| Ok((key, sanitize_repo_evidence_payload(value)?)))
+            .collect::<Result<Map<String, Value>, StoreError>>()
+            .map(Value::Object),
+        Value::Array(items) => {
+            let omitted_items = items.len().saturating_sub(MAX_REPO_EVIDENCE_LIST_ITEMS);
+            let mut sanitized = items
+                .into_iter()
+                .take(MAX_REPO_EVIDENCE_LIST_ITEMS)
+                .map(sanitize_repo_evidence_payload)
+                .collect::<Result<Vec<_>, _>>()?;
+            if omitted_items > 0 {
+                sanitized.push(serde_json::json!({
+                    "truncated": true,
+                    "omitted_items": omitted_items
+                }));
+            }
+            Ok(Value::Array(sanitized))
+        }
+        Value::String(text) => {
+            reject_secret_like_text(&text)?;
+            Ok(Value::String(compact_string(
+                &text,
+                MAX_REPO_EVIDENCE_STRING_CHARS,
+            )))
+        }
+        other => Ok(other),
+    }
+}
+
+fn reject_secret_like_text(value: &str) -> Result<(), StoreError> {
+    let lowered = value.to_ascii_lowercase();
+    if REPO_EVIDENCE_SECRET_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+    {
+        return Err(StoreError::RepoEvidenceSecretLikeText);
+    }
+    Ok(())
+}
+
+fn compact_string(value: &str, limit: usize) -> String {
+    let mut chars = value.chars();
+    let mut compacted = chars.by_ref().take(limit).collect::<String>();
+    if chars.next().is_some() {
+        compacted.truncate(compacted.trim_end().len());
+        compacted.push_str("...");
+    }
+    compacted
+}
+
+fn token_estimate(text: &str) -> usize {
+    text.chars().count().div_ceil(4).max(1)
+}
+
+fn ensure_path_under(path: &Path, root: &Path) -> Result<(), StoreError> {
+    let canonical_path = path.canonicalize()?;
+    let canonical_root = root.canonicalize()?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(StoreError::RepoEvidencePathEscape(
+            path.display().to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -242,6 +473,140 @@ mod tests {
         assert_eq!(loaded_state.status, coder_core::RunStatus::Completed);
         assert_eq!(loaded_report.summary, "done");
         assert_eq!(loaded_report.evidence_refs[0].kind, "event_log");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repo_evidence_roundtrips_with_index_ref() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+
+        let reference = store
+            .write_repo_evidence(
+                &run_id,
+                RepoEvidenceKind::RepoTextSearch,
+                "F:/repo",
+                vec!["src".to_owned()],
+                "Found one hit.",
+                json!({"evidence_kind": "repo_evidence", "hits": [{"path": "src/app.py", "line": 1}]}),
+            )
+            .unwrap();
+        let payload = store.read_repo_evidence(&reference.ref_id).unwrap();
+
+        assert!(reference.ref_id.starts_with("repo-text-search:"));
+        assert_eq!(reference.kind, RepoEvidenceKind::RepoTextSearch);
+        assert!(PathBuf::from(&reference.payload_path)
+            .starts_with(root.join("runs").join("run-1").join("repo_evidence")));
+        assert_eq!(payload["hits"][0]["path"], "src/app.py");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repo_evidence_rejects_unsafe_segments() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+
+        let run_error = store
+            .write_repo_evidence(
+                &RunId::from_string("../escape"),
+                RepoEvidenceKind::RepoRead,
+                "repo",
+                Vec::new(),
+                "bad",
+                json!({"text": "safe"}),
+            )
+            .unwrap_err();
+        let ref_error = store.read_repo_evidence("../escape").unwrap_err();
+
+        assert!(matches!(run_error, StoreError::InvalidStoreSegment { .. }));
+        assert!(matches!(ref_error, StoreError::InvalidStoreSegment { .. }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repo_evidence_compacts_large_strings_and_lists() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let items = (0..350)
+            .map(|index| json!({"path": format!("src/{index}.rs")}))
+            .collect::<Vec<_>>();
+
+        let reference = store
+            .write_repo_evidence(
+                &run_id,
+                RepoEvidenceKind::RepoFileList,
+                "repo",
+                Vec::new(),
+                "large",
+                json!({"snippet": "x".repeat(20_000), "items": items}),
+            )
+            .unwrap();
+        let payload = store.read_repo_evidence(&reference.ref_id).unwrap();
+
+        assert!(payload["snippet"].as_str().unwrap().len() < 20_000);
+        assert!(payload["snippet"].as_str().unwrap().ends_with("..."));
+        assert_eq!(payload["items"].as_array().unwrap().len(), 301);
+        assert_eq!(payload["items"][300]["truncated"], true);
+        assert_eq!(payload["items"][300]["omitted_items"], 50);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repo_evidence_rejects_secret_like_text() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+
+        let error = store
+            .write_repo_evidence(
+                &run_id,
+                RepoEvidenceKind::RepoRead,
+                "repo",
+                Vec::new(),
+                "secret",
+                json!({"snippet": "api_key=abc"}),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, StoreError::RepoEvidenceSecretLikeText));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repo_evidence_rejects_payload_path_escape() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let reference = store
+            .write_repo_evidence(
+                &run_id,
+                RepoEvidenceKind::RepoRead,
+                "repo",
+                Vec::new(),
+                "read",
+                json!({"snippet": "safe"}),
+            )
+            .unwrap();
+        let outside = root.join("outside.json");
+        fs::write(&outside, "{}").unwrap();
+        let mut escaped = reference;
+        escaped.payload_path = outside.display().to_string();
+        let index_path = root
+            .join("runs")
+            .join("run-1")
+            .join("repo_evidence")
+            .join("index.jsonl");
+        fs::write(
+            index_path,
+            format!("{}\n", serde_json::to_string(&escaped).unwrap()),
+        )
+        .unwrap();
+
+        let error = store.read_repo_evidence(&escaped.ref_id).unwrap_err();
+
+        assert!(matches!(error, StoreError::RepoEvidencePathEscape(_)));
         let _ = fs::remove_dir_all(root);
     }
 
