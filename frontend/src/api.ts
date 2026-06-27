@@ -49,6 +49,7 @@ import type {
   RustRunRepoEvidenceResponse,
   RustRunSummary,
   RustProjectConfig,
+  RustToolRegistryResponse,
   RustValidationReport,
   SkillUpdateInfo,
   StoredRunDetail,
@@ -339,6 +340,11 @@ export function validateRustMcpManifest(
     headers: jsonHeaders,
     body: JSON.stringify(request)
   });
+}
+
+export function getRustHarnessTools(harnessId?: string | null): Promise<RustToolRegistryResponse> {
+  const query = harnessId ? `?harness_id=${encodeURIComponent(harnessId)}` : "";
+  return requestJson<RustToolRegistryResponse>(`/api/v3/harness/tools${query}`);
 }
 
 export async function getRustRuns(): Promise<RustRunSummary[]> {

@@ -574,7 +574,8 @@ npm.cmd run build
   approval-gated.
 - Rust `coder-harness` also carries the first tool capability registry for
   planner and code-worker harnesses, including harness filtering and approval
-  flags for write/external side-effect tools.
+  flags for write/external side-effect tools. Rust API callers can inspect it
+  through `GET /api/v3/harness/tools?harness_id=code-worker-harness`.
 - CodeWorker tool-loop actions must remain scoped to `read_file`,
   `search_files`, `inspect_git_diff`, `propose_patch`, `apply_patch_sandbox`,
   `run_command_sandbox`, `read_tool_output`, and `return_execution_result`.

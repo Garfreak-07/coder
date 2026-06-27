@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, fs, net::SocketAddr, path::PathBuf};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -11,7 +11,9 @@ use coder_config::{
     validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel, ValidationReport,
 };
 use coder_core::{FinalReport, RunId, RunState, RunStatus};
-use coder_harness::{validate_mcp_manifest, McpManifestValidation};
+use coder_harness::{
+    validate_mcp_manifest, McpManifestValidation, ToolRegistry, ToolRegistryEntry,
+};
 use coder_memory::{
     load_project_memory_file, memory_read_event, memory_write_proposed_event, MemoryError,
     MemoryRecord, MemoryScope, ProjectMemoryFile,
@@ -49,6 +51,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/config/validate", post(validate_config))
         .route("/api/v3/workflows/validate", post(validate_workflow))
         .route("/api/v3/mcp/manifests/validate", post(validate_mcp))
+        .route("/api/v3/harness/tools", get(list_harness_tools))
         .route("/api/v3/runs", get(list_runs))
         .route("/api/v3/runs/preview", post(preview_run))
         .route(
@@ -179,6 +182,14 @@ async fn validate_mcp(
     Json(request): Json<McpManifestValidationRequest>,
 ) -> Json<McpManifestValidation> {
     Json(validate_mcp_manifest(&request.manifest))
+}
+
+async fn list_harness_tools(Query(query): Query<ToolRegistryQuery>) -> Json<ToolRegistryResponse> {
+    let registry = ToolRegistry::default();
+    Json(ToolRegistryResponse {
+        tools: registry.list_tools(query.harness_id.as_deref()),
+        harness_id: query.harness_id,
+    })
 }
 
 async fn run_mock_workflow(
@@ -579,6 +590,17 @@ pub struct WorkflowValidationRequest {
 #[derive(Debug, Deserialize)]
 pub struct McpManifestValidationRequest {
     pub manifest: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ToolRegistryQuery {
+    pub harness_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ToolRegistryResponse {
+    pub harness_id: Option<String>,
+    pub tools: Vec<ToolRegistryEntry>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1154,6 +1176,38 @@ mod tests {
             false
         );
         assert!(body["warnings"].as_array().unwrap().len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn harness_tools_endpoint_filters_code_worker_tools() {
+        let app = test_router();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/harness/tools?harness_id=code-worker-harness")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let tool_names = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["capability"]["name"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(tool_names.contains("run_command_sandbox"));
+        assert!(!tool_names.contains("inspect_run_state"));
+        let patch_tool = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["capability"]["name"] == "apply_patch_sandbox")
+            .unwrap();
+        assert_eq!(patch_tool["requires_approval"], true);
     }
 
     #[tokio::test]

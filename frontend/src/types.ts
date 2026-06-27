@@ -186,6 +186,26 @@ export interface RustMcpManifestValidation {
   manifest?: RustMcpServerManifest | null;
 }
 
+export interface RustToolCapability {
+  name: string;
+  toolset: string;
+  side_effect: RustMcpSideEffectLevel;
+  risk: RustMcpRiskLevel;
+}
+
+export interface RustToolRegistryEntry {
+  capability: RustToolCapability;
+  description: string;
+  harness_ids: string[];
+  enabled_by_default: boolean;
+  requires_approval: boolean;
+}
+
+export interface RustToolRegistryResponse {
+  harness_id?: string | null;
+  tools: RustToolRegistryEntry[];
+}
+
 export interface RustAgentSpec {
   role: string;
   model: string;
