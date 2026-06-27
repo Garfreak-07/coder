@@ -572,6 +572,10 @@ npm.cmd run build
   operations require approval, effective risk is the higher of request and
   capability risk, and medium/high-risk or permission-requesting operations are
   approval-gated.
+- Rust `coder-extensions` now carries the first plugin manifest baseline,
+  including builtin plugin/harness-runtime manifests and validation that
+  external-effect plugins require preview before later install or execution
+  flows are added.
 - Rust `coder-harness` also carries the first tool capability registry for
   planner and code-worker harnesses, including harness filtering and approval
   flags for write/external side-effect tools. Rust API callers can inspect it

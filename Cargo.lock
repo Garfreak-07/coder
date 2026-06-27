@@ -267,6 +267,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "coder-extensions"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "coder-harness"
 version = "0.1.0"
 dependencies = [
