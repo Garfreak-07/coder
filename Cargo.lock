@@ -276,6 +276,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "coder-memory"
+version = "0.1.0"
+dependencies = [
+ "coder-core",
+ "coder-events",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "coder-openhands"
 version = "0.1.0"
 dependencies = [

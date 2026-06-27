@@ -113,4 +113,6 @@ Classification values:
   normalization, redacted secrets.
 - `coder-server`: `/api/v3` health, config validation, workflow validation,
   mock run, event listing.
+- `coder-memory`: project memory file loading, bounded memory write previews,
+  and content-free memory read events.
 - Frontend adapter: legacy canvas to `WorkflowSpec` and back.

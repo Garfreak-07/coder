@@ -33,6 +33,9 @@ The Rust API v3 server can read these runs through
 started with the same `--store` directory.
 `POST /api/v3/runs/preview` provides a side-effect-free readiness and
 confirmation gate for a requested Rust workflow run.
+`coder-memory` is the first lightweight Rust memory milestone: JSON project
+memory records plus `memory.read` and `memory.write.proposed` event helpers,
+without vector retrieval.
 
 Rust checks:
 

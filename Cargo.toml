@@ -6,6 +6,7 @@ members = [
   "crates/coder-core",
   "crates/coder-events",
   "crates/coder-harness",
+  "crates/coder-memory",
   "crates/coder-openhands",
   "crates/coder-server",
   "crates/coder-store",
@@ -45,6 +46,9 @@ path = "crates/coder-events"
 
 [workspace.dependencies.coder-harness]
 path = "crates/coder-harness"
+
+[workspace.dependencies.coder-memory]
+path = "crates/coder-memory"
 
 [workspace.dependencies.coder-openhands]
 path = "crates/coder-openhands"
