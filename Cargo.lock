@@ -228,6 +228,7 @@ dependencies = [
  "coder-openhands",
  "coder-server",
  "coder-store",
+ "coder-tools",
  "coder-workflow",
  "serde_json",
  "serde_yaml",

@@ -9,6 +9,7 @@ use coder_openhands::{
 };
 use coder_server::{serve, ApiState};
 use coder_store::RunStore;
+use coder_tools::{read_file, search_text, RepoToolConfig};
 use coder_workflow::MockWorkflowRunner;
 use serde_json::json;
 
@@ -34,6 +35,10 @@ enum Command {
     Openhands {
         #[command(subcommand)]
         command: OpenHandsCommand,
+    },
+    Tools {
+        #[command(subcommand)]
+        command: ToolsCommand,
     },
     Server {
         #[arg(long, default_value = "127.0.0.1")]
@@ -95,6 +100,26 @@ enum OpenHandsCommand {
         #[arg(long, default_value = ".coder-rust-openhands")]
         store: PathBuf,
         task: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ToolsCommand {
+    ReadFile {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_FILE_BYTES)]
+        max_file_bytes: u64,
+        path: PathBuf,
+    },
+    SearchText {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_FILE_BYTES)]
+        max_file_bytes: u64,
+        #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_SEARCH_MATCHES)]
+        max_matches: usize,
+        query: String,
     },
 }
 
@@ -409,6 +434,43 @@ async fn main() -> anyhow::Result<()> {
             })
             .await?;
             print_openhands_run_output(&output);
+        }
+        Command::Tools {
+            command:
+                ToolsCommand::ReadFile {
+                    repo,
+                    max_file_bytes,
+                    path,
+                },
+        } => {
+            let output = read_file(
+                repo,
+                path,
+                &RepoToolConfig {
+                    max_file_bytes,
+                    max_search_matches: coder_tools::DEFAULT_MAX_SEARCH_MATCHES,
+                },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        Command::Tools {
+            command:
+                ToolsCommand::SearchText {
+                    repo,
+                    max_file_bytes,
+                    max_matches,
+                    query,
+                },
+        } => {
+            let output = search_text(
+                repo,
+                &query,
+                &RepoToolConfig {
+                    max_file_bytes,
+                    max_search_matches: max_matches,
+                },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
         Command::Server { host, port, store } => {
             let addr: SocketAddr = format!("{host}:{port}").parse()?;

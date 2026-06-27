@@ -16,6 +16,8 @@ cargo run -p coder-cli --bin coder-rust -- workflow run --mock planner-led "summ
 cargo run -p coder-cli --bin coder-rust -- workflow run --conversation-id <id> planner-led "summarize this repo"
 cargo run -p coder-cli --bin coder-rust -- openhands doctor --server http://127.0.0.1:8000
 cargo run -p coder-cli --bin coder-rust -- openhands run --server http://127.0.0.1:8000 --conversation-id <id> "summarize this repo"
+cargo run -p coder-cli --bin coder-rust -- tools read-file --repo . README.md
+cargo run -p coder-cli --bin coder-rust -- tools search-text --repo . "Planner Chat"
 cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8766
 ```
 
