@@ -8,6 +8,7 @@ from .repo_evidence import RepoEvidenceStore
 from .repo_models import RepoEvidenceRef, RepoFileRef, RepoReadSnippet, RepoScope, RepoSearchHit
 from .repo_read import RepoReadService
 from .repo_search import RepoTextSearchService
+from .retrieval_router import ContextRetrievalDecision, ContextRetrievalRouter, RetrievalIntent
 
 
 def __getattr__(name: str):
@@ -22,6 +23,8 @@ __all__ = [
     "CompactionResult",
     "ContextBudget",
     "ContextCompactor",
+    "ContextRetrievalDecision",
+    "ContextRetrievalRouter",
     "ContextExternalRefStore",
     "ContextService",
     "ExternalRef",
@@ -37,4 +40,5 @@ __all__ = [
     "RepoScope",
     "RepoSearchHit",
     "RepoTextSearchService",
+    "RetrievalIntent",
 ]
