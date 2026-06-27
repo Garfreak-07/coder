@@ -26,6 +26,10 @@ import type {
   RustRepoEvidenceResponse,
   RustCommandPreview,
   RustCommandPreviewRequest,
+  RustPatchApplyRequest,
+  RustPatchApplyResponse,
+  RustPatchPreview,
+  RustPatchPreviewRequest,
   RustRunArtifactResponse,
   RustRunDetail,
   RustRunEventsResponse,
@@ -271,6 +275,22 @@ export function validateRustWorkflowSpec(config: RustProjectConfig, workflowId: 
 
 export function previewRustCommand(request: RustCommandPreviewRequest): Promise<RustCommandPreview> {
   return requestJson<RustCommandPreview>("/api/v3/tools/command/preview", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(request)
+  });
+}
+
+export function previewRustPatch(request: RustPatchPreviewRequest): Promise<RustPatchPreview> {
+  return requestJson<RustPatchPreview>("/api/v3/tools/patch/preview", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(request)
+  });
+}
+
+export function applyRustPatch(request: RustPatchApplyRequest): Promise<RustPatchApplyResponse> {
+  return requestJson<RustPatchApplyResponse>("/api/v3/tools/patch/apply", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify(request)

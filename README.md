@@ -59,6 +59,10 @@ It can also read stored repo evidence payloads through
 confirmation gate for a requested Rust workflow run.
 `POST /api/v3/tools/command/preview` provides a side-effect-free command policy
 and approval-key preview for argv-only check commands.
+`POST /api/v3/tools/patch/preview` provides side-effect-free patch summaries;
+`POST /api/v3/tools/patch/apply` requires a run id, records repo evidence and
+patch lifecycle events, and only mutates files when the patch request is
+approved.
 `coder-memory` is the first lightweight Rust memory milestone: JSON project
 memory records plus `memory.read` and `memory.write.proposed` event helpers,
 without vector retrieval.

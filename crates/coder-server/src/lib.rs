@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, net::SocketAddr};
+use std::{collections::BTreeSet, net::SocketAddr, path::PathBuf};
 
 use axum::{
     extract::{Path, State},
@@ -11,8 +11,11 @@ use coder_config::{
     validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel, ValidationReport,
 };
 use coder_core::{FinalReport, RunId, RunState};
-use coder_store::{RepoEvidenceRef, RunStore, StoreError, StoredRunSummary};
-use coder_tools::{preview_command, CommandPreview, RepoToolError};
+use coder_store::{RepoEvidenceKind, RepoEvidenceRef, RunStore, StoreError, StoredRunSummary};
+use coder_tools::{
+    apply_patch_file, preview_command, preview_patch_file, CommandPreview, PatchApplyEvidence,
+    PatchApplyRequest as ToolPatchApplyRequest, PatchPreviewEvidence, RepoToolError,
+};
 use coder_workflow::{MockWorkflowRunner, WorkflowError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -39,6 +42,8 @@ pub fn router(state: ApiState) -> Router {
             "/api/v3/tools/command/preview",
             post(preview_command_endpoint),
         )
+        .route("/api/v3/tools/patch/preview", post(preview_patch_endpoint))
+        .route("/api/v3/tools/patch/apply", post(apply_patch_endpoint))
         .route("/api/v3/runs/mock", post(run_mock_workflow))
         .route("/api/v3/runs/{run_id}", get(get_run_detail))
         .route("/api/v3/runs/{run_id}/events", get(list_run_events))
@@ -166,6 +171,64 @@ async fn preview_command_endpoint(
         request.sandbox.unwrap_or(false),
     )?;
     Ok(Json(preview))
+}
+
+async fn preview_patch_endpoint(
+    Json(request): Json<PatchPreviewRequest>,
+) -> Result<Json<PatchPreviewEvidence>, ApiError> {
+    let preview = preview_patch_file(
+        &request.repo_root,
+        PathBuf::from(&request.patch_file),
+        request
+            .max_patch_bytes
+            .unwrap_or(coder_tools::DEFAULT_MAX_PATCH_BYTES),
+    )?;
+    Ok(Json(preview))
+}
+
+async fn apply_patch_endpoint(
+    State(state): State<ApiState>,
+    Json(request): Json<PatchApplyToolRequest>,
+) -> Result<Json<PatchApplyResponse>, ApiError> {
+    let run_id = request
+        .run_id
+        .as_deref()
+        .map(RunId::from_string)
+        .ok_or_else(|| ApiError::bad_request("run_id is required for patch apply"))?;
+    let result = apply_patch_file(
+        &request.repo_root,
+        ToolPatchApplyRequest {
+            patch_file: PathBuf::from(&request.patch_file),
+            max_patch_bytes: request
+                .max_patch_bytes
+                .unwrap_or(coder_tools::DEFAULT_MAX_PATCH_BYTES),
+            source: request.source.unwrap_or_else(|| "model".to_owned()),
+            approved: request.approved.unwrap_or(false),
+        },
+    )?;
+    let result_json =
+        serde_json::to_value(&result).map_err(|error| ApiError::internal(error.to_string()))?;
+    let evidence_ref = state.store.write_repo_evidence(
+        &run_id,
+        RepoEvidenceKind::RepoDiff,
+        result.repo_root.clone(),
+        Vec::new(),
+        format!(
+            "Patch apply {}: {} file(s).",
+            result.status, result.preview.file_count
+        ),
+        json!({
+            "evidence_kind": "patch_apply",
+            "operation": "patch_apply",
+            "result": result_json,
+        }),
+    )?;
+    record_patch_apply_event(&state.store, &run_id, &result, &evidence_ref)?;
+    Ok(Json(PatchApplyResponse {
+        run_id: run_id.to_string(),
+        evidence_ref,
+        result,
+    }))
 }
 
 async fn list_run_events(
@@ -323,6 +386,30 @@ pub struct CommandPreviewRequest {
     pub sandbox: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PatchPreviewRequest {
+    pub repo_root: String,
+    pub patch_file: String,
+    pub max_patch_bytes: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PatchApplyToolRequest {
+    pub repo_root: String,
+    pub patch_file: String,
+    pub max_patch_bytes: Option<usize>,
+    pub source: Option<String>,
+    pub approved: Option<bool>,
+    pub run_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PatchApplyResponse {
+    pub run_id: String,
+    pub evidence_ref: RepoEvidenceRef,
+    pub result: PatchApplyEvidence,
+}
+
 #[derive(Debug, Serialize)]
 pub struct MockRunResponse {
     pub run_id: String,
@@ -401,6 +488,62 @@ fn validation_issue(
     }
 }
 
+fn record_patch_apply_event(
+    store: &RunStore,
+    run_id: &RunId,
+    output: &PatchApplyEvidence,
+    evidence_ref: &RepoEvidenceRef,
+) -> Result<(), StoreError> {
+    let sequence = store.read_events(run_id)?.len() as u64 + 1;
+    let evidence_uri = format!("repo-evidence://{}", evidence_ref.ref_id);
+    if output.requires_approval {
+        store.append_event(
+            run_id,
+            &coder_events::CoderEvent::new(
+                run_id.clone(),
+                sequence,
+                "approval.requested",
+                json!({
+                    "approval_type": "patch_apply",
+                    "approval_key": &output.approval_key,
+                    "patch_file": &output.patch_file,
+                    "reason": &output.reason,
+                    "files": &output.preview.files,
+                    "evidence_ref": &evidence_ref.ref_id,
+                }),
+            )
+            .with_ref("patch_evidence", evidence_uri),
+        )?;
+        return Ok(());
+    }
+
+    let kind = if output.applied {
+        "patch.applied"
+    } else {
+        "patch.failed"
+    };
+    store.append_event(
+        run_id,
+        &coder_events::CoderEvent::new(
+            run_id.clone(),
+            sequence,
+            kind,
+            json!({
+                "status": &output.status,
+                "patch_file": &output.patch_file,
+                "applied": output.applied,
+                "reason": &output.reason,
+                "approval_key": &output.approval_key,
+                "file_count": output.preview.file_count,
+                "files": &output.preview.files,
+                "evidence_ref": &evidence_ref.ref_id,
+            }),
+        )
+        .with_ref("patch_evidence", evidence_uri),
+    )?;
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct ApiError {
     status: StatusCode,
@@ -408,6 +551,13 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
     fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -657,6 +807,111 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn patch_preview_endpoint_summarizes_patch_without_writing_store() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("tracked.txt"), "base\n").unwrap();
+        fs::write(
+            root.join("change.patch"),
+            "\
+diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1 +1 @@
+-base
++changed
+",
+        )
+        .unwrap();
+        let app = test_router();
+
+        let response = post_json(
+            app,
+            "/api/v3/tools/patch/preview",
+            json!({
+                "repo_root": root.display().to_string(),
+                "patch_file": "change.patch"
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["file_count"], 1);
+        assert_eq!(body["files"][0]["new_path"], "tracked.txt");
+        assert!(!root.join("runs").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn patch_apply_endpoint_requires_run_id_and_records_approval() {
+        let repo = temp_root();
+        let store_root = temp_root();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("tracked.txt"), "base\n").unwrap();
+        fs::write(
+            repo.join("change.patch"),
+            "\
+diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1 +1 @@
+-base
++changed
+",
+        )
+        .unwrap();
+        let app = router(ApiState::new(RunStore::new(&store_root)));
+
+        let missing_run_response = post_json(
+            app.clone(),
+            "/api/v3/tools/patch/apply",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "patch_file": "change.patch",
+                "source": "model"
+            }),
+        )
+        .await;
+        assert_eq!(missing_run_response.status(), StatusCode::BAD_REQUEST);
+
+        let apply_response = post_json(
+            app.clone(),
+            "/api/v3/tools/patch/apply",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "patch_file": "change.patch",
+                "source": "model",
+                "approved": false,
+                "run_id": "run-1"
+            }),
+        )
+        .await;
+        assert_eq!(apply_response.status(), StatusCode::OK);
+        let apply_body = response_json(apply_response).await;
+        assert_eq!(apply_body["result"]["status"], "blocked");
+        assert!(apply_body["evidence_ref"]["ref_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("repo-diff:"));
+
+        let report_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/report/preview")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let report_body = response_json(report_response).await;
+        assert_eq!(report_body["report"]["status"], "blocked");
+        assert_eq!(report_body["report"]["changed_files"][0], "tracked.txt");
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(store_root);
     }
 
     #[tokio::test]

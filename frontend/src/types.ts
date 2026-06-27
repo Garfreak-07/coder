@@ -337,6 +337,57 @@ export interface RustCommandPreview {
   evidence_kind: string;
 }
 
+export interface RustPatchFilePreview {
+  old_path?: string | null;
+  new_path?: string | null;
+  status: string;
+  hunks: number;
+  additions: number;
+  deletions: number;
+  target_exists: boolean;
+}
+
+export interface RustPatchPreview {
+  repo_root: string;
+  files: RustPatchFilePreview[];
+  file_count: number;
+  hunk_count: number;
+  additions: number;
+  deletions: number;
+  truncated: boolean;
+  evidence_kind: string;
+}
+
+export interface RustPatchPreviewRequest {
+  repo_root: string;
+  patch_file: string;
+  max_patch_bytes?: number | null;
+}
+
+export interface RustPatchApplyRequest extends RustPatchPreviewRequest {
+  source?: string | null;
+  approved?: boolean | null;
+  run_id: string;
+}
+
+export interface RustPatchApplyResult {
+  repo_root: string;
+  patch_file: string;
+  status: string;
+  applied: boolean;
+  requires_approval: boolean;
+  approval_key: string;
+  reason: string;
+  preview: RustPatchPreview;
+  evidence_kind: string;
+}
+
+export interface RustPatchApplyResponse {
+  run_id: string;
+  evidence_ref: RustRepoEvidenceRef;
+  result: RustPatchApplyResult;
+}
+
 export interface PreflightIssue {
   level: "error" | "warning" | string;
   code: string;

@@ -32,7 +32,7 @@ behavior is covered by a Rust equivalent and tests listed here.
 | Runtime provider selection | `HarnessRuntimeManager` | Backend registry | Keep manager until Rust registry dispatches mock/native/OpenHands | Rust dispatch covers OpenHands enabled/unavailable/fallback cases |
 | OpenHands provider | `openhands_provider.py`, `openhands_tools` | `coder-openhands` | Implement external Agent Server health, send, stream, normalize | Real or simulated OpenHands events stored as Coder JSONL |
 | Internal fallback | `fallback_provider.py` | Mock/native Rust backend | Implement mock workflow runner and later native tools | Python fallback unused by default and tests pass on Rust mock/native |
-| ActionGateway/tool execution | `actions/*` | `coder-tools`, `coder-sandbox`, Rust tool gateway | Port action policy and side-effect eventing | Patch/command/plugin/MCP policy tests pass in Rust |
+| ActionGateway/tool execution | `actions/*` | `coder-tools`, `coder-sandbox`, Rust tool gateway | Ported command preview plus patch preview/apply API paths with side-effect eventing; continue plugin/MCP policy next | Patch/command/plugin/MCP policy tests pass in Rust |
 | Patch pipeline | `coding/patch_*` | Rust patch tool with artifact refs | Added path-safe patch preview plus approval-gated patch apply with check-before-apply and patch lifecycle events | Rollback and scope safety tests pass |
 | Command checks | `coding/command_*` | Rust command runner | Started with policy-gated argv runner, side-effect-free API approval preview, cwd scoping, timeout, bounded output, and CLI event recording; add richer report integration next | Command tests pass and approval events emitted |
 | Event model | `agent_graph/events.py`, run events stores | `coder-events` | Promote canonical JSONL event envelope with sequence IDs | Replay/listing tests cover current live/stored events |
@@ -50,7 +50,7 @@ behavior is covered by a Rust equivalent and tests listed here.
 | MCP | `tools/mcp.py`, registries | Rust MCP registry/server/client | Keep deny-by-default, expose later | Manifest validation and no-auto-enable tests pass |
 | Provider settings | `server/settings.py`, frontend settings | `coder-model` profiles and Rust settings API | Keep secret refs only, redact values | Provider status/test behavior has Rust parity |
 | Python CLI | `cli.py` | `coder-cli` | Add Rust commands while keeping Python CLI | Rust CLI can run and inspect mock/OpenHands spike workflows |
-| FastAPI server | `server/app.py` | `coder-server` Axum API v3 | Add v3 endpoints; preserve v2 until frontend migrates | Frontend can run against Rust server for main flow |
+| FastAPI server | `server/app.py` | `coder-server` Axum API v3 | Added v3 health, validation, run/event/report/store reads, command preview, and patch preview/apply endpoints; preserve v2 until frontend migrates | Frontend can run against Rust server for main flow |
 | React app | `frontend/src` | Same app with Rust API adapter | Avoid rewrite; add adapter/helper layer before switching product paths | Main pages validated through browser smoke |
 | Tests | `tests/`, frontend build, future Cargo tests | Multi-language CI gates | Keep Python tests until parity tests replace them | Equivalent Rust/frontend tests exist before deleting Python tests |
 
