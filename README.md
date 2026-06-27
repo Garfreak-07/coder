@@ -12,6 +12,7 @@ Current Rust commands:
 ```powershell
 cargo run -p coder-cli --bin coder-rust -- doctor
 cargo run -p coder-cli --bin coder-rust -- config validate --path examples\coder.yaml
+cargo run -p coder-cli --bin coder-rust -- workflow preview planner-led "summarize this repo"
 cargo run -p coder-cli --bin coder-rust -- workflow run --mock planner-led "summarize this repo"
 cargo run -p coder-cli --bin coder-rust -- workflow run --conversation-id <id> planner-led "summarize this repo"
 cargo run -p coder-cli --bin coder-rust -- runs list --store .coder-rust

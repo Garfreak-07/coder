@@ -1,7 +1,9 @@
-use std::{fs, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeSet, fs, net::SocketAddr, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
-use coder_config::{load_project_config, validate_project_config, ProjectConfig};
+use coder_config::{
+    load_project_config, validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel,
+};
 use coder_core::{RunId, RunState, RunStatus, WorkflowId};
 use coder_events::CoderEvent;
 use coder_openhands::{
@@ -69,6 +71,12 @@ enum WorkflowCommand {
     Validate {
         #[arg(long, default_value = "examples/coder.yaml")]
         config: PathBuf,
+    },
+    Preview {
+        #[arg(long, default_value = "examples/coder.yaml")]
+        config: PathBuf,
+        workflow_id: String,
+        task: String,
     },
     Run {
         #[arg(long)]
@@ -230,6 +238,74 @@ fn ensure_valid_config(config: &ProjectConfig) -> anyhow::Result<()> {
         anyhow::bail!("invalid config: {}", serde_json::to_string_pretty(&report)?);
     }
     Ok(())
+}
+
+fn workflow_preview_json(
+    config: &ProjectConfig,
+    workflow_id: &str,
+    task: &str,
+) -> serde_json::Value {
+    let mut issues = validate_project_config(config).issues;
+    let workflow = config.workflows.get(workflow_id);
+    if workflow.is_none() {
+        issues.push(validation_issue(
+            ValidationLevel::Error,
+            "workflow_not_found",
+            format!("workflow '{workflow_id}' was not found"),
+            "workflow_id",
+        ));
+    }
+    if task.trim().is_empty() {
+        issues.push(validation_issue(
+            ValidationLevel::Error,
+            "task_empty",
+            "task must not be empty",
+            "task",
+        ));
+    }
+    let status = if issues
+        .iter()
+        .any(|issue| issue.level == ValidationLevel::Error)
+    {
+        "blocked"
+    } else {
+        "ready"
+    };
+    let backends = workflow
+        .map(|workflow| {
+            workflow
+                .nodes
+                .iter()
+                .filter_map(|node| config.harnesses.get(&node.harness))
+                .map(|harness| harness.backend.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    json!({
+        "status": status,
+        "requires_confirmation": status == "ready",
+        "workflow_id": workflow_id,
+        "task": task,
+        "backends": backends,
+        "issues": issues,
+    })
+}
+
+fn validation_issue(
+    level: ValidationLevel,
+    code: impl Into<String>,
+    message: impl Into<String>,
+    target: impl Into<String>,
+) -> ValidationIssue {
+    ValidationIssue {
+        level,
+        code: code.into(),
+        message: message.into(),
+        target: target.into(),
+    }
 }
 
 fn select_openhands_workflow_target(
@@ -485,6 +561,21 @@ async fn main() -> anyhow::Result<()> {
             let report = validate_project_config(&config);
             println!("{}", serde_json::to_string_pretty(&report)?);
             if !report.is_pass() {
+                std::process::exit(1);
+            }
+        }
+        Command::Workflow {
+            command:
+                WorkflowCommand::Preview {
+                    config,
+                    workflow_id,
+                    task,
+                },
+        } => {
+            let config = load_project_config(&config)?;
+            let output = workflow_preview_json(&config, &workflow_id, &task);
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            if output["status"] == "blocked" {
                 std::process::exit(1);
             }
         }
@@ -788,6 +879,42 @@ mod tests {
         let error = select_openhands_workflow_target(&config, "planner-led").unwrap_err();
 
         assert!(error.to_string().contains("no OpenHands-backed node"));
+    }
+
+    #[test]
+    fn workflow_preview_reports_ready_with_backends() {
+        let config: ProjectConfig =
+            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
+
+        let preview = workflow_preview_json(&config, "planner-led", "summarize the repo");
+
+        assert_eq!(preview["status"], "ready");
+        assert_eq!(preview["requires_confirmation"], true);
+        assert!(preview["backends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|backend| backend.as_str() == Some("openhands")));
+        assert_eq!(preview["issues"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn workflow_preview_blocks_missing_workflow_and_empty_task() {
+        let config: ProjectConfig =
+            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
+
+        let preview = workflow_preview_json(&config, "missing", "  ");
+        let codes = preview["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|issue| issue["code"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(preview["status"], "blocked");
+        assert_eq!(preview["requires_confirmation"], false);
+        assert!(codes.contains(&"workflow_not_found"));
+        assert!(codes.contains(&"task_empty"));
     }
 
     #[test]
