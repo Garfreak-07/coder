@@ -36,7 +36,7 @@ behavior is covered by a Rust equivalent and tests listed here.
 | Patch pipeline | `coding/patch_*` | Rust patch tool with artifact refs | Start with preview/apply under sandbox policy | Rollback and scope safety tests pass |
 | Command checks | `coding/command_*` | Rust command runner | Add allow/ask/deny, timeout, stdout/stderr blobs | Command tests pass and approval events emitted |
 | Event model | `agent_graph/events.py`, run events stores | `coder-events` | Promote canonical JSONL event envelope with sequence IDs | Replay/listing tests cover current live/stored events |
-| Run storage | `server/storage.py`, `server/stores/*` | `coder-store` | Expand metadata/events/artifacts/blobs/repo-evidence/checkpoints | Stored run, artifact, blob, and repo-evidence APIs read Rust-created records |
+| Run storage | `server/storage.py`, `server/stores/*` | `coder-store` | Expand metadata/events/artifacts/blobs/repo-evidence/checkpoints | Stored run listing/detail, artifact, blob, and repo-evidence APIs read Rust-created records |
 | Blob/artifact stores | `core/artifacts.py`, stores | `coder-store` | Add content hash refs and traversal-safe reads | Large payload and secret redaction tests pass |
 | Final reports | `agent_graph/final_report.py` | `coder-core::FinalReport` plus report builder | Build reports from events, not model claims | Completed/blocked/failed/cancelled report tests pass |
 | Runtime state views | `runtime_state/*` | Event replay plus UI projections | Replace internal cache exposure with bounded DTOs | UI/debug exports have equivalent data |

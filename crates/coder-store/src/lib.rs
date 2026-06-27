@@ -46,6 +46,42 @@ impl RunStore {
         read_json_optional(self.safe_run_dir(run_id)?.join("metadata.json"))
     }
 
+    pub fn list_run_summaries(&self) -> Result<Vec<StoredRunSummary>, StoreError> {
+        let runs_dir = self.root.join("runs");
+        if !runs_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut summaries = Vec::new();
+        for entry in fs::read_dir(runs_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(run_name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if safe_store_segment(&run_name, "run_id").is_err() {
+                continue;
+            }
+
+            let run_id = RunId::from_string(run_name.clone());
+            let metadata = self.read_metadata(&run_id)?;
+            let event_count = self.read_events(&run_id)?.len();
+            let has_report = self.read_report(&run_id)?.is_some();
+            let repo_evidence_count = self.count_repo_evidence(&run_id)?;
+            summaries.push(StoredRunSummary {
+                run_id: run_name,
+                metadata,
+                event_count,
+                has_report,
+                repo_evidence_count,
+            });
+        }
+        summaries.sort_by(|left, right| left.run_id.cmp(&right.run_id));
+        Ok(summaries)
+    }
+
     pub fn append_event(&self, run_id: &RunId, event: &CoderEvent) -> Result<(), StoreError> {
         let path = self.safe_run_dir(run_id)?.join("events.jsonl");
         ensure_parent(&path)?;
@@ -245,6 +281,25 @@ impl RunStore {
         let safe_run_id = safe_store_segment(run_id.as_str(), "run_id")?;
         Ok(self.root.join("runs").join(safe_run_id))
     }
+
+    fn count_repo_evidence(&self, run_id: &RunId) -> Result<usize, StoreError> {
+        let index_path = self
+            .safe_run_dir(run_id)?
+            .join("repo_evidence")
+            .join("index.jsonl");
+        if !index_path.exists() {
+            return Ok(0);
+        }
+        let file = fs::File::open(index_path)?;
+        let reader = BufReader::new(file);
+        let mut count = 0;
+        for line in reader.lines() {
+            if !line?.trim().is_empty() {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,6 +336,15 @@ pub struct RepoEvidenceRef {
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     pub token_estimate: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredRunSummary {
+    pub run_id: String,
+    pub metadata: Option<RunState>,
+    pub event_count: usize,
+    pub has_report: bool,
+    pub repo_evidence_count: usize,
 }
 
 #[derive(Debug, Error)]
@@ -606,6 +670,57 @@ mod tests {
         assert_eq!(loaded_state.status, coder_core::RunStatus::Completed);
         assert_eq!(loaded_report.summary, "done");
         assert_eq!(loaded_report.evidence_refs[0].kind, "event_log");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_run_summaries_reports_counts_and_skips_unsafe_dirs() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run_test");
+        let mut state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        state.status = coder_core::RunStatus::Completed;
+        let report = FinalReport::completed("done");
+
+        fs::create_dir_all(root.join("runs").join("bad run")).unwrap();
+        store.write_metadata(&state).unwrap();
+        store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(run_id.clone(), 1, "run.started", json!({})),
+            )
+            .unwrap();
+        store.write_report(&run_id, &report).unwrap();
+        store
+            .write_repo_evidence(
+                &run_id,
+                RepoEvidenceKind::RepoRead,
+                "repo",
+                Vec::new(),
+                "read",
+                json!({"snippet": "safe"}),
+            )
+            .unwrap();
+
+        let summaries = store.list_run_summaries().unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].run_id, "run_test");
+        assert_eq!(summaries[0].metadata.as_ref().unwrap().status, state.status);
+        assert_eq!(summaries[0].event_count, 1);
+        assert!(summaries[0].has_report);
+        assert_eq!(summaries[0].repo_evidence_count, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn list_run_summaries_is_empty_without_runs_dir() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+
+        let summaries = store.list_run_summaries().unwrap();
+
+        assert!(summaries.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

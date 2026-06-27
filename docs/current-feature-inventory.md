@@ -113,8 +113,8 @@ Classification values:
 - `coder-openhands`: unavailable server, auth failure, raw event
   normalization, redacted secrets.
 - `coder-server`: `/api/v3` health, config validation, workflow validation,
-  mock run, event listing, stored artifact/blob retrieval, and stored repo
-  evidence payload retrieval by ref.
+  mock run, run listing, event listing, stored artifact/blob retrieval, and
+  stored repo evidence payload retrieval by ref.
 - `coder-memory`: project memory file loading, bounded memory write previews,
   and content-free memory read events.
 - `coder-tools`: path-safe read-only repo file discovery, full-file reads,

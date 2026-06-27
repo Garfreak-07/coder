@@ -11,7 +11,7 @@ use coder_config::{
     validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel, ValidationReport,
 };
 use coder_core::{FinalReport, RunId, RunState};
-use coder_store::{RunStore, StoreError};
+use coder_store::{RunStore, StoreError, StoredRunSummary};
 use coder_workflow::{MockWorkflowRunner, WorkflowError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -32,6 +32,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/health", get(health))
         .route("/api/v3/config/validate", post(validate_config))
         .route("/api/v3/workflows/validate", post(validate_workflow))
+        .route("/api/v3/runs", get(list_runs))
         .route("/api/v3/runs/preview", post(preview_run))
         .route("/api/v3/runs/mock", post(run_mock_workflow))
         .route("/api/v3/runs/{run_id}", get(get_run_detail))
@@ -152,6 +153,12 @@ async fn list_run_events(
     }))
 }
 
+async fn list_runs(State(state): State<ApiState>) -> Result<Json<RunListResponse>, ApiError> {
+    Ok(Json(RunListResponse {
+        runs: state.store.list_run_summaries()?,
+    }))
+}
+
 async fn get_run_detail(
     State(state): State<ApiState>,
     Path(run_id): Path<String>,
@@ -251,6 +258,11 @@ pub struct MockRunResponse {
 pub struct RunEventsResponse {
     pub run_id: String,
     pub events: Vec<coder_events::CoderEvent>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunListResponse {
+    pub runs: Vec<StoredRunSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -409,6 +421,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_list_endpoint_returns_empty_store() {
+        let app = test_router();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["runs"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
     async fn run_preview_is_side_effect_free_and_reports_ready() {
         let root = temp_root();
         let app = router(ApiState::new(RunStore::new(&root)));
@@ -517,6 +547,24 @@ mod tests {
             detail_body["report"]["evidence_refs"][0]["kind"],
             "event_log"
         );
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body = response_json(list_response).await;
+        assert_eq!(list_body["runs"].as_array().unwrap().len(), 1);
+        assert_eq!(list_body["runs"][0]["run_id"], run_id);
+        assert_eq!(list_body["runs"][0]["metadata"]["status"], "completed");
+        assert!(list_body["runs"][0]["event_count"].as_u64().unwrap() >= 1);
+        assert_eq!(list_body["runs"][0]["has_report"], true);
 
         let artifact_response = app
             .oneshot(
