@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from coder_workbench.memory.models import SECRET_MARKERS
+
 
 WorkItemMemoryState = Literal["pending", "running", "completed", "blocked", "failed", "skipped"]
 RunMemoryState = Literal["running", "completed", "blocked", "failed"]
@@ -27,6 +29,10 @@ BANNED_SNAPSHOT_KEYS = {
     "full_prompt",
     "model_output",
     "prompt",
+    "api_key",
+    "password",
+    "token",
+    "secret",
 }
 
 
@@ -308,7 +314,7 @@ def _safe_mapping(value: Any) -> dict[str, Any]:
         elif isinstance(item, list):
             output[key_text] = [_safe_value(child) for child in item]
         else:
-            output[key_text] = item
+            output[key_text] = _safe_value(item)
     return output
 
 
@@ -317,6 +323,8 @@ def _safe_value(value: Any) -> Any:
         return _safe_mapping(value)
     if isinstance(value, list):
         return [_safe_value(item) for item in value]
+    if isinstance(value, str) and _contains_secret_marker(value):
+        return "[redacted]"
     return value
 
 
@@ -329,6 +337,11 @@ def _reject_banned_snapshot_keys(value: Any) -> None:
     elif isinstance(value, list):
         for item in value:
             _reject_banned_snapshot_keys(item)
+
+
+def _contains_secret_marker(value: str) -> bool:
+    lower = value.lower()
+    return any(marker in lower for marker in SECRET_MARKERS)
 
 
 def _last_round(data: dict[str, Any]) -> int:

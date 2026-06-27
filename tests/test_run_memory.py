@@ -94,6 +94,8 @@ class RunMemoryTests(unittest.TestCase):
     def test_snapshot_omits_raw_logs_diffs_prompts_and_model_outputs(self) -> None:
         data = _data()
         data["planner_task_state"]["raw_prompt"] = "do not store"
+        data["planner_task_state"]["api_key"] = "do not store"
+        data["planner_task_state"]["note"] = "LLM_API_KEY=do-not-store"
         artifacts = _artifacts()
         artifacts["execution_result_work-1"]["raw_runtime_json"] = {"full": True}
         artifacts["execution_result_work-1"]["full_diff"] = "diff --git ..."
@@ -110,8 +112,11 @@ class RunMemoryTests(unittest.TestCase):
         self.assertNotIn("raw_prompt", dumped)
         self.assertNotIn("raw_runtime_json", dumped)
         self.assertNotIn("full_diff", dumped)
+        self.assertNotIn("api_key", dumped)
+        self.assertNotIn("LLM_API_KEY", dumped)
         self.assertNotIn("do not store", dumped)
         self.assertNotIn("diff --git", dumped)
+        self.assertIn("[redacted]", dumped)
 
 
 def _data(*, work_status: str = "completed") -> dict:

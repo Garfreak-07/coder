@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -9,6 +10,8 @@ from fastapi.testclient import TestClient
 from coder_workbench.core import default_planner_led_agent_workflow
 from coder_workbench.core.artifacts import validate_artifact
 from coder_workbench.harness_runtime import HarnessRunResult
+from coder_workbench.memory.models import MemoryAcl, MemoryRecord
+from coder_workbench.memory.store import AgentScopedMemoryStore
 from coder_workbench.server.app import create_app
 
 
@@ -161,6 +164,67 @@ class PlannerChatFlowTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("planner_agent_id", response.json()["detail"])
+
+    def test_session_turn_injects_planning_chat_memory_context(self) -> None:
+        calls: list[dict] = []
+
+        class FakeHarnessRuntimeManager:
+            def __init__(self, **_kwargs):
+                pass
+
+            def run_planning_chat(self, **kwargs):
+                calls.append(kwargs)
+                return HarnessRunResult(
+                    status="completed",
+                    artifact_type="planner_chat_turn",
+                    artifact=kwargs["input_artifacts"]["legacy_kwargs"]["turn_payload"],
+                )
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as store, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo:
+            AgentScopedMemoryStore(store).append_record(
+                MemoryRecord(
+                    id="session-memory",
+                    scope="project",
+                    source_type="project_memory",
+                    purpose=["planning_context"],
+                    title="Planner memory",
+                    summary="Planning Chat should use the scoped roadmap memory.",
+                    acl=MemoryAcl(
+                        allowed_agents=["planning_chat"],
+                        allowed_contexts=["assistant_message"],
+                    ),
+                    trust_level="user_confirmed",
+                    created_at=_now(),
+                    updated_at=_now(),
+                    token_estimate=12,
+                )
+            )
+            with patch("coder_workbench.server.app.HarnessRuntimeManager", FakeHarnessRuntimeManager):
+                client = TestClient(create_app(store_root=store, frontend_dist=store))
+                session = client.post(
+                    "/api/v2/planner-chat/sessions",
+                    json={
+                        "workflow_id": "default-planner-led",
+                        "planner_agent_id": "planner",
+                        "repo": repo,
+                        "interaction_mode": "discuss",
+                    },
+                ).json()
+                response = client.post(
+                    f"/api/v2/planner-chat/sessions/{session['session_id']}/turn",
+                    json={"message": "Use the roadmap memory while planning."},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        packet = calls[0]["context"].context_packet
+        self.assertEqual(packet["warm"]["memory_cards"][0]["id"], "session-memory")
+        self.assertEqual(packet["warm"]["memory_cards"][0]["summary"], "Planning Chat should use the scoped roadmap memory.")
+        self.assertIn({"ref_type": "memory", "refs": ["session-memory"]}, packet["cold_refs"])
+        self.assertNotIn("content", str(packet))
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 if __name__ == "__main__":
