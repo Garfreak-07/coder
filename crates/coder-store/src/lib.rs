@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use coder_core::{FinalReport, ReportStatus, RunId, RunState};
+use coder_core::{FinalReport, ReportStatus, RunId, RunState, RunStatus};
 use coder_events::{CoderEvent, LargePayloadRef, DEFAULT_LARGE_PAYLOAD_PREVIEW_LIMIT};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -240,7 +240,14 @@ impl RunStore {
             evidence_refs.push(coder_core::EvidenceRef { kind, reference });
         }
 
-        let status = if blockers
+        let cancelled = metadata
+            .as_ref()
+            .map(|state| state.status == RunStatus::Cancelled)
+            .unwrap_or(false)
+            || events.iter().any(|event| event.kind == "run.cancelled");
+        let status = if cancelled {
+            ReportStatus::Cancelled
+        } else if blockers
             .iter()
             .any(|blocker| blocker.contains("requires approval:"))
         {
@@ -948,6 +955,33 @@ mod tests {
         assert_eq!(report.status, ReportStatus::Failed);
         assert!(report.checks[0].contains("cargo test"));
         assert!(report.blockers[0].contains("Command failed"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_report_cancels_on_cancelled_run_state() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let mut state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        state.status = RunStatus::Cancelled;
+        store.write_metadata(&state).unwrap();
+        store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "run.cancelled",
+                    json!({"reason": "user_cancelled"}),
+                ),
+            )
+            .unwrap();
+
+        let report = store.build_evidence_report(&run_id).unwrap();
+
+        assert_eq!(report.status, ReportStatus::Cancelled);
+        assert!(report.summary.contains("cancelled"));
         let _ = fs::remove_dir_all(root);
     }
 

@@ -279,6 +279,22 @@ export interface RustRunReportResponse {
   report: RustFinalReport;
 }
 
+export interface RustRunControlResponse {
+  run_id: string;
+  status: RustRunStatus;
+  control_state: string;
+  event_count: number;
+  report_ref?: string | null;
+}
+
+export interface RustRunHeartbeatResponse {
+  run_id: string;
+  status?: RustRunStatus | null;
+  event_count: number;
+  has_report: boolean;
+  repo_evidence_count: number;
+}
+
 export interface RustRepoEvidenceRef {
   ref_id: string;
   kind: string;

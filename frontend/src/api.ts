@@ -31,8 +31,10 @@ import type {
   RustPatchPreview,
   RustPatchPreviewRequest,
   RustRunArtifactResponse,
+  RustRunControlResponse,
   RustRunDetail,
   RustRunEventsResponse,
+  RustRunHeartbeatResponse,
   RustRunListResponse,
   RustRunReportResponse,
   RustRunRepoEvidenceResponse,
@@ -308,6 +310,30 @@ export function getRustRun(runId: string): Promise<RustRunDetail> {
 
 export function getRustRunEvents(runId: string): Promise<RustRunEventsResponse> {
   return requestJson<RustRunEventsResponse>(`/api/v3/runs/${encodeURIComponent(runId)}/events`);
+}
+
+export function getRustRunHeartbeat(runId: string): Promise<RustRunHeartbeatResponse> {
+  return requestJson<RustRunHeartbeatResponse>(
+    `/api/v3/runs/${encodeURIComponent(runId)}/heartbeat`
+  );
+}
+
+export function pauseRustRun(runId: string): Promise<RustRunControlResponse> {
+  return requestJson<RustRunControlResponse>(`/api/v3/runs/${encodeURIComponent(runId)}/pause`, {
+    method: "POST"
+  });
+}
+
+export function resumeRustRun(runId: string): Promise<RustRunControlResponse> {
+  return requestJson<RustRunControlResponse>(`/api/v3/runs/${encodeURIComponent(runId)}/resume`, {
+    method: "POST"
+  });
+}
+
+export function cancelRustRun(runId: string): Promise<RustRunControlResponse> {
+  return requestJson<RustRunControlResponse>(`/api/v3/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST"
+  });
 }
 
 export function getRustRunRepoEvidence(runId: string): Promise<RustRunRepoEvidenceResponse> {

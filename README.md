@@ -63,6 +63,11 @@ and approval-key preview for argv-only check commands.
 `POST /api/v3/tools/patch/apply` requires a run id, records repo evidence and
 patch lifecycle events, and only mutates files when the patch request is
 approved.
+Rust run control endpoints are available at
+`POST /api/v3/runs/{run_id}/pause`, `POST /api/v3/runs/{run_id}/resume`,
+`POST /api/v3/runs/{run_id}/cancel`, and
+`GET /api/v3/runs/{run_id}/heartbeat`; cancel records a terminal
+`run.cancelled` event and writes a cancelled final report.
 `coder-memory` is the first lightweight Rust memory milestone: JSON project
 memory records plus `memory.read` and `memory.write.proposed` event helpers,
 without vector retrieval.

@@ -10,7 +10,7 @@ use axum::{
 use coder_config::{
     validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel, ValidationReport,
 };
-use coder_core::{FinalReport, RunId, RunState};
+use coder_core::{FinalReport, RunId, RunState, RunStatus};
 use coder_store::{RepoEvidenceKind, RepoEvidenceRef, RunStore, StoreError, StoredRunSummary};
 use coder_tools::{
     apply_patch_file, preview_command, preview_patch_file, CommandPreview, PatchApplyEvidence,
@@ -47,6 +47,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/runs/mock", post(run_mock_workflow))
         .route("/api/v3/runs/{run_id}", get(get_run_detail))
         .route("/api/v3/runs/{run_id}/events", get(list_run_events))
+        .route("/api/v3/runs/{run_id}/pause", post(pause_run))
+        .route("/api/v3/runs/{run_id}/resume", post(resume_run))
+        .route("/api/v3/runs/{run_id}/cancel", post(cancel_run))
+        .route("/api/v3/runs/{run_id}/heartbeat", get(run_heartbeat))
         .route(
             "/api/v3/runs/{run_id}/report/preview",
             get(preview_run_report),
@@ -273,6 +277,51 @@ async fn get_run_detail(
     }))
 }
 
+async fn pause_run(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunControlResponse>, ApiError> {
+    control_run(state, RunId::from_string(run_id), RunControlAction::Pause)
+}
+
+async fn resume_run(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunControlResponse>, ApiError> {
+    control_run(state, RunId::from_string(run_id), RunControlAction::Resume)
+}
+
+async fn cancel_run(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunControlResponse>, ApiError> {
+    control_run(state, RunId::from_string(run_id), RunControlAction::Cancel)
+}
+
+async fn run_heartbeat(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunHeartbeatResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    let metadata = state.store.read_metadata(&run_id)?;
+    let events = state.store.read_events(&run_id)?;
+    let repo_evidence_count = state.store.repo_evidence_count(&run_id)?;
+    let has_report = state.store.read_report(&run_id)?.is_some();
+    if metadata.is_none() && events.is_empty() && repo_evidence_count == 0 && !has_report {
+        return Err(ApiError::not_found(format!(
+            "run '{}' was not found",
+            run_id.as_str()
+        )));
+    }
+    Ok(Json(RunHeartbeatResponse {
+        run_id: run_id.to_string(),
+        status: metadata.as_ref().map(|state| state.status),
+        event_count: events.len(),
+        has_report,
+        repo_evidence_count,
+    }))
+}
+
 async fn preview_run_report(
     State(state): State<ApiState>,
     Path(run_id): Path<String>,
@@ -446,6 +495,24 @@ pub struct RunReportResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct RunControlResponse {
+    pub run_id: String,
+    pub status: RunStatus,
+    pub control_state: String,
+    pub event_count: usize,
+    pub report_ref: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunHeartbeatResponse {
+    pub run_id: String,
+    pub status: Option<RunStatus>,
+    pub event_count: usize,
+    pub has_report: bool,
+    pub repo_evidence_count: usize,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RepoEvidenceResponse {
     pub ref_id: String,
     pub payload: serde_json::Value,
@@ -486,6 +553,62 @@ fn validation_issue(
         message: message.into(),
         target: target.into(),
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RunControlAction {
+    Pause,
+    Resume,
+    Cancel,
+}
+
+fn control_run(
+    state: ApiState,
+    run_id: RunId,
+    action: RunControlAction,
+) -> Result<Json<RunControlResponse>, ApiError> {
+    let mut metadata = state
+        .store
+        .read_metadata(&run_id)?
+        .ok_or_else(|| ApiError::not_found(format!("run '{}' was not found", run_id.as_str())))?;
+    let events = state.store.read_events(&run_id)?;
+    let (kind, status_text) = match action {
+        RunControlAction::Pause => ("run.paused", "paused"),
+        RunControlAction::Resume => {
+            metadata.status = RunStatus::Running;
+            ("run.resumed", "running")
+        }
+        RunControlAction::Cancel => {
+            metadata.status = RunStatus::Cancelled;
+            ("run.cancelled", "cancelled")
+        }
+    };
+    let sequence = events.len() as u64 + 1;
+    let event_count = events.len() + 1;
+    let event = coder_events::CoderEvent::new(
+        run_id.clone(),
+        sequence,
+        kind,
+        json!({
+            "status": status_text,
+        }),
+    );
+    metadata.updated_at = event.timestamp;
+    state.store.write_metadata(&metadata)?;
+    state.store.append_event(&run_id, &event)?;
+    let report_ref = if matches!(action, RunControlAction::Cancel) {
+        let report = state.store.build_evidence_report(&run_id)?;
+        Some(state.store.write_report(&run_id, &report)?)
+    } else {
+        None
+    };
+    Ok(Json(RunControlResponse {
+        run_id: run_id.to_string(),
+        status: metadata.status,
+        control_state: status_text.to_owned(),
+        event_count,
+        report_ref,
+    }))
 }
 
 fn record_patch_apply_event(
@@ -988,6 +1111,104 @@ diff --git a/tracked.txt b/tracked.txt
             detail_body["report"]["checks"][0],
             "cargo test: completed exit 0"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn run_control_endpoints_record_events_and_cancel_report() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let mut state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        state.status = RunStatus::Running;
+        store.write_metadata(&state).unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(run_id.clone(), 1, "run.started", json!({})),
+            )
+            .unwrap();
+        let app = router(ApiState::new(store));
+
+        let heartbeat_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/heartbeat")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(heartbeat_response.status(), StatusCode::OK);
+        let heartbeat_body = response_json(heartbeat_response).await;
+        assert_eq!(heartbeat_body["status"], "running");
+        assert_eq!(heartbeat_body["event_count"], 1);
+
+        let pause_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v3/runs/run-1/pause")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let pause_body = response_json(pause_response).await;
+        assert_eq!(pause_body["status"], "running");
+        assert_eq!(pause_body["control_state"], "paused");
+        assert_eq!(pause_body["event_count"], 2);
+
+        let resume_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v3/runs/run-1/resume")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let resume_body = response_json(resume_response).await;
+        assert_eq!(resume_body["status"], "running");
+        assert_eq!(resume_body["control_state"], "running");
+        assert_eq!(resume_body["event_count"], 3);
+
+        let cancel_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v3/runs/run-1/cancel")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cancel_body = response_json(cancel_response).await;
+        assert_eq!(cancel_body["status"], "cancelled");
+        assert_eq!(cancel_body["control_state"], "cancelled");
+        assert_eq!(cancel_body["event_count"], 4);
+        assert!(cancel_body["report_ref"]
+            .as_str()
+            .unwrap()
+            .ends_with("/final-report.json"));
+
+        let detail_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let detail_body = response_json(detail_response).await;
+        assert_eq!(detail_body["metadata"]["status"], "cancelled");
+        assert_eq!(detail_body["report"]["status"], "cancelled");
         let _ = fs::remove_dir_all(root);
     }
 
