@@ -7,6 +7,7 @@ from .repo_discovery import RepoFileDiscoveryService
 from .repo_evidence import RepoEvidenceStore
 from .repo_models import RepoEvidenceRef, RepoFileRef, RepoReadSnippet, RepoSearchHit
 from .repo_read import RepoReadService
+from .repo_safety import normalize_scope_paths
 from .repo_search import RepoTextSearchService
 
 
@@ -22,7 +23,7 @@ class NativeRepoContextService:
         self.coder_store_root = Path(coder_store_root)
         self.repo_root = Path(repo_root)
         self.run_id = run_id
-        self.scope_paths = list(scope_paths or [])
+        self.scope_paths = normalize_scope_paths(scope_paths)
         self.evidence_store = RepoEvidenceStore(self.coder_store_root)
 
     def find_files(

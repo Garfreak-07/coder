@@ -11,6 +11,7 @@ from .repo_safety import (
     DEFAULT_IGNORED_DIRS,
     ignored_by_default,
     normalize_repo_path,
+    normalize_scope_paths,
     path_is_within_scopes,
     resolve_repo_root,
     sensitive_repo_path,
@@ -20,7 +21,7 @@ from .repo_safety import (
 class RepoFileDiscoveryService:
     def __init__(self, *, repo_root: str | Path, scope_paths: list[str] | None = None) -> None:
         self.repo_root = resolve_repo_root(repo_root)
-        self.scope_paths = [normalize_repo_path(scope) for scope in scope_paths or [] if str(scope).strip()]
+        self.scope_paths = normalize_scope_paths(scope_paths)
 
     def list_files(
         self,

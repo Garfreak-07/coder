@@ -42,6 +42,11 @@ class RepoTextSearchServiceTests(unittest.TestCase):
 
             self.assertEqual([hit.path for hit in hits], ["docs/note.md"])
 
+    def test_scope_paths_cannot_escape_repo_root(self) -> None:
+        with _repo() as root:
+            with self.assertRaises(ValueError):
+                RepoTextSearchService(repo_root=root, scope_paths=[".."])
+
     def test_max_results_is_enforced(self) -> None:
         with _repo() as root:
             (root / "src" / "app.py").write_text("\n".join("needle" for _ in range(5)), encoding="utf-8")

@@ -6,6 +6,7 @@ from .repo_models import RepoReadSnippet
 from .repo_safety import (
     binary_bytes,
     ignored_by_default,
+    normalize_scope_paths,
     path_is_within_scopes,
     resolve_repo_root,
     resolve_under_root,
@@ -16,7 +17,7 @@ from .repo_safety import (
 class RepoReadService:
     def __init__(self, *, repo_root: str | Path, scope_paths: list[str] | None = None) -> None:
         self.repo_root = resolve_repo_root(repo_root)
-        self.scope_paths = list(scope_paths or [])
+        self.scope_paths = normalize_scope_paths(scope_paths)
 
     def read_file_range(
         self,

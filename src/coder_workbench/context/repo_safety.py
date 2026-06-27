@@ -53,6 +53,36 @@ def normalize_repo_path(path: str | Path) -> str:
     return text.strip("/")
 
 
+def normalize_scope_path(path: str | Path) -> str:
+    raw = str(path).replace("\\", "/").strip()
+    if not raw or raw in {".", "./"}:
+        return ""
+    if raw.startswith("/") or re.match(r"^[A-Za-z]:/", raw):
+        raise ValueError("scope_paths must be repo-relative")
+    text = normalize_repo_path(raw)
+    parts = [part for part in text.split("/") if part]
+    if not parts:
+        return ""
+    if any(part in {".", ".."} for part in parts):
+        raise ValueError("scope_paths must not contain traversal segments")
+    return "/".join(parts)
+
+
+def normalize_scope_paths(scope_paths: list[str] | None) -> list[str]:
+    scopes: list[str] = []
+    root_scope = False
+    for scope in scope_paths or []:
+        if not str(scope).strip():
+            continue
+        normalized = normalize_scope_path(scope)
+        if not normalized:
+            root_scope = True
+            continue
+        if normalized not in scopes:
+            scopes.append(normalized)
+    return [] if root_scope else scopes
+
+
 def resolve_under_root(repo_root: str | Path, path: str | Path) -> tuple[Path, str]:
     root = resolve_repo_root(repo_root)
     raw = Path(path)
@@ -64,7 +94,7 @@ def resolve_under_root(repo_root: str | Path, path: str | Path) -> tuple[Path, s
 
 
 def path_is_within_scopes(relative_path: str, scope_paths: list[str] | None) -> bool:
-    scopes = [normalize_repo_path(scope) for scope in scope_paths or [] if str(scope).strip()]
+    scopes = normalize_scope_paths(scope_paths)
     if not scopes:
         return True
     rel = normalize_repo_path(relative_path)
@@ -118,7 +148,7 @@ def safe_store_segment(value: str, *, label: str) -> str:
 
 def _scope_explicitly_includes(scope_paths: list[str], ignored_dir: str) -> bool:
     for scope in scope_paths:
-        normalized = normalize_repo_path(scope).lower()
+        normalized = normalize_scope_path(scope).lower()
         if normalized == ignored_dir or normalized.startswith(f"{ignored_dir}/"):
             return True
     return False
@@ -142,6 +172,8 @@ __all__ = [
     "binary_bytes",
     "ignored_by_default",
     "normalize_repo_path",
+    "normalize_scope_path",
+    "normalize_scope_paths",
     "path_is_within_scopes",
     "resolve_repo_root",
     "resolve_under_root",

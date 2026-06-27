@@ -9,7 +9,7 @@ from coder_workbench.memory.retriever import MemoryRetrievalRequest, MemoryRetri
 
 from .evidence_policy import rag_result_requires_repo_verification
 from .repo_context_service import NativeRepoContextService
-from .repo_safety import normalize_repo_path
+from .repo_safety import normalize_repo_path, normalize_scope_paths
 from .router_models import AgenticContextRouterState, RetrievalIntent, RouterMode, RouterSource
 from .router_profiles import router_profile_for_mode
 
@@ -31,7 +31,7 @@ class AgenticContextRouter:
         self.repo_root = Path(repo_root)
         self.run_id = run_id
         self.mode = mode
-        self.scope_paths = [normalize_repo_path(scope) for scope in scope_paths or [] if str(scope).strip()]
+        self.scope_paths = normalize_scope_paths(scope_paths)
         self.profile = router_profile_for_mode(mode)
         self.memory_store = memory_store
         self.knowledge_store = knowledge_store
