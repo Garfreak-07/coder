@@ -13,7 +13,7 @@ use coder_server::{serve, ApiState};
 use coder_store::{RepoEvidenceKind, RepoEvidenceRef, RunStore};
 use coder_tools::{
     find_files, git_diff, git_status, preview_patch_file, read_file, read_file_range, run_command,
-    search_text, CommandRunEvidence, CommandRunRequest, RepoToolConfig,
+    search_text, CommandRunEvidence, CommandRunRequest, PatchPreviewEvidence, RepoToolConfig,
 };
 use coder_workflow::MockWorkflowRunner;
 use serde_json::json;
@@ -680,6 +680,37 @@ fn record_command_events(
     Ok(())
 }
 
+fn record_patch_preview_event(
+    store: &RunStore,
+    run_id: &RunId,
+    patch_file: &str,
+    output: &PatchPreviewEvidence,
+    evidence_ref: &RepoEvidenceRef,
+) -> anyhow::Result<()> {
+    let sequence = store.read_events(run_id)?.len() as u64 + 1;
+    let evidence_uri = format!("repo-evidence://{}", evidence_ref.ref_id);
+    store.append_event(
+        run_id,
+        &CoderEvent::new(
+            run_id.clone(),
+            sequence,
+            "patch.previewed",
+            json!({
+                "patch_file": patch_file,
+                "file_count": output.file_count,
+                "hunk_count": output.hunk_count,
+                "additions": output.additions,
+                "deletions": output.deletions,
+                "truncated": output.truncated,
+                "files": &output.files,
+                "evidence_ref": &evidence_ref.ref_id,
+            }),
+        )
+        .with_ref("patch_evidence", evidence_uri),
+    )?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -1026,6 +1057,17 @@ async fn main() -> anyhow::Result<()> {
                 format!("Previewed patch touching {} file(s).", output.file_count),
                 payload,
             )?;
+            if let (Some(store), Some(run_id), Some(reference)) =
+                (&evidence.store, &evidence.run_id, &evidence_ref)
+            {
+                record_patch_preview_event(
+                    &RunStore::new(store.clone()),
+                    &RunId::from_string(run_id.clone()),
+                    &requested_patch_file,
+                    &output,
+                    reference,
+                )?;
+            }
             print_tool_output(serde_json::to_value(&output)?, evidence_ref)?;
         }
         Command::Tools {
@@ -1325,6 +1367,58 @@ mod tests {
             .unwrap()
             .ends_with("/final-report.json"));
         assert_eq!(store.read_report(&run_id).unwrap().unwrap().checks.len(), 1);
+        let _ = std::fs::remove_dir_all(store_root);
+    }
+
+    #[test]
+    fn run_report_helper_includes_patch_preview_event_files() {
+        let repo = temp_root("coder-cli-repo");
+        let store_root = temp_root("coder-cli-store");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join("tracked.txt"), "base\n").unwrap();
+        std::fs::write(
+            repo.join("change.patch"),
+            "\
+diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1 +1 @@
+-base
++changed
+",
+        )
+        .unwrap();
+        let store = RunStore::new(&store_root);
+        let run_id = RunId::from_string("run-1");
+        let args = EvidenceRecordArgs {
+            store: Some(store_root.clone()),
+            run_id: Some(run_id.to_string()),
+        };
+        let output =
+            preview_patch_file(&repo, "change.patch", coder_tools::DEFAULT_MAX_PATCH_BYTES)
+                .unwrap();
+        let reference = write_optional_repo_evidence(
+            &args,
+            RepoEvidenceKind::RepoDiff,
+            &repo,
+            format!("Previewed patch touching {} file(s).", output.file_count),
+            json!({
+                "operation": "patch_preview",
+                "preview": serde_json::to_value(&output).unwrap()
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        record_patch_preview_event(&store, &run_id, "change.patch", &output, &reference).unwrap();
+
+        let preview = run_report_json(&store, &run_id, false).unwrap();
+
+        assert_eq!(preview["report"]["changed_files"][0], "tracked.txt");
+        assert_eq!(
+            preview["report"]["patch_refs"][0],
+            format!("repo-evidence://{}", reference.ref_id)
+        );
+        let _ = std::fs::remove_dir_all(repo);
         let _ = std::fs::remove_dir_all(store_root);
     }
 

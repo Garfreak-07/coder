@@ -122,6 +122,8 @@ impl RunStore {
 
         let mut checks = Vec::new();
         let mut blockers = Vec::new();
+        let mut changed_file_seen = BTreeSet::new();
+        let mut patch_ref_seen = BTreeSet::new();
         let mut evidence_ref_seen = BTreeSet::new();
         let mut evidence_refs = Vec::new();
         if !events.is_empty() {
@@ -177,12 +179,31 @@ impl RunStore {
                         }
                     }
                 }
+                "patch.previewed" => {
+                    collect_patch_files(&event.payload, &mut changed_file_seen);
+                    if let Some(reference) = payload_string(&event.payload, "evidence_ref") {
+                        patch_ref_seen.insert(repo_evidence_uri(&reference));
+                    }
+                    for reference in &event.refs {
+                        if reference.label.contains("patch") {
+                            patch_ref_seen.insert(reference.uri.clone());
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
         for reference in repo_evidence {
-            evidence_ref_seen.insert(("repo_evidence".to_owned(), reference.ref_id));
+            let ref_id = reference.ref_id;
+            evidence_ref_seen.insert(("repo_evidence".to_owned(), ref_id.clone()));
+            if reference.kind == RepoEvidenceKind::RepoDiff {
+                let payload = self.read_repo_evidence(&ref_id)?;
+                if payload_string(&payload, "operation").as_deref() == Some("patch_preview") {
+                    patch_ref_seen.insert(repo_evidence_uri(&ref_id));
+                    collect_patch_files(&payload, &mut changed_file_seen);
+                }
+            }
         }
         for (kind, reference) in evidence_ref_seen {
             evidence_refs.push(coder_core::EvidenceRef { kind, reference });
@@ -201,7 +222,9 @@ impl RunStore {
         let summary =
             evidence_report_summary(status, events.len(), checks.len(), evidence_refs.len());
         let mut report = FinalReport::with_status(status, summary);
+        report.changed_files = changed_file_seen.into_iter().collect();
         report.checks = checks;
+        report.patch_refs = patch_ref_seen.into_iter().collect();
         report.blockers = blockers;
         report.evidence_refs = evidence_refs;
         Ok(report)
@@ -490,6 +513,31 @@ fn payload_string(payload: &Value, key: &str) -> Option<String> {
         .get(key)
         .and_then(|value| value.as_str())
         .map(str::to_owned)
+}
+
+fn collect_patch_files(payload: &Value, files: &mut BTreeSet<String>) {
+    if let Some(items) = payload
+        .get("files")
+        .or_else(|| payload.pointer("/preview/files"))
+        .and_then(|value| value.as_array())
+    {
+        for item in items {
+            let path = payload_string(item, "new_path")
+                .or_else(|| payload_string(item, "old_path"))
+                .or_else(|| payload_string(item, "path"));
+            if let Some(path) = path.filter(|path| !path.trim().is_empty()) {
+                files.insert(path);
+            }
+        }
+    }
+}
+
+fn repo_evidence_uri(ref_id: &str) -> String {
+    if ref_id.contains("://") {
+        ref_id.to_owned()
+    } else {
+        format!("repo-evidence://{ref_id}")
+    }
 }
 
 fn evidence_report_summary(
@@ -888,6 +936,77 @@ mod tests {
             .evidence_refs
             .iter()
             .any(|item| item.reference == reference.ref_id));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_report_includes_patch_event_files_and_refs() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "patch.previewed",
+                    json!({
+                        "evidence_ref": "repo-diff:abc",
+                        "files": [
+                            {
+                                "old_path": "src/old.py",
+                                "new_path": "src/app.py",
+                                "status": "modified"
+                            }
+                        ]
+                    }),
+                )
+                .with_ref("patch_evidence", "repo-evidence://repo-diff:abc"),
+            )
+            .unwrap();
+
+        let report = store.build_evidence_report(&run_id).unwrap();
+
+        assert_eq!(report.changed_files, vec!["src/app.py"]);
+        assert_eq!(report.patch_refs, vec!["repo-evidence://repo-diff:abc"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_report_includes_repo_patch_preview_files_and_refs() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let reference = store
+            .write_repo_evidence(
+                &run_id,
+                RepoEvidenceKind::RepoDiff,
+                "repo",
+                Vec::new(),
+                "Previewed patch touching 1 file.",
+                json!({
+                    "operation": "patch_preview",
+                    "preview": {
+                        "files": [
+                            {
+                                "old_path": null,
+                                "new_path": "src/new.py",
+                                "status": "added"
+                            }
+                        ]
+                    }
+                }),
+            )
+            .unwrap();
+
+        let report = store.build_evidence_report(&run_id).unwrap();
+
+        assert_eq!(report.changed_files, vec!["src/new.py"]);
+        assert_eq!(
+            report.patch_refs,
+            vec![format!("repo-evidence://{}", reference.ref_id)]
+        );
         let _ = fs::remove_dir_all(root);
     }
 
