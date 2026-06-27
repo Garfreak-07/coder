@@ -11,7 +11,9 @@ use coder_config::{
     validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel, ValidationReport,
 };
 use coder_core::{FinalReport, RunId, RunState, RunStatus};
-use coder_store::{RepoEvidenceKind, RepoEvidenceRef, RunStore, StoreError, StoredRunSummary};
+use coder_store::{
+    RepoEvidenceKind, RepoEvidenceRef, RunCheckpointRef, RunStore, StoreError, StoredRunSummary,
+};
 use coder_tools::{
     apply_patch_file, preview_command, preview_patch_file, CommandPreview, PatchApplyEvidence,
     PatchApplyRequest as ToolPatchApplyRequest, PatchPreviewEvidence, RepoToolError,
@@ -63,6 +65,14 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/v3/runs/{run_id}/artifacts/{artifact_name}",
             get(get_run_artifact),
+        )
+        .route(
+            "/api/v3/runs/{run_id}/checkpoints",
+            get(list_run_checkpoints),
+        )
+        .route(
+            "/api/v3/runs/{run_id}/checkpoints/{checkpoint_name}",
+            get(get_run_checkpoint).post(write_run_checkpoint),
         )
         .route("/api/v3/blobs/sha256/{digest}", get(get_blob_sha256))
         .route("/api/v3/repo-evidence/{ref_id}", get(get_repo_evidence))
@@ -382,6 +392,61 @@ async fn get_run_artifact(
     }))
 }
 
+async fn list_run_checkpoints(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunCheckpointListResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    let checkpoints = state.store.list_checkpoints(&run_id)?;
+    if checkpoints.is_empty() && !stored_run_exists(&state.store, &run_id)? {
+        return Err(ApiError::not_found(format!(
+            "run '{}' was not found",
+            run_id.as_str()
+        )));
+    }
+    Ok(Json(RunCheckpointListResponse {
+        run_id: run_id.to_string(),
+        checkpoints,
+    }))
+}
+
+async fn get_run_checkpoint(
+    State(state): State<ApiState>,
+    Path((run_id, checkpoint_name)): Path<(String, String)>,
+) -> Result<Json<RunCheckpointResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    let payload = state
+        .store
+        .read_checkpoint_json(&run_id, &checkpoint_name)?;
+    Ok(Json(RunCheckpointResponse {
+        run_id: run_id.to_string(),
+        checkpoint_name,
+        payload,
+    }))
+}
+
+async fn write_run_checkpoint(
+    State(state): State<ApiState>,
+    Path((run_id, checkpoint_name)): Path<(String, String)>,
+    Json(payload): Json<serde_json::Value>,
+) -> Result<Json<RunCheckpointWriteResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    if !stored_run_exists(&state.store, &run_id)? {
+        return Err(ApiError::not_found(format!(
+            "run '{}' was not found",
+            run_id.as_str()
+        )));
+    }
+    let checkpoint_ref = state
+        .store
+        .write_checkpoint(&run_id, &checkpoint_name, &payload)?;
+    Ok(Json(RunCheckpointWriteResponse {
+        run_id: run_id.to_string(),
+        checkpoint_name,
+        checkpoint_ref,
+    }))
+}
+
 async fn get_blob_sha256(
     State(state): State<ApiState>,
     Path(digest): Path<String>,
@@ -532,6 +597,26 @@ pub struct RunArtifactResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct RunCheckpointListResponse {
+    pub run_id: String,
+    pub checkpoints: Vec<RunCheckpointRef>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunCheckpointResponse {
+    pub run_id: String,
+    pub checkpoint_name: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunCheckpointWriteResponse {
+    pub run_id: String,
+    pub checkpoint_name: String,
+    pub checkpoint_ref: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RunPreviewResponse {
     pub status: &'static str,
     pub requires_confirmation: bool,
@@ -560,6 +645,14 @@ enum RunControlAction {
     Pause,
     Resume,
     Cancel,
+}
+
+fn stored_run_exists(store: &RunStore, run_id: &RunId) -> Result<bool, StoreError> {
+    Ok(store.read_metadata(run_id)?.is_some()
+        || !store.read_events(run_id)?.is_empty()
+        || store.read_report(run_id)?.is_some()
+        || store.repo_evidence_count(run_id)? > 0
+        || !store.list_checkpoints(run_id)?.is_empty())
 }
 
 fn control_run(
@@ -714,6 +807,7 @@ impl From<StoreError> for ApiError {
             StoreError::RunNotFound(_)
             | StoreError::RepoEvidenceNotFound(_)
             | StoreError::ArtifactNotFound { .. }
+            | StoreError::CheckpointNotFound { .. }
             | StoreError::BlobNotFound(_) => Self::not_found(error.to_string()),
             StoreError::InvalidStoreSegment { .. }
             | StoreError::InvalidFileName(_)
@@ -1421,6 +1515,80 @@ diff --git a/tracked.txt b/tracked.txt
 
         assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
         assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_endpoints_roundtrip_and_validate_names() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        store.write_metadata(&state).unwrap();
+        let app = router(ApiState::new(store));
+
+        let write_response = post_json(
+            app.clone(),
+            "/api/v3/runs/run-1/checkpoints/resume.json",
+            json!({"step": 2}),
+        )
+        .await;
+        assert_eq!(write_response.status(), StatusCode::OK);
+        let write_body = response_json(write_response).await;
+        assert_eq!(write_body["checkpoint_name"], "resume.json");
+        assert!(write_body["checkpoint_ref"]
+            .as_str()
+            .unwrap()
+            .ends_with("/resume.json"));
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/checkpoints")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_body = response_json(list_response).await;
+        assert_eq!(list_body["checkpoints"][0]["name"], "resume.json");
+
+        let read_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/checkpoints/resume.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let read_body = response_json(read_response).await;
+        assert_eq!(read_body["payload"]["step"], 2);
+
+        let missing_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/checkpoints/missing.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let invalid_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/checkpoints/bad*name.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]

@@ -415,6 +415,66 @@ impl RunStore {
         Ok(serde_json::from_str(&text)?)
     }
 
+    pub fn write_checkpoint<T: Serialize>(
+        &self,
+        run_id: &RunId,
+        name: &str,
+        value: &T,
+    ) -> Result<String, StoreError> {
+        let safe_name = safe_file_name(name)?;
+        let path = self
+            .safe_run_dir(run_id)?
+            .join("checkpoints")
+            .join(&safe_name);
+        write_json(&path, value)?;
+        Ok(format!(
+            "checkpoint://runs/{}/checkpoints/{safe_name}",
+            run_id.as_str()
+        ))
+    }
+
+    pub fn read_checkpoint_json(&self, run_id: &RunId, name: &str) -> Result<Value, StoreError> {
+        let safe_name = safe_file_name(name)?;
+        let path = self
+            .safe_run_dir(run_id)?
+            .join("checkpoints")
+            .join(&safe_name);
+        if !path.exists() {
+            return Err(StoreError::CheckpointNotFound {
+                run_id: run_id.as_str().to_owned(),
+                name: safe_name,
+            });
+        }
+        let text = fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    pub fn list_checkpoints(&self, run_id: &RunId) -> Result<Vec<RunCheckpointRef>, StoreError> {
+        let checkpoints_dir = self.safe_run_dir(run_id)?.join("checkpoints");
+        if !checkpoints_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut checkpoints = Vec::new();
+        for entry in fs::read_dir(checkpoints_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if safe_file_name(&name).is_err() {
+                continue;
+            }
+            checkpoints.push(RunCheckpointRef {
+                name: name.clone(),
+                checkpoint_ref: format!("checkpoint://runs/{}/checkpoints/{name}", run_id.as_str()),
+            });
+        }
+        checkpoints.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(checkpoints)
+    }
+
     pub fn write_blob(&self, content: &[u8]) -> Result<String, StoreError> {
         let digest = Sha256::digest(content);
         let hex = format!("{digest:x}");
@@ -511,6 +571,12 @@ pub struct StoredRunSummary {
     pub repo_evidence_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunCheckpointRef {
+    pub name: String,
+    pub checkpoint_ref: String,
+}
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("io error: {0}")]
@@ -533,6 +599,8 @@ pub enum StoreError {
     RepoEvidencePathEscape(String),
     #[error("artifact not found: runs/{run_id}/artifacts/{name}")]
     ArtifactNotFound { run_id: String, name: String },
+    #[error("checkpoint not found: runs/{run_id}/checkpoints/{name}")]
+    CheckpointNotFound { run_id: String, name: String },
     #[error("invalid blob sha256 digest: {0}")]
     InvalidBlobDigest(String),
     #[error("blob not found: sha256:{0}")]
@@ -817,6 +885,46 @@ mod tests {
         assert_eq!(reference, "artifact://runs/run_test/artifacts/summary.json");
         assert_eq!(payload["status"], "ok");
         assert!(matches!(missing, StoreError::ArtifactNotFound { .. }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn checkpoint_json_roundtrips_lists_and_reports_missing() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run_test");
+
+        let reference = store
+            .write_checkpoint(&run_id, "resume.json", &json!({"step": 2}))
+            .unwrap();
+        let payload = store.read_checkpoint_json(&run_id, "resume.json").unwrap();
+        let checkpoints = store.list_checkpoints(&run_id).unwrap();
+        let missing = store
+            .read_checkpoint_json(&run_id, "missing.json")
+            .unwrap_err();
+
+        assert_eq!(
+            reference,
+            "checkpoint://runs/run_test/checkpoints/resume.json"
+        );
+        assert_eq!(payload["step"], 2);
+        assert_eq!(checkpoints[0].name, "resume.json");
+        assert_eq!(checkpoints[0].checkpoint_ref, reference);
+        assert!(matches!(missing, StoreError::CheckpointNotFound { .. }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn checkpoint_names_reject_path_traversal() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run_test");
+
+        let error = store
+            .write_checkpoint(&run_id, "../escape.json", &json!({"bad": true}))
+            .unwrap_err();
+
+        assert!(matches!(error, StoreError::InvalidFileName(_)));
         let _ = fs::remove_dir_all(root);
     }
 

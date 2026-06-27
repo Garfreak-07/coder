@@ -31,6 +31,9 @@ import type {
   RustPatchPreview,
   RustPatchPreviewRequest,
   RustRunArtifactResponse,
+  RustRunCheckpointListResponse,
+  RustRunCheckpointResponse,
+  RustRunCheckpointWriteResponse,
   RustRunControlResponse,
   RustRunDetail,
   RustRunEventsResponse,
@@ -357,6 +360,36 @@ export function writeRustRunReport(runId: string): Promise<RustRunReportResponse
 export function getRustRunArtifact(runId: string, artifactName: string): Promise<RustRunArtifactResponse> {
   return requestJson<RustRunArtifactResponse>(
     `/api/v3/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactName)}`
+  );
+}
+
+export function getRustRunCheckpoints(runId: string): Promise<RustRunCheckpointListResponse> {
+  return requestJson<RustRunCheckpointListResponse>(
+    `/api/v3/runs/${encodeURIComponent(runId)}/checkpoints`
+  );
+}
+
+export function getRustRunCheckpoint(
+  runId: string,
+  checkpointName: string
+): Promise<RustRunCheckpointResponse> {
+  return requestJson<RustRunCheckpointResponse>(
+    `/api/v3/runs/${encodeURIComponent(runId)}/checkpoints/${encodeURIComponent(checkpointName)}`
+  );
+}
+
+export function writeRustRunCheckpoint(
+  runId: string,
+  checkpointName: string,
+  payload: unknown
+): Promise<RustRunCheckpointWriteResponse> {
+  return requestJson<RustRunCheckpointWriteResponse>(
+    `/api/v3/runs/${encodeURIComponent(runId)}/checkpoints/${encodeURIComponent(checkpointName)}`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(payload)
+    }
   );
 }
 

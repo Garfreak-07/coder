@@ -322,6 +322,28 @@ export interface RustRunArtifactResponse {
   payload: unknown;
 }
 
+export interface RustRunCheckpointRef {
+  name: string;
+  checkpoint_ref: string;
+}
+
+export interface RustRunCheckpointListResponse {
+  run_id: string;
+  checkpoints: RustRunCheckpointRef[];
+}
+
+export interface RustRunCheckpointResponse {
+  run_id: string;
+  checkpoint_name: string;
+  payload: unknown;
+}
+
+export interface RustRunCheckpointWriteResponse {
+  run_id: string;
+  checkpoint_name: string;
+  checkpoint_ref: string;
+}
+
 export interface RustRepoEvidenceResponse {
   ref_id: string;
   payload: unknown;

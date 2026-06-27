@@ -68,6 +68,10 @@ Rust run control endpoints are available at
 `POST /api/v3/runs/{run_id}/cancel`, and
 `GET /api/v3/runs/{run_id}/heartbeat`; cancel records a terminal
 `run.cancelled` event and writes a cancelled final report.
+Rust run checkpoints are stored as bounded JSON payloads through
+`GET /api/v3/runs/{run_id}/checkpoints`,
+`GET /api/v3/runs/{run_id}/checkpoints/{checkpoint_name}`, and
+`POST /api/v3/runs/{run_id}/checkpoints/{checkpoint_name}`.
 `coder-memory` is the first lightweight Rust memory milestone: JSON project
 memory records plus `memory.read` and `memory.write.proposed` event helpers,
 without vector retrieval.
