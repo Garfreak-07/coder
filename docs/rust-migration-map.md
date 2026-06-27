@@ -41,7 +41,7 @@ behavior is covered by a Rust equivalent and tests listed here.
 | Final reports | `agent_graph/final_report.py` | `coder-core::FinalReport` plus report builder | Build reports from events, not model claims | Completed/blocked/failed/cancelled report tests pass |
 | Runtime state views | `runtime_state/*` | Event replay plus UI projections | Replace internal cache exposure with bounded DTOs | UI/debug exports have equivalent data |
 | Context packets | `context/*`, context stores | Rust context assembler | Preserve hot/warm/cold behavior behind public refs | Token/large-payload tests pass |
-| Repo evidence tools | `context/repo_*`, Git inspection helpers | `coder-tools` repo search/read/status/diff/find | Port path safety, bounded previews, and evidence write behavior | Existing repo_search/read/discovery/status/diff tests have Rust equivalents |
+| Repo evidence tools | `context/repo_*`, Git inspection helpers | `coder-tools` repo search/read/status/diff/find | Port path safety, sensitive-path filtering, bounded previews, and evidence write behavior | Existing repo_search/read/discovery/status/diff tests have Rust equivalents |
 | Agentic router | `context/agentic_router.py` | Later Rust context router | Defer until repo tools and memory are stable | Router policy tests pass in Rust |
 | Memory service | `memory/service.py`, `run_memory.py` | `coder-memory` | Model scopes, records, cards, proposals, events | Long-term writes are confirmed and executor cannot write directly |
 | Knowledge import/RAG | `memory/knowledge_import.py`, `hybrid_*` | `coder-memory`, `coder-rag` | Port lexical retrieval first, dense optional later | ACL and hint-only behavior covered |

@@ -9,7 +9,7 @@ use coder_openhands::{
 };
 use coder_server::{serve, ApiState};
 use coder_store::RunStore;
-use coder_tools::{git_diff, git_status, read_file, search_text, RepoToolConfig};
+use coder_tools::{find_files, git_diff, git_status, read_file, search_text, RepoToolConfig};
 use coder_workflow::MockWorkflowRunner;
 use serde_json::json;
 
@@ -105,6 +105,16 @@ enum OpenHandsCommand {
 
 #[derive(Debug, Subcommand)]
 enum ToolsCommand {
+    FindFiles {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long = "extension")]
+        extensions: Vec<String>,
+        #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_FILE_RESULTS)]
+        max_results: usize,
+    },
     ReadFile {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
@@ -444,6 +454,18 @@ async fn main() -> anyhow::Result<()> {
             })
             .await?;
             print_openhands_run_output(&output);
+        }
+        Command::Tools {
+            command:
+                ToolsCommand::FindFiles {
+                    repo,
+                    query,
+                    extensions,
+                    max_results,
+                },
+        } => {
+            let output = find_files(repo, query.as_deref(), &extensions, max_results)?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
         Command::Tools {
             command:

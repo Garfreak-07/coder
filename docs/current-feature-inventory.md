@@ -115,7 +115,8 @@ Classification values:
   mock run, event listing.
 - `coder-memory`: project memory file loading, bounded memory write previews,
   and content-free memory read events.
-- `coder-tools`: path-safe read-only repo file reads, bounded text search that
-  skips runtime/vendor directories, read-only git status evidence, and bounded
-  git diff previews.
+- `coder-tools`: path-safe read-only repo file discovery, file reads, bounded
+  text search, read-only git status evidence, and bounded git diff previews.
+  The first Rust slice skips runtime/vendor directories and sensitive repo
+  paths.
 - Frontend adapter: legacy canvas to `WorkflowSpec` and back.

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 64 * 1024;
+pub const DEFAULT_MAX_FILE_RESULTS: usize = 200;
 pub const DEFAULT_MAX_SEARCH_MATCHES: usize = 50;
 pub const DEFAULT_MAX_GIT_OUTPUT_BYTES: usize = 64 * 1024;
 
@@ -15,10 +16,25 @@ const SKIPPED_DIRS: &[&str] = &[
     ".git",
     ".coder",
     ".venv",
+    "venv",
     "node_modules",
     "target",
     "dist",
+    "build",
+    ".cache",
     "__pycache__",
+];
+
+const SENSITIVE_FILE_NAMES: &[&str] = &[
+    ".env",
+    ".local-env.ps1",
+    "credentials",
+    "id_rsa",
+    "id_ed25519",
+];
+const SENSITIVE_FILE_SUFFIXES: &[&str] = &[".pem", ".p12", ".pfx", ".key"];
+const ALWAYS_DENIED_DIRS: &[&str] = &[
+    ".git", ".ssh", ".aws", ".kube", ".azure", ".gnupg", ".docker",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +69,15 @@ pub struct RepoSearchMatch {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoFileRef {
+    pub path: String,
+    pub normalized_path: String,
+    pub size_bytes: u64,
+    pub language: Option<String>,
+    pub evidence_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatusEvidence {
     pub repo_root: String,
     pub porcelain_v1: String,
@@ -79,6 +104,10 @@ pub fn read_file(
     if !metadata.is_file() {
         return Err(RepoToolError::NotAFile(relative_display(&root, &path)));
     }
+    let relative_path = relative_display(&root, &path);
+    if sensitive_repo_path(&relative_path) {
+        return Err(RepoToolError::SensitivePath(relative_path));
+    }
     if metadata.len() > config.max_file_bytes {
         return Err(RepoToolError::FileTooLarge {
             path: relative_display(&root, &path),
@@ -96,6 +125,30 @@ pub fn read_file(
         content,
         evidence_kind: "repo_evidence".to_owned(),
     })
+}
+
+pub fn find_files(
+    repo_root: impl AsRef<Path>,
+    query: Option<&str>,
+    extensions: &[String],
+    max_results: usize,
+) -> Result<Vec<RepoFileRef>, RepoToolError> {
+    let root = canonical_repo_root(repo_root)?;
+    let query = query
+        .map(|item| item.trim().to_lowercase())
+        .filter(|item| !item.is_empty());
+    let extension_filter = normalize_extensions(extensions);
+    let mut files = Vec::new();
+    let limit = max_results.clamp(1, 1000);
+    find_files_in_dir(
+        &root,
+        &root,
+        query.as_deref(),
+        &extension_filter,
+        limit,
+        &mut files,
+    )?;
+    Ok(files)
 }
 
 pub fn search_text(
@@ -145,6 +198,68 @@ pub fn git_diff(
     })
 }
 
+fn find_files_in_dir(
+    root: &Path,
+    dir: &Path,
+    query: Option<&str>,
+    extension_filter: &[String],
+    limit: usize,
+    files: &mut Vec<RepoFileRef>,
+) -> Result<(), RepoToolError> {
+    if files.len() >= limit {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        if files.len() >= limit {
+            break;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if file_type.is_dir() {
+            if should_skip_dir(&path) {
+                continue;
+            }
+            find_files_in_dir(root, &path, query, extension_filter, limit, files)?;
+            continue;
+        }
+        if file_type.is_file() {
+            let relative_path = relative_display(root, &path);
+            if sensitive_repo_path(&relative_path) {
+                continue;
+            }
+            if let Some(query) = query {
+                if !relative_path.to_lowercase().contains(query) {
+                    continue;
+                }
+            }
+            if !extension_filter.is_empty() {
+                let suffix = path
+                    .extension()
+                    .and_then(|item| item.to_str())
+                    .map(|item| format!(".{}", item.to_lowercase()))
+                    .unwrap_or_default();
+                if !extension_filter.contains(&suffix) {
+                    continue;
+                }
+            }
+            let metadata = fs::metadata(&path)?;
+            files.push(RepoFileRef {
+                path: relative_path.clone(),
+                normalized_path: relative_path.clone(),
+                size_bytes: metadata.len(),
+                language: language_for_path(&relative_path).map(str::to_owned),
+                evidence_kind: "repo_evidence".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn search_dir(
     root: &Path,
     dir: &Path,
@@ -187,6 +302,9 @@ fn search_file(
     config: &RepoToolConfig,
     matches: &mut Vec<RepoSearchMatch>,
 ) -> Result<(), RepoToolError> {
+    if sensitive_repo_path(&relative_display(root, path)) {
+        return Ok(());
+    }
     let metadata = fs::metadata(path)?;
     if metadata.len() > config.max_file_bytes {
         return Ok(());
@@ -286,8 +404,71 @@ fn resolve_existing_repo_path(
 fn should_skip_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .map(|name| SKIPPED_DIRS.contains(&name))
+        .map(|name| {
+            let lower = name.to_lowercase();
+            SKIPPED_DIRS.contains(&lower.as_str()) || ALWAYS_DENIED_DIRS.contains(&lower.as_str())
+        })
         .unwrap_or(false)
+}
+
+fn sensitive_repo_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    if parts.iter().any(|part| ALWAYS_DENIED_DIRS.contains(part)) {
+        return true;
+    }
+    let Some(name) = parts.last() else {
+        return false;
+    };
+    if SENSITIVE_FILE_NAMES.contains(name) || name.starts_with(".env.") {
+        return true;
+    }
+    if SENSITIVE_FILE_SUFFIXES
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+    {
+        return true;
+    }
+    name.contains("private_key")
+        || name.contains("private-key")
+        || name.contains("secret_key")
+        || name.contains("secret-key")
+}
+
+fn normalize_extensions(extensions: &[String]) -> Vec<String> {
+    extensions
+        .iter()
+        .map(|item| item.trim().to_lowercase())
+        .filter(|item| !item.is_empty())
+        .map(|item| {
+            if item.starts_with('.') {
+                item
+            } else {
+                format!(".{item}")
+            }
+        })
+        .collect()
+}
+
+fn language_for_path(path: &str) -> Option<&'static str> {
+    match Path::new(path)
+        .extension()
+        .and_then(|item| item.to_str())
+        .map(|item| item.to_lowercase())
+        .as_deref()
+    {
+        Some("py") => Some("python"),
+        Some("ts") => Some("typescript"),
+        Some("tsx") => Some("typescriptreact"),
+        Some("js") => Some("javascript"),
+        Some("jsx") => Some("javascriptreact"),
+        Some("md") => Some("markdown"),
+        Some("json") => Some("json"),
+        Some("yml") | Some("yaml") => Some("yaml"),
+        Some("rs") => Some("rust"),
+        Some("toml") => Some("toml"),
+        _ => None,
+    }
 }
 
 fn relative_display(root: &Path, path: &Path) -> String {
@@ -315,6 +496,8 @@ pub enum RepoToolError {
     PathOutsideRepo(String),
     #[error("path is not a file: {0}")]
     NotAFile(String),
+    #[error("path is sensitive and cannot be read as repo evidence: {0}")]
+    SensitivePath(String),
     #[error("file {path} is {size_bytes} bytes, over limit {max_bytes}")]
     FileTooLarge {
         path: String,
@@ -382,6 +565,45 @@ mod tests {
     }
 
     #[test]
+    fn find_files_returns_repo_evidence_and_filters_results() {
+        let root = temp_repo();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::create_dir_all(root.join(".coder")).unwrap();
+        fs::write(root.join("src").join("app.py"), "app\n").unwrap();
+        fs::write(root.join("src").join("app.rs"), "app\n").unwrap();
+        fs::write(root.join("docs").join("app.md"), "app\n").unwrap();
+        fs::write(root.join(".coder").join("app.py"), "hidden\n").unwrap();
+        fs::write(root.join(".env"), "SECRET=value\n").unwrap();
+
+        let files = find_files(&root, Some("app"), &[String::from("py")], 10).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/app.py");
+        assert_eq!(files[0].normalized_path, "src/app.py");
+        assert_eq!(files[0].language.as_deref(), Some("python"));
+        assert_eq!(files[0].evidence_kind, "repo_evidence");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn find_files_skips_sensitive_paths_and_bounds_results() {
+        let root = temp_repo();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join(".ssh")).unwrap();
+        fs::write(root.join(".env"), "SECRET=value\n").unwrap();
+        fs::write(root.join(".ssh").join("config"), "secret\n").unwrap();
+        fs::write(root.join("src").join("a.txt"), "a\n").unwrap();
+        fs::write(root.join("src").join("b.txt"), "b\n").unwrap();
+
+        let files = find_files(&root, None, &[], 1).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "src/a.txt");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn search_text_returns_matches_and_skips_hidden_runtime_dirs() {
         let root = temp_repo();
         fs::write(root.join("src.txt"), "first\nneedle here\n").unwrap();
@@ -396,6 +618,22 @@ mod tests {
         assert_eq!(matches[0].path, "src.txt");
         assert_eq!(matches[0].line, 2);
         assert_eq!(matches[0].evidence_kind, "repo_evidence");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repo_text_evidence_skips_sensitive_files() {
+        let root = temp_repo();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join(".env"), "needle secret\n").unwrap();
+        fs::write(root.join("src").join("app.py"), "needle safe\n").unwrap();
+
+        let matches = search_text(&root, "needle", &RepoToolConfig::default()).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path, "src/app.py");
+        let error = read_file(&root, ".env", &RepoToolConfig::default()).unwrap_err();
+        assert!(matches!(error, RepoToolError::SensitivePath(_)));
         let _ = fs::remove_dir_all(root);
     }
 
