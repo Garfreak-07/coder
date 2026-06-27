@@ -18,6 +18,8 @@ cargo run -p coder-cli --bin coder-rust -- openhands doctor --server http://127.
 cargo run -p coder-cli --bin coder-rust -- openhands run --server http://127.0.0.1:8000 --conversation-id <id> "summarize this repo"
 cargo run -p coder-cli --bin coder-rust -- tools read-file --repo . README.md
 cargo run -p coder-cli --bin coder-rust -- tools search-text --repo . "Planner Chat"
+cargo run -p coder-cli --bin coder-rust -- tools git-status --repo .
+cargo run -p coder-cli --bin coder-rust -- tools git-diff --repo . --max-output-bytes 4096
 cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8766
 ```
 
@@ -39,8 +41,9 @@ confirmation gate for a requested Rust workflow run.
 memory records plus `memory.read` and `memory.write.proposed` event helpers,
 without vector retrieval.
 `coder-tools` starts the Rust-native repo evidence layer with path-safe
-UTF-8 `read_file` and bounded `search_text` helpers; it does not include
-write, patch, command, or network effects.
+UTF-8 `read_file`, bounded `search_text`, `git_status`, and bounded
+`git_diff` helpers; it does not include write, patch, command, or network
+effects.
 
 Rust checks:
 

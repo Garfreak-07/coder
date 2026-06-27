@@ -1,6 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +9,7 @@ use thiserror::Error;
 
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 64 * 1024;
 pub const DEFAULT_MAX_SEARCH_MATCHES: usize = 50;
+pub const DEFAULT_MAX_GIT_OUTPUT_BYTES: usize = 64 * 1024;
 
 const SKIPPED_DIRS: &[&str] = &[
     ".git",
@@ -47,6 +49,22 @@ pub struct RepoSearchMatch {
     pub path: String,
     pub line: usize,
     pub preview: String,
+    pub evidence_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitStatusEvidence {
+    pub repo_root: String,
+    pub porcelain_v1: String,
+    pub truncated: bool,
+    pub evidence_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitDiffEvidence {
+    pub repo_root: String,
+    pub preview: String,
+    pub truncated: bool,
     pub evidence_kind: String,
 }
 
@@ -92,6 +110,39 @@ pub fn search_text(
     let mut matches = Vec::new();
     search_dir(&root, &root, query, config, &mut matches)?;
     Ok(matches)
+}
+
+pub fn git_status(repo_root: impl AsRef<Path>) -> Result<GitStatusEvidence, RepoToolError> {
+    let root = canonical_repo_root(repo_root)?;
+    let output = run_git(
+        &root,
+        &["status", "--porcelain=v1", "--branch"],
+        DEFAULT_MAX_GIT_OUTPUT_BYTES,
+    )?;
+    Ok(GitStatusEvidence {
+        repo_root: root.display().to_string(),
+        porcelain_v1: output.preview,
+        truncated: output.truncated,
+        evidence_kind: "repo_evidence".to_owned(),
+    })
+}
+
+pub fn git_diff(
+    repo_root: impl AsRef<Path>,
+    max_output_bytes: usize,
+) -> Result<GitDiffEvidence, RepoToolError> {
+    let root = canonical_repo_root(repo_root)?;
+    let output = run_git(
+        &root,
+        &["diff", "--no-ext-diff", "--no-textconv", "--"],
+        max_output_bytes,
+    )?;
+    Ok(GitDiffEvidence {
+        repo_root: root.display().to_string(),
+        preview: output.preview,
+        truncated: output.truncated,
+        evidence_kind: "repo_evidence".to_owned(),
+    })
 }
 
 fn search_dir(
@@ -157,6 +208,44 @@ fn search_file(
         }
     }
     Ok(())
+}
+
+struct CommandPreview {
+    preview: String,
+    truncated: bool,
+}
+
+fn run_git(
+    root: &Path,
+    args: &[&str],
+    max_output_bytes: usize,
+) -> Result<CommandPreview, RepoToolError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("-c")
+        .arg("diff.external=")
+        .arg("-c")
+        .arg("core.pager=")
+        .args(args)
+        .output()
+        .map_err(RepoToolError::GitIo)?;
+    if !output.status.success() {
+        return Err(RepoToolError::GitFailed {
+            status: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    let truncated = output.stdout.len() > max_output_bytes;
+    let preview_bytes = if truncated {
+        &output.stdout[..max_output_bytes]
+    } else {
+        &output.stdout
+    };
+    Ok(CommandPreview {
+        preview: String::from_utf8_lossy(preview_bytes).into_owned(),
+        truncated,
+    })
 }
 
 fn canonical_repo_root(repo_root: impl AsRef<Path>) -> Result<PathBuf, RepoToolError> {
@@ -239,6 +328,10 @@ pub enum RepoToolError {
     },
     #[error("search query must not be empty")]
     EmptyQuery,
+    #[error("failed to run git: {0}")]
+    GitIo(std::io::Error),
+    #[error("git command failed with status {status:?}: {stderr}")]
+    GitFailed { status: Option<i32>, stderr: String },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -316,6 +409,55 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn git_status_returns_branch_and_worktree_evidence() {
+        let root = temp_repo();
+        init_git_repo(&root);
+        fs::write(root.join("untracked.txt"), "new evidence\n").unwrap();
+
+        let evidence = git_status(&root).unwrap();
+
+        assert!(evidence
+            .porcelain_v1
+            .lines()
+            .any(|line| line.starts_with("## ")));
+        assert!(evidence.porcelain_v1.contains("?? untracked.txt"));
+        assert!(!evidence.truncated);
+        assert_eq!(evidence.evidence_kind, "repo_evidence");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_diff_returns_bounded_preview() {
+        let root = temp_repo();
+        init_git_repo(&root);
+        fs::write(root.join("tracked.txt"), "base\n").unwrap();
+        git(&root, &["add", "tracked.txt"]);
+        fs::write(root.join("tracked.txt"), "changed\n").unwrap();
+
+        let evidence = git_diff(&root, 4096).unwrap();
+
+        assert!(evidence.preview.contains("diff --git"));
+        assert!(evidence.preview.contains("-base"));
+        assert!(evidence.preview.contains("+changed"));
+        assert!(!evidence.truncated);
+
+        let truncated = git_diff(&root, 24).unwrap();
+        assert!(truncated.truncated);
+        assert_eq!(truncated.preview.len(), 24);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn git_status_rejects_non_git_directory() {
+        let root = temp_repo();
+
+        let error = git_status(&root).unwrap_err();
+
+        assert!(matches!(error, RepoToolError::GitFailed { .. }));
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn temp_repo() -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "coder-tools-{}",
@@ -326,5 +468,24 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn init_git_repo(root: &Path) {
+        git(root, &["init"]);
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

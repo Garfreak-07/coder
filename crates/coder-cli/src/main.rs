@@ -9,7 +9,7 @@ use coder_openhands::{
 };
 use coder_server::{serve, ApiState};
 use coder_store::RunStore;
-use coder_tools::{read_file, search_text, RepoToolConfig};
+use coder_tools::{git_diff, git_status, read_file, search_text, RepoToolConfig};
 use coder_workflow::MockWorkflowRunner;
 use serde_json::json;
 
@@ -120,6 +120,16 @@ enum ToolsCommand {
         #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_SEARCH_MATCHES)]
         max_matches: usize,
         query: String,
+    },
+    GitStatus {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
+    GitDiff {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_GIT_OUTPUT_BYTES)]
+        max_output_bytes: usize,
     },
 }
 
@@ -470,6 +480,22 @@ async fn main() -> anyhow::Result<()> {
                     max_search_matches: max_matches,
                 },
             )?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        Command::Tools {
+            command: ToolsCommand::GitStatus { repo },
+        } => {
+            let output = git_status(repo)?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        Command::Tools {
+            command:
+                ToolsCommand::GitDiff {
+                    repo,
+                    max_output_bytes,
+                },
+        } => {
+            let output = git_diff(repo, max_output_bytes)?;
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
         Command::Server { host, port, store } => {

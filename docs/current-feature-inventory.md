@@ -47,7 +47,7 @@ Classification values:
 | BlobStore/artifacts | Indirect | `core/artifacts.py`, server stores | Content-addressed large text/blob storage and artifact retrieval | REPLACE_WITH_RUST_CORE | Rust BlobStore and ArtifactStore | Critical: large event payloads/secrets | Blob hash, traversal, redaction tests |
 | Context packets | Indirect | `context`, `server/stores/contexts.py` | Hot/warm/cold context projection with refs | DELETE_INTERNAL_CONCEPT_ONLY | Context assembler projecting from events/memory/repo evidence | Medium: token bloat or missing context | Compaction and ref-only tests |
 | Long context compaction | Indirect | `context/compaction.py` | Shrinks oversized context into previews and blob refs | REPLACE_WITH_RUST_CORE | Rust context projection and large payload policy | Medium: event/log bloat | Large payload and preview tests |
-| Repo discovery/search/read | Indirect | `context/repo_*`, `coding/repo_index.py` | Grounded repo evidence with path safety | REPLACE_WITH_RUST_CORE | Rust native repo tools | High: unsafe path reads or weak grounding | Scope, gitignore, binary/env tests |
+| Repo discovery/search/read/diff/status | Indirect | `context/repo_*`, `coding/repo_index.py`, Git inspection helpers | Grounded repo evidence with path safety and current worktree visibility | REPLACE_WITH_RUST_CORE | Rust native repo tools | High: unsafe path reads, weak grounding, or confusing uncommitted state | Scope, gitignore, binary/env, git status/diff tests |
 | Agentic context router | Indirect | `context/agentic_router.py` | Routes between repo evidence, run evidence, and RAG hints | MOVE_TO_PLUGIN_OR_LATER_PHASE | Rust router after core events/tools stabilize | Medium: lower context quality | Router policy tests |
 | Legacy workflow memory | Indirect | `memory/service.py` | Staged evidence-backed workflow memory deltas | REPLACE_WITH_RUST_CORE | MemoryScope and proposal events | Medium: memory writes unsafe | Staged write and confirmation tests |
 | Agent-scoped memory | Yes/indirect | `memory/models.py`, stores/retriever | ACL-ready user/project/agent/run memory cards | KEEP_AS_USER_FEATURE | Rust memory backend and MemoryCard projection | High: privacy/ACL regression | ACL and role policy tests |
@@ -115,6 +115,7 @@ Classification values:
   mock run, event listing.
 - `coder-memory`: project memory file loading, bounded memory write previews,
   and content-free memory read events.
-- `coder-tools`: path-safe read-only repo file reads and bounded text search
-  that skip runtime/vendor directories.
+- `coder-tools`: path-safe read-only repo file reads, bounded text search that
+  skips runtime/vendor directories, read-only git status evidence, and bounded
+  git diff previews.
 - Frontend adapter: legacy canvas to `WorkflowSpec` and back.
