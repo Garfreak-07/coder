@@ -133,6 +133,63 @@ impl ExtensionActionPolicy {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCapability {
+    pub name: String,
+    pub toolset: String,
+    pub side_effect: SideEffectLevel,
+    pub risk: RiskLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolRegistryEntry {
+    pub capability: ToolCapability,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub harness_ids: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled_by_default: bool,
+    #[serde(default)]
+    pub requires_approval: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolRegistry {
+    entries: Vec<ToolRegistryEntry>,
+}
+
+impl ToolRegistry {
+    pub fn new(entries: Vec<ToolRegistryEntry>) -> Self {
+        Self { entries }
+    }
+
+    pub fn list_tools(&self, harness_id: Option<&str>) -> Vec<ToolRegistryEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                harness_id
+                    .map(|harness_id| entry.harness_ids.iter().any(|id| id == harness_id))
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn get_tool(&self, name: &str) -> Option<ToolRegistryEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.capability.name == name)
+            .cloned()
+    }
+}
+
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new(tool_registry_entries())
+    }
+}
+
 impl McpManifestOperation {
     pub fn requires_approval(&self) -> bool {
         true
@@ -302,11 +359,235 @@ fn bool_field(value: Option<&Value>) -> bool {
     value.and_then(Value::as_bool).unwrap_or(false)
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn max_risk(left: RiskLevel, right: RiskLevel) -> RiskLevel {
     if left.rank() >= right.rank() {
         left
     } else {
         right
+    }
+}
+
+pub fn tool_registry_entries() -> Vec<ToolRegistryEntry> {
+    let planner_harnesses = [
+        "conversation-harness",
+        "planner-order-harness",
+        "planner-decision-harness",
+        "final-report-harness",
+    ];
+    let code_worker_harnesses = ["task-execution-harness", "code-worker-harness"];
+    planner_tool_capabilities()
+        .into_iter()
+        .map(|capability| {
+            tool_registry_entry(capability, "Planner harness tool", &planner_harnesses)
+        })
+        .chain(
+            code_worker_tool_capabilities()
+                .into_iter()
+                .map(|capability| {
+                    tool_registry_entry(
+                        capability,
+                        "Code worker harness tool",
+                        &code_worker_harnesses,
+                    )
+                }),
+        )
+        .collect()
+}
+
+pub fn planner_tool_capabilities() -> Vec<ToolCapability> {
+    vec![
+        tool_capability(
+            "inspect_workflow",
+            "workflow",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "inspect_project_summary",
+            "context",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "inspect_artifact",
+            "runtime_state",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "inspect_run_state",
+            "runtime_state",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "inspect_round_summary",
+            "runtime_state",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "inspect_evidence",
+            "evidence",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "inspect_skill_index",
+            "skills",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "inspect_memory",
+            "memory",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "read_skill_index",
+            "skills",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "search_workflow_memory",
+            "memory",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "search_project_memory",
+            "memory",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "validate_run_contract_draft",
+            "artifacts",
+            SideEffectLevel::None,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "validate_planner_order",
+            "artifacts",
+            SideEffectLevel::None,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "validate_planner_decision",
+            "artifacts",
+            SideEffectLevel::None,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "build_final_report",
+            "artifacts",
+            SideEffectLevel::None,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "estimate_risk",
+            "runtime_policy",
+            SideEffectLevel::None,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "estimate_budget",
+            "runtime_policy",
+            SideEffectLevel::None,
+            RiskLevel::Low,
+        ),
+    ]
+}
+
+pub fn code_worker_tool_capabilities() -> Vec<ToolCapability> {
+    vec![
+        tool_capability(
+            "read_file",
+            "filesystem",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "search_files",
+            "filesystem",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "inspect_git_diff",
+            "git",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "propose_patch",
+            "filesystem",
+            SideEffectLevel::Write,
+            RiskLevel::Medium,
+        ),
+        tool_capability(
+            "apply_patch_sandbox",
+            "filesystem",
+            SideEffectLevel::Write,
+            RiskLevel::Medium,
+        ),
+        tool_capability(
+            "run_command_sandbox",
+            "commands",
+            SideEffectLevel::External,
+            RiskLevel::Medium,
+        ),
+        tool_capability(
+            "read_tool_output",
+            "runtime_state",
+            SideEffectLevel::Read,
+            RiskLevel::Low,
+        ),
+        tool_capability(
+            "return_execution_result",
+            "artifacts",
+            SideEffectLevel::None,
+            RiskLevel::Low,
+        ),
+    ]
+}
+
+fn tool_registry_entry(
+    capability: ToolCapability,
+    description_prefix: &str,
+    harness_ids: &[&str],
+) -> ToolRegistryEntry {
+    let requires_approval = capability.risk != RiskLevel::Low
+        || matches!(
+            capability.side_effect,
+            SideEffectLevel::Write | SideEffectLevel::External
+        );
+    ToolRegistryEntry {
+        description: format!("{description_prefix}: {}.", capability.name),
+        capability,
+        harness_ids: harness_ids.iter().map(|id| (*id).to_owned()).collect(),
+        enabled_by_default: true,
+        requires_approval,
+    }
+}
+
+fn tool_capability(
+    name: &str,
+    toolset: &str,
+    side_effect: SideEffectLevel,
+    risk: RiskLevel,
+) -> ToolCapability {
+    ToolCapability {
+        name: name.to_owned(),
+        toolset: toolset.to_owned(),
+        side_effect,
+        risk,
     }
 }
 
@@ -390,6 +671,31 @@ mod tests {
         assert!(risk.errors[0].contains("unsupported MCP risk level"));
         assert!(!side_effect.ok);
         assert!(side_effect.errors[0].contains("unsupported MCP side effect"));
+    }
+
+    #[test]
+    fn tool_registry_filters_by_harness_and_marks_risky_tools() {
+        let registry = ToolRegistry::default();
+        let code_worker_tools = registry.list_tools(Some("code-worker-harness"));
+        let names = code_worker_tools
+            .iter()
+            .map(|entry| entry.capability.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let patch_tool = registry.get_tool("apply_patch_sandbox").unwrap();
+
+        assert!(names.contains("run_command_sandbox"));
+        assert!(!names.contains("inspect_run_state"));
+        assert!(patch_tool.requires_approval);
+    }
+
+    #[test]
+    fn tool_registry_low_risk_read_tools_do_not_require_approval() {
+        let registry = ToolRegistry::default();
+        let read_file = registry.get_tool("read_file").unwrap();
+        let inspect_workflow = registry.get_tool("inspect_workflow").unwrap();
+
+        assert!(!read_file.requires_approval);
+        assert!(!inspect_workflow.requires_approval);
     }
 
     #[test]
