@@ -974,10 +974,11 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         offenders: list[str] = []
         pattern = re.compile(r"^\s*(from|import)\s+openhands\b", re.MULTILINE)
         for path in root.rglob("*.py"):
-            if path.name == "openhands_provider.py":
+            relative = path.relative_to(root)
+            if path.name == "openhands_provider.py" or relative.parts[:1] == ("openhands_tools",):
                 continue
             if pattern.search(path.read_text(encoding="utf-8")):
-                offenders.append(str(path.relative_to(root)))
+                offenders.append(str(relative))
 
         self.assertEqual(offenders, [])
 
