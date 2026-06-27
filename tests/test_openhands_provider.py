@@ -104,12 +104,17 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.log_refs, ["log-ref"])
         self.assertIn("runtime-ref", result.evidence_refs)
         self.assertEqual(state["llm"]["model"], "test-model")
-        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["terminal", "file_editor", "task_tracker"])
+        self.assertEqual(
+            [tool.name for tool in state["agent"]["tools"]],
+            ["terminal", "file_editor", "task_tracker", "coder_hybrid_rag_search"],
+        )
+        self.assertEqual(state["agent"]["tools"][-1].params["role"], "task_execution")
+        self.assertEqual(state["agent"]["tools"][-1].params["requested_context"], "execution_prompt")
         self.assertIn("Do not ask the user", state["conversation"]["prompt"])
         event_types = [event.native_type for event in store.list_events("run-1")]
         self.assertIn("provider.selected", event_types)
         self.assertIn("sandbox.prepared", event_types)
-        self.assertEqual(event_types.count("harness_permission.allowed"), 3)
+        self.assertEqual(event_types.count("harness_permission.allowed"), 4)
         self.assertIn("conversation.started", event_types)
         self.assertIn("conversation.completed", event_types)
         self.assertIn("harness_loop.completed", event_types)
@@ -421,7 +426,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.artifact["planner_recommendation"], "replan_once")
         self.assertEqual(result.artifact["remaining_work"], ["Install pytest or choose a verification path."])
 
-    def test_openhands_provider_uses_task_tracker_only_for_conversation_modes(self) -> None:
+    def test_openhands_provider_uses_read_only_tools_for_conversation_modes(self) -> None:
         store = NativeRuntimeStore()
         state: dict[str, Any] = {}
         provider = OpenHandsRuntimeProvider(native_store=store, sdk_loader=lambda: _fake_sdk(state))
@@ -431,8 +436,10 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
 
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.artifact_type, "final_report")
-        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
-        self.assertEqual(_native_types(store).count("harness_permission.allowed"), 1)
+        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker", "coder_hybrid_rag_search"])
+        self.assertEqual(state["agent"]["tools"][-1].params["role"], "workflow_supervisor")
+        self.assertEqual(state["agent"]["tools"][-1].params["requested_context"], "workflow_supervision")
+        self.assertEqual(_native_types(store).count("harness_permission.allowed"), 2)
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
 
     def test_workflow_supervisor_requested_artifact_target_drives_output(self) -> None:
@@ -457,7 +464,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.artifact["artifact_type"], "planner_order")
         self.assertIn("Current Coder artifact target: planner_order", state["conversation"]["prompt"])
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
-        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
+        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker", "coder_hybrid_rag_search"])
 
     def test_planning_chat_prompt_contains_planner_chat_turn_contract(self) -> None:
         state: dict[str, Any] = {}
@@ -571,7 +578,45 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
             result = provider.run(_planning_chat_request())
 
         self.assertEqual(result.status, "completed")
-        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker"])
+        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker", "coder_hybrid_rag_search"])
+        self.assertEqual(state["agent"]["tools"][-1].params["role"], "planning_chat")
+        self.assertEqual(state["agent"]["tools"][-1].params["requested_context"], "assistant_message")
+
+    def test_task_execution_rag_tool_params_use_confirmed_scope(self) -> None:
+        state: dict[str, Any] = {}
+        provider = OpenHandsRuntimeProvider(
+            native_store=NativeRuntimeStore(),
+            sdk_loader=lambda: _fake_sdk(
+                state,
+                run_output=_execution_result_output(no_op_rationale="No source changes were required."),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as sandbox:
+            base_request = _task_request(sandbox_root=sandbox)
+            request = base_request.model_copy(
+                update={
+                    "context": base_request.context.model_copy(
+                        update={
+                            "initial_data": {
+                                "scopes": ["src"],
+                                "memory_store_root": "F:\\store\\.coder",
+                                "project_id": "project-1",
+                            }
+                        }
+                    )
+                }
+            )
+
+            with _env("LLM_API_KEY", "test-key"):
+                result = provider.run(request)
+
+        params = state["agent"]["tools"][-1].params
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(params["role"], "task_execution")
+        self.assertEqual(params["requested_context"], "execution_prompt")
+        self.assertEqual(params["scope_paths"], ["src"])
+        self.assertEqual(params["memory_root"], "F:\\store\\.coder")
+        self.assertIsNone(params["session_id"])
 
     def test_workflow_supervisor_prompt_contains_planner_task_state(self) -> None:
         state: dict[str, Any] = {}
@@ -1187,8 +1232,9 @@ def _fake_sdk(
             state["llm"] = kwargs
 
     class FakeTool:
-        def __init__(self, *, name: str) -> None:
+        def __init__(self, *, name: str, params: dict[str, Any] | None = None) -> None:
             self.name = name
+            self.params = params or {}
 
     class FakeAgent:
         def __init__(self, *, llm: Any, tools: list[Any]) -> None:

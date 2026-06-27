@@ -847,11 +847,24 @@ class OpenHandsRuntimeProvider:
 
     def _tool_names_for_request(self, request: HarnessRunRequest, sdk: Any) -> list[str]:
         if request.mode == "task_execution":
-            return [sdk.TerminalTool.name, sdk.FileEditorTool.name, sdk.TaskTrackerTool.name]
-        return [sdk.TaskTrackerTool.name]
+            return [
+                sdk.TerminalTool.name,
+                sdk.FileEditorTool.name,
+                sdk.TaskTrackerTool.name,
+                "coder_hybrid_rag_search",
+            ]
+        return [sdk.TaskTrackerTool.name, "coder_hybrid_rag_search"]
 
     def _tools_for_request(self, request: HarnessRunRequest, sdk: Any) -> list[Any]:
-        return [sdk.Tool(name=name) for name in self._tool_names_for_request(request, sdk)]
+        if str(getattr(sdk.Tool, "__module__", "")).startswith("openhands."):
+            _ensure_coder_openhands_tools_registered()
+        tools: list[Any] = []
+        for name in self._tool_names_for_request(request, sdk):
+            if name == "coder_hybrid_rag_search":
+                tools.append(sdk.Tool(name=name, params=_rag_tool_params_for_request(request)))
+            else:
+                tools.append(sdk.Tool(name=name))
+        return tools
 
     def _sandbox_facts(self, request: HarnessRunRequest, sandbox: Any) -> dict[str, list[str]]:
         facts = _empty_runtime_facts()
@@ -1187,6 +1200,64 @@ def _denied_runtime_command(
         if not decision.allowed:
             return decision, str(command)
     return None
+
+
+def _ensure_coder_openhands_tools_registered() -> None:
+    import coder_workbench.openhands_tools.hybrid_rag_search  # noqa: F401
+
+
+def _rag_tool_params_for_request(request: HarnessRunRequest) -> dict[str, Any]:
+    role, requested_context, max_tokens = {
+        "planning_chat": ("planning_chat", "assistant_message", 4000),
+        "workflow_supervisor": ("workflow_supervisor", "workflow_supervision", 3000),
+        "task_execution": ("task_execution", "execution_prompt", 2000),
+    }[request.mode]
+    context_packet = request.context.context_packet or {}
+    initial_data = request.context.initial_data or {}
+    session_id = None
+    if request.mode != "task_execution":
+        session_id = _optional_string(
+            initial_data.get("planner_chat_session_id")
+            or _dig(context_packet, "hot", "planner_chat_session_id")
+        )
+    return {
+        "memory_root": str(_memory_root_for_request(request)),
+        "role": role,
+        "requested_context": requested_context,
+        "project_id": _optional_string(initial_data.get("project_id") or request.context.repo_root),
+        "session_id": session_id,
+        "run_id": _optional_string(request.context.run_id or initial_data.get("run_id")),
+        "scope_paths": _scope_paths_for_request(request),
+        "max_tokens": max_tokens,
+    }
+
+
+def _memory_root_for_request(request: HarnessRunRequest) -> Path:
+    initial_data = request.context.initial_data or {}
+    for key in ("memory_store_root", "coder_store_root", "skill_store_root"):
+        value = initial_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return Path(value)
+    if request.context.repo_root:
+        return Path(request.context.repo_root) / ".coder"
+    return Path(".coder")
+
+
+def _scope_paths_for_request(request: HarnessRunRequest) -> list[str]:
+    initial_data = request.context.initial_data or {}
+    value = initial_data.get("scopes") or initial_data.get("scope")
+    if value is None and request.mode != "task_execution":
+        value = _dig(request.context.context_packet or {}, "hot", "scope")
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _optional_string(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _prompt_for_request(request: HarnessRunRequest) -> str:
