@@ -568,6 +568,10 @@ npm.cmd run build
 - Product live Agent workflows must run through AgentGraph.
 - New context, patch, command, repair, validation, plugin, and MCP behavior
   should enter through `ActionGateway`.
+- Rust `coder-harness` mirrors the plugin operation policy baseline: unknown
+  operations require approval, effective risk is the higher of request and
+  capability risk, and medium/high-risk or permission-requesting operations are
+  approval-gated.
 - CodeWorker tool-loop actions must remain scoped to `read_file`,
   `search_files`, `inspect_git_diff`, `propose_patch`, `apply_patch_sandbox`,
   `run_command_sandbox`, `read_tool_output`, and `return_execution_result`.

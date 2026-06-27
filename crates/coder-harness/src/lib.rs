@@ -44,6 +44,24 @@ pub enum RiskLevel {
     High,
 }
 
+impl RiskLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::Low => 0,
+            Self::Medium => 1,
+            Self::High => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SideEffectLevel {
@@ -87,9 +105,72 @@ pub struct McpManifestValidation {
     pub manifest: Option<McpServerManifest>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionCapabilityPolicy {
+    #[serde(default)]
+    pub risk_level: RiskLevel,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub requires_approval: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionActionPolicy {
+    pub operation_id: String,
+    pub risk_level: RiskLevel,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    pub requires_approval: bool,
+    pub known_operation: bool,
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl ExtensionActionPolicy {
+    pub fn approval_key(&self) -> String {
+        format!("plugin:{}:{}", self.operation_id, self.risk_level.as_str())
+    }
+}
+
 impl McpManifestOperation {
     pub fn requires_approval(&self) -> bool {
         true
+    }
+}
+
+pub fn merge_extension_policy(
+    operation_id: impl Into<String>,
+    capability: Option<&ExtensionCapabilityPolicy>,
+    spec_risk_level: RiskLevel,
+    spec_requires_permission: bool,
+    input_requires_permission: bool,
+    input_requires_approval: bool,
+) -> ExtensionActionPolicy {
+    let operation_id = operation_id.into();
+    let Some(capability) = capability else {
+        return ExtensionActionPolicy {
+            operation_id,
+            risk_level: spec_risk_level,
+            permissions: Vec::new(),
+            requires_approval: true,
+            known_operation: false,
+            reason: "Unknown plugin operation requires explicit approval.".to_owned(),
+        };
+    };
+    let effective_risk = max_risk(spec_risk_level, capability.risk_level);
+    let requires_approval = capability.requires_approval
+        || spec_requires_permission
+        || input_requires_permission
+        || input_requires_approval
+        || matches!(effective_risk, RiskLevel::Medium | RiskLevel::High);
+    ExtensionActionPolicy {
+        operation_id,
+        risk_level: effective_risk,
+        permissions: capability.permissions.clone(),
+        requires_approval,
+        known_operation: true,
+        reason: "Capability policy merged.".to_owned(),
     }
 }
 
@@ -221,6 +302,14 @@ fn bool_field(value: Option<&Value>) -> bool {
     value.and_then(Value::as_bool).unwrap_or(false)
 }
 
+fn max_risk(left: RiskLevel, right: RiskLevel) -> RiskLevel {
+    if left.rank() >= right.rank() {
+        left
+    } else {
+        right
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -301,5 +390,89 @@ mod tests {
         assert!(risk.errors[0].contains("unsupported MCP risk level"));
         assert!(!side_effect.ok);
         assert!(side_effect.errors[0].contains("unsupported MCP side effect"));
+    }
+
+    #[test]
+    fn extension_policy_uses_highest_risk_and_capability_permissions() {
+        let capability = ExtensionCapabilityPolicy {
+            risk_level: RiskLevel::High,
+            permissions: vec!["edit_files".to_owned()],
+            requires_approval: true,
+        };
+
+        let policy = merge_extension_policy(
+            "apply_patch",
+            Some(&capability),
+            RiskLevel::Low,
+            false,
+            false,
+            false,
+        );
+
+        assert!(policy.known_operation);
+        assert_eq!(policy.risk_level, RiskLevel::High);
+        assert_eq!(policy.permissions, ["edit_files"]);
+        assert!(policy.requires_approval);
+        assert_eq!(policy.approval_key(), "plugin:apply_patch:high");
+    }
+
+    #[test]
+    fn extension_policy_requires_approval_for_unknown_operation() {
+        let policy =
+            merge_extension_policy("unknown.op", None, RiskLevel::Low, false, false, false);
+
+        assert!(!policy.known_operation);
+        assert!(policy.requires_approval);
+        assert_eq!(policy.risk_level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn extension_policy_allows_known_low_risk_without_permission_flags() {
+        let capability = ExtensionCapabilityPolicy {
+            risk_level: RiskLevel::Low,
+            permissions: Vec::new(),
+            requires_approval: false,
+        };
+
+        let policy = merge_extension_policy(
+            "project_index",
+            Some(&capability),
+            RiskLevel::Low,
+            false,
+            false,
+            false,
+        );
+
+        assert!(policy.known_operation);
+        assert!(!policy.requires_approval);
+    }
+
+    #[test]
+    fn extension_policy_requires_approval_for_medium_or_requested_permission() {
+        let capability = ExtensionCapabilityPolicy {
+            risk_level: RiskLevel::Low,
+            permissions: Vec::new(),
+            requires_approval: false,
+        };
+
+        let medium_policy = merge_extension_policy(
+            "project_index",
+            Some(&capability),
+            RiskLevel::Medium,
+            false,
+            false,
+            false,
+        );
+        let permission_policy = merge_extension_policy(
+            "project_index",
+            Some(&capability),
+            RiskLevel::Low,
+            true,
+            false,
+            false,
+        );
+
+        assert!(medium_policy.requires_approval);
+        assert!(permission_policy.requires_approval);
     }
 }
