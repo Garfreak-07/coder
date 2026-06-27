@@ -55,8 +55,11 @@ def build_harness_context_packet(
     memory_cards: list[Any] | None = None,
     knowledge_hits: list[Any] | None = None,
     repo_evidence: list[Any] | None = None,
+    run_evidence: list[Any] | None = None,
     knowledge_hints: list[Any] | None = None,
     repo_evidence_refs: list[str] | None = None,
+    run_evidence_refs: list[str] | None = None,
+    retrieval_route_trace: list[dict[str, Any]] | None = None,
     run_memory_snapshot: dict[str, Any] | None = None,
     memory_token_budget: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -149,8 +152,11 @@ def build_harness_context_packet(
     _append_repo_context(
         packet,
         repo_evidence=repo_evidence,
+        run_evidence=run_evidence,
         knowledge_hints=knowledge_hints,
         repo_evidence_refs=repo_evidence_refs,
+        run_evidence_refs=run_evidence_refs,
+        retrieval_route_trace=retrieval_route_trace,
     )
     _append_memory_context(
         packet,
@@ -309,19 +315,33 @@ def _append_repo_context(
     packet: dict[str, Any],
     *,
     repo_evidence: list[Any] | None,
+    run_evidence: list[Any] | None,
     knowledge_hints: list[Any] | None,
     repo_evidence_refs: list[str] | None,
+    run_evidence_refs: list[str] | None,
+    retrieval_route_trace: list[dict[str, Any]] | None,
 ) -> None:
     evidence_items = [_evidence_dict(item) for item in repo_evidence or []]
+    run_items = [_evidence_dict(item) for item in run_evidence or []]
     hint_items = [_evidence_dict(item) for item in knowledge_hints or []]
     if evidence_items:
         packet["warm"]["repo_evidence"] = _compact_value(evidence_items)
+    if run_items:
+        packet["warm"]["run_evidence"] = _compact_value(run_items)
     if hint_items:
         packet["warm"]["knowledge_hints"] = _compact_value(hint_items)
+    if retrieval_route_trace:
+        trace = [_route_trace_item(item) for item in retrieval_route_trace[:MAX_INLINE_LIST_ITEMS]]
+        if trace:
+            packet["warm"]["retrieval_route_trace"] = trace
     refs = list(repo_evidence_refs or [])
     refs.extend(str(item.get("ref_id")) for item in evidence_items if item.get("ref_id"))
     refs.extend(str(item.get("evidence_ref")) for item in evidence_items if item.get("evidence_ref"))
     _append_refs(packet, "repo_evidence", _unique_strings(refs))
+    run_refs = list(run_evidence_refs or [])
+    run_refs.extend(str(item.get("ref_id")) for item in run_items if item.get("ref_id"))
+    run_refs.extend(str(item.get("evidence_ref")) for item in run_items if item.get("evidence_ref"))
+    _append_refs(packet, "run_evidence", _unique_strings(run_refs))
     knowledge_refs: list[str] = []
     for hint in hint_items:
         knowledge_refs.extend(str(ref) for ref in hint.get("source_refs") or [] if str(ref))
@@ -390,6 +410,18 @@ def _evidence_dict(item: Any) -> dict[str, Any]:
         }
         and entry not in (None, "", [])
     }
+
+
+def _route_trace_item(item: dict[str, Any]) -> dict[str, Any]:
+    keep = {
+        "step",
+        "source",
+        "reason",
+        "iteration",
+        "before",
+        "after",
+    }
+    return _compact_value({key: value for key, value in item.items() if key in keep and value not in (None, "", [], {})})
 
 
 def _unique_strings(values: list[str]) -> list[str]:

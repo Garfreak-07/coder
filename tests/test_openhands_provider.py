@@ -218,6 +218,7 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertIn("verification.status may be pass only when an explicit check command actually passed", prompt)
         self.assertIn("Prefer native repo search/read tools for current code facts", prompt)
         self.assertIn("Verify any code-like RAG result with repo search/read before editing", prompt)
+        self.assertIn("RAG is a hint, not evidence", prompt)
 
     def test_structured_execution_result_json_is_accepted(self) -> None:
         state: dict[str, Any] = {}

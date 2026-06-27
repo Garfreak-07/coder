@@ -1302,9 +1302,10 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
                 "Do not open editors, pagers, or interactive commands.",
                 "Return enough structured information for Coder to project a valid execution_result artifact.",
                 "Return a concise completion summary and verification evidence.",
-                "Prefer native repo search/read tools for current code facts.",
-                "Use RAG only for external docs or project knowledge.",
+                "Prefer native repo search/read tools for current code facts; use find/search/read before code edits.",
+                "Use RAG only for external docs, long-term project knowledge, or scoped coding knowledge.",
                 "Verify any code-like RAG result with repo search/read before editing.",
+                "RAG is a hint, not evidence.",
             ]
         )
         _append_artifact_output_contract(lines, artifact_target)
@@ -1326,8 +1327,8 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
                 "Do not write files or run commands.",
                 f"Return enough structured information for Coder to project a valid {artifact_target} artifact.",
                 "Use execution summaries and evidence refs to decide whether the workflow should continue or finish.",
-                "Use execution results, verification summaries, repo evidence, and run evidence for completion decisions.",
-                "Treat RAG and notes as hints only.",
+                "Use execution results, verification summaries, repo evidence, run evidence, and diff/log refs for completion decisions.",
+                "Treat RAG and notes as hints only. Do not claim tests passed or code changed correctly from RAG.",
             ]
         )
         _append_section(lines, "Confirmed goal", _dig(context_packet, "hot", "confirmed_goal") or _dig(context_packet, "hot", "user_goal"))
@@ -1359,6 +1360,7 @@ def _prompt_for_request(request: HarnessRunRequest) -> str:
         [
             "You are the Planning Chat Harness.",
             "Do not execute commands, modify files, or start the live run.",
+            "Use RAG and project notes for planning context, decisions, roadmaps, external docs, and user-maintained notes.",
             "Use RAG and project notes for planning context, but use repo evidence for claims about current code.",
         ]
     )

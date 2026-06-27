@@ -161,6 +161,37 @@ class HarnessContextPacketTests(unittest.TestCase):
         self.assertIn({"ref_type": "repo_evidence", "refs": ["repo-read:1"]}, packet["cold_refs"])
         self.assertIn({"ref_type": "knowledge", "refs": ["knowledge-source-1", "hint-1"]}, packet["cold_refs"])
 
+    def test_packet_includes_run_evidence_and_route_trace(self) -> None:
+        packet = build_harness_context_packet(
+            mode="workflow_supervisor",
+            user_goal="Finish workflow.",
+            workflow_id="workflow",
+            agent_id="planner",
+            run_evidence=[
+                {
+                    "ref_id": "run-ref",
+                    "source": "verification_summaries",
+                    "evidence_kind": "run_evidence",
+                    "summary": "Checks passed.",
+                }
+            ],
+            run_evidence_refs=["run-ref"],
+            retrieval_route_trace=[
+                {
+                    "step": "classify_intent",
+                    "source": "run_evidence",
+                    "reason": "workflow supervisor starts with run evidence",
+                    "iteration": 0,
+                    "raw_prompt": "must not survive",
+                }
+            ],
+        )
+
+        self.assertEqual(packet["warm"]["run_evidence"][0]["evidence_kind"], "run_evidence")
+        self.assertEqual(packet["warm"]["retrieval_route_trace"][0]["source"], "run_evidence")
+        self.assertNotIn("raw_prompt", str(packet))
+        self.assertIn({"ref_type": "run_evidence", "refs": ["run-ref"]}, packet["cold_refs"])
+
     def test_agent_run_harness_context_carries_task_execution_packet(self) -> None:
         workflow = default_planner_led_agent_workflow()
         item = WorkItem(
