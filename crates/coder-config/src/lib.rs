@@ -334,6 +334,26 @@ pub fn validate_workflow(
             format!("workflows.{workflow_id}.max_rounds"),
         ));
     }
+    if let Some(final_report_agent) = &workflow.stop.final_report_agent {
+        if !agents.contains_key(final_report_agent) {
+            issues.push(error(
+                "workflow_final_report_agent_not_found",
+                format!(
+                    "workflow '{workflow_id}' final_report_agent '{final_report_agent}' does not exist"
+                ),
+                format!("workflows.{workflow_id}.stop.final_report_agent"),
+            ));
+        }
+    }
+    for status in &workflow.stop.on_status {
+        if !is_known_stop_status(status) {
+            issues.push(error(
+                "workflow_stop_status_unknown",
+                format!("workflow '{workflow_id}' stop status '{status}' is not supported"),
+                format!("workflows.{workflow_id}.stop.on_status"),
+            ));
+        }
+    }
 
     let node_ids: std::collections::BTreeSet<&str> =
         workflow.nodes.iter().map(|node| node.id.as_str()).collect();
@@ -374,6 +394,16 @@ pub fn validate_workflow(
         }
     }
     for edge in &workflow.edges {
+        if edge.on.trim().is_empty() {
+            issues.push(error(
+                "workflow_edge_condition_empty",
+                format!(
+                    "workflow '{workflow_id}' edge from '{}' to '{}' must define a transition condition",
+                    edge.from, edge.to
+                ),
+                format!("workflows.{workflow_id}.edges"),
+            ));
+        }
         if !node_ids.contains(edge.from.as_str()) {
             issues.push(error(
                 "workflow_edge_source_not_found",
@@ -396,6 +426,13 @@ pub fn validate_workflow(
         }
     }
     issues
+}
+
+fn is_known_stop_status(status: &str) -> bool {
+    matches!(
+        status,
+        "completed" | "blocked" | "failed" | "cancelled" | "max_rounds"
+    )
 }
 
 fn error(
@@ -458,5 +495,26 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "workflow_edge_target_not_found"));
+    }
+
+    #[test]
+    fn invalid_stop_policy_is_reported() {
+        let mut config: ProjectConfig =
+            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
+        let workflow = config.workflows.get_mut("planner-led").unwrap();
+        workflow.stop.final_report_agent = Some("missing".to_owned());
+        workflow.stop.on_status.push("mystery".to_owned());
+
+        let report = validate_project_config(&config);
+
+        assert_eq!(report.status, "error");
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "workflow_final_report_agent_not_found"));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "workflow_stop_status_unknown"));
     }
 }

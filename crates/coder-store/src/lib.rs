@@ -5,7 +5,7 @@ use std::{
 };
 
 use coder_core::{FinalReport, RunId, RunState};
-use coder_events::CoderEvent;
+use coder_events::{CoderEvent, LargePayloadRef, DEFAULT_LARGE_PAYLOAD_PREVIEW_LIMIT};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -77,6 +77,19 @@ impl RunStore {
             fs::write(path, content)?;
         }
         Ok(format!("blob://sha256/{hex}"))
+    }
+
+    pub fn write_large_text_ref(&self, content: &str) -> Result<LargePayloadRef, StoreError> {
+        self.write_large_text_ref_with_limit(content, DEFAULT_LARGE_PAYLOAD_PREVIEW_LIMIT)
+    }
+
+    pub fn write_large_text_ref_with_limit(
+        &self,
+        content: &str,
+        preview_limit: usize,
+    ) -> Result<LargePayloadRef, StoreError> {
+        let blob_ref = self.write_blob(content.as_bytes())?;
+        Ok(LargePayloadRef::from_text(content, blob_ref, preview_limit))
     }
 
     pub fn run_dir(&self, run_id: &RunId) -> PathBuf {
@@ -157,6 +170,35 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(first.starts_with("blob://sha256/"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn large_text_refs_store_full_content_outside_event_payload() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+
+        let payload = store
+            .write_large_text_ref_with_limit("0123456789", 4)
+            .unwrap();
+
+        assert_eq!(payload.preview, "0123");
+        assert!(payload.truncated);
+        assert!(payload.blob_ref.starts_with("blob://sha256/"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_names_reject_path_traversal() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run_test");
+
+        let error = store
+            .write_artifact(&run_id, "../escape.json", &json!({"bad": true}))
+            .unwrap_err();
+
+        assert!(matches!(error, StoreError::InvalidFileName(_)));
         let _ = fs::remove_dir_all(root);
     }
 

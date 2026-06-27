@@ -130,9 +130,9 @@ pub struct FinalReport {
 }
 
 impl FinalReport {
-    pub fn completed(summary: impl Into<String>) -> Self {
+    pub fn with_status(status: ReportStatus, summary: impl Into<String>) -> Self {
         Self {
-            status: ReportStatus::Completed,
+            status,
             summary: summary.into(),
             changed_files: Vec::new(),
             checks: Vec::new(),
@@ -142,6 +142,35 @@ impl FinalReport {
             blockers: Vec::new(),
             next_steps: Vec::new(),
         }
+    }
+
+    pub fn completed(summary: impl Into<String>) -> Self {
+        Self::with_status(ReportStatus::Completed, summary)
+    }
+
+    pub fn blocked(summary: impl Into<String>, blocker: impl Into<String>) -> Self {
+        let mut report = Self::with_status(ReportStatus::Blocked, summary);
+        report.blockers.push(blocker.into());
+        report
+    }
+
+    pub fn failed(summary: impl Into<String>, blocker: impl Into<String>) -> Self {
+        let mut report = Self::with_status(ReportStatus::Failed, summary);
+        report.blockers.push(blocker.into());
+        report
+    }
+
+    pub fn with_check(mut self, check: impl Into<String>) -> Self {
+        self.checks.push(check.into());
+        self
+    }
+
+    pub fn with_evidence(mut self, kind: impl Into<String>, reference: impl Into<String>) -> Self {
+        self.evidence_refs.push(EvidenceRef {
+            kind: kind.into(),
+            reference: reference.into(),
+        });
+        self
     }
 }
 
