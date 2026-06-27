@@ -36,15 +36,18 @@ impl RunStore {
     }
 
     pub fn write_metadata(&self, state: &RunState) -> Result<(), StoreError> {
-        write_json(self.run_dir(&state.run_id).join("metadata.json"), state)
+        write_json(
+            self.safe_run_dir(&state.run_id)?.join("metadata.json"),
+            state,
+        )
     }
 
     pub fn read_metadata(&self, run_id: &RunId) -> Result<Option<RunState>, StoreError> {
-        read_json_optional(self.run_dir(run_id).join("metadata.json"))
+        read_json_optional(self.safe_run_dir(run_id)?.join("metadata.json"))
     }
 
     pub fn append_event(&self, run_id: &RunId, event: &CoderEvent) -> Result<(), StoreError> {
-        let path = self.run_dir(run_id).join("events.jsonl");
+        let path = self.safe_run_dir(run_id)?.join("events.jsonl");
         ensure_parent(&path)?;
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         file.write_all(event.to_jsonl()?.as_bytes())?;
@@ -52,7 +55,7 @@ impl RunStore {
     }
 
     pub fn read_events(&self, run_id: &RunId) -> Result<Vec<CoderEvent>, StoreError> {
-        let path = self.run_dir(run_id).join("events.jsonl");
+        let path = self.safe_run_dir(run_id)?.join("events.jsonl");
         if !path.exists() {
             return Ok(Vec::new());
         }
@@ -157,7 +160,7 @@ impl RunStore {
 
     pub fn read_report(&self, run_id: &RunId) -> Result<Option<FinalReport>, StoreError> {
         read_json_optional(
-            self.run_dir(run_id)
+            self.safe_run_dir(run_id)?
                 .join("artifacts")
                 .join("final-report.json"),
         )
@@ -170,12 +173,31 @@ impl RunStore {
         value: &T,
     ) -> Result<String, StoreError> {
         let safe_name = safe_file_name(name)?;
-        let path = self.run_dir(run_id).join("artifacts").join(&safe_name);
+        let path = self
+            .safe_run_dir(run_id)?
+            .join("artifacts")
+            .join(&safe_name);
         write_json(&path, value)?;
         Ok(format!(
             "artifact://runs/{}/artifacts/{safe_name}",
             run_id.as_str()
         ))
+    }
+
+    pub fn read_artifact_json(&self, run_id: &RunId, name: &str) -> Result<Value, StoreError> {
+        let safe_name = safe_file_name(name)?;
+        let path = self
+            .safe_run_dir(run_id)?
+            .join("artifacts")
+            .join(&safe_name);
+        if !path.exists() {
+            return Err(StoreError::ArtifactNotFound {
+                run_id: run_id.as_str().to_owned(),
+                name: safe_name,
+            });
+        }
+        let text = fs::read_to_string(path)?;
+        Ok(serde_json::from_str(&text)?)
     }
 
     pub fn write_blob(&self, content: &[u8]) -> Result<String, StoreError> {
@@ -187,6 +209,19 @@ impl RunStore {
             fs::write(path, content)?;
         }
         Ok(format!("blob://sha256/{hex}"))
+    }
+
+    pub fn read_blob_sha256(&self, digest: &str) -> Result<Vec<u8>, StoreError> {
+        let safe_digest = safe_sha256_digest(digest)?;
+        let path = self
+            .root
+            .join("blobs")
+            .join(&safe_digest[..2])
+            .join(&safe_digest);
+        if !path.exists() {
+            return Err(StoreError::BlobNotFound(safe_digest));
+        }
+        Ok(fs::read(path)?)
     }
 
     pub fn write_large_text_ref(&self, content: &str) -> Result<LargePayloadRef, StoreError> {
@@ -204,6 +239,11 @@ impl RunStore {
 
     pub fn run_dir(&self, run_id: &RunId) -> PathBuf {
         self.root.join("runs").join(run_id.as_str())
+    }
+
+    fn safe_run_dir(&self, run_id: &RunId) -> Result<PathBuf, StoreError> {
+        let safe_run_id = safe_store_segment(run_id.as_str(), "run_id")?;
+        Ok(self.root.join("runs").join(safe_run_id))
     }
 }
 
@@ -261,6 +301,12 @@ pub enum StoreError {
     RepoEvidenceNotFound(String),
     #[error("repo evidence payload path escaped repo_evidence directory: {0}")]
     RepoEvidencePathEscape(String),
+    #[error("artifact not found: runs/{run_id}/artifacts/{name}")]
+    ArtifactNotFound { run_id: String, name: String },
+    #[error("invalid blob sha256 digest: {0}")]
+    InvalidBlobDigest(String),
+    #[error("blob not found: sha256:{0}")]
+    BlobNotFound(String),
 }
 
 fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> Result<(), StoreError> {
@@ -294,6 +340,9 @@ fn safe_file_name(value: &str) -> Result<String, StoreError> {
         || value.contains('\\')
         || value == "."
         || value == ".."
+        || !value
+            .chars()
+            .all(|item| item.is_ascii_alphanumeric() || matches!(item, '_' | '.' | '-'))
     {
         return Err(StoreError::InvalidFileName(value.to_owned()));
     }
@@ -316,6 +365,13 @@ fn safe_store_segment(value: &str, label: &str) -> Result<String, StoreError> {
         });
     }
     Ok(value.to_owned())
+}
+
+fn safe_sha256_digest(value: &str) -> Result<String, StoreError> {
+    if value.len() != 64 || !value.chars().all(|item| item.is_ascii_hexdigit()) {
+        return Err(StoreError::InvalidBlobDigest(value.to_owned()));
+    }
+    Ok(value.to_ascii_lowercase())
 }
 
 fn sanitize_repo_evidence_payload(value: Value) -> Result<Value, StoreError> {
@@ -453,6 +509,83 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, StoreError::InvalidFileName(_)));
+        let wildcard_error = store
+            .write_artifact(&run_id, "bad*name.json", &json!({"bad": true}))
+            .unwrap_err();
+        assert!(matches!(wildcard_error, StoreError::InvalidFileName(_)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn artifact_json_roundtrips_and_reports_missing() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run_test");
+
+        let reference = store
+            .write_artifact(&run_id, "summary.json", &json!({"status": "ok"}))
+            .unwrap();
+        let payload = store.read_artifact_json(&run_id, "summary.json").unwrap();
+        let missing = store
+            .read_artifact_json(&run_id, "missing.json")
+            .unwrap_err();
+
+        assert_eq!(reference, "artifact://runs/run_test/artifacts/summary.json");
+        assert_eq!(payload["status"], "ok");
+        assert!(matches!(missing, StoreError::ArtifactNotFound { .. }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn blob_reads_by_sha256_digest() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+
+        let reference = store.write_blob(b"same content").unwrap();
+        let digest = reference.strip_prefix("blob://sha256/").unwrap();
+        let loaded = store.read_blob_sha256(digest).unwrap();
+        let missing = store
+            .read_blob_sha256("0000000000000000000000000000000000000000000000000000000000000000")
+            .unwrap_err();
+        let invalid = store.read_blob_sha256("../escape").unwrap_err();
+
+        assert_eq!(loaded, b"same content");
+        assert!(matches!(missing, StoreError::BlobNotFound(_)));
+        assert!(matches!(invalid, StoreError::InvalidBlobDigest(_)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_store_operations_reject_unsafe_run_segments() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("../escape");
+        let mut state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        state.status = coder_core::RunStatus::Completed;
+
+        let metadata_error = store.write_metadata(&state).unwrap_err();
+        let event_error = store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(run_id.clone(), 1, "run.started", json!({})),
+            )
+            .unwrap_err();
+        let artifact_error = store
+            .write_artifact(&run_id, "summary.json", &json!({"bad": true}))
+            .unwrap_err();
+
+        assert!(matches!(
+            metadata_error,
+            StoreError::InvalidStoreSegment { .. }
+        ));
+        assert!(matches!(
+            event_error,
+            StoreError::InvalidStoreSegment { .. }
+        ));
+        assert!(matches!(
+            artifact_error,
+            StoreError::InvalidStoreSegment { .. }
+        ));
         let _ = fs::remove_dir_all(root);
     }
 

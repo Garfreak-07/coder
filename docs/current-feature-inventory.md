@@ -107,13 +107,14 @@ Classification values:
 - `coder-config`: parse `.coder/coder.yaml` including agents, harnesses, and
   workflows.
 - `coder-store`: event sequence ordering, replay, artifact traversal denial,
-  blob hash stability, large payload preview/ref behavior, and sanitized repo
-  evidence refs under `runs/{run_id}/repo_evidence/`.
+  blob hash stability and retrieval, large payload preview/ref behavior, and
+  sanitized repo evidence refs under `runs/{run_id}/repo_evidence/`.
 - `coder-workflow`: mock runner completed/blocked/failed/max-rounds cases.
 - `coder-openhands`: unavailable server, auth failure, raw event
   normalization, redacted secrets.
 - `coder-server`: `/api/v3` health, config validation, workflow validation,
-  mock run, event listing, and stored repo evidence payload retrieval by ref.
+  mock run, event listing, stored artifact/blob retrieval, and stored repo
+  evidence payload retrieval by ref.
 - `coder-memory`: project memory file loading, bounded memory write previews,
   and content-free memory read events.
 - `coder-tools`: path-safe read-only repo file discovery, full-file reads,

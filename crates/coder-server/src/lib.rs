@@ -36,6 +36,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/runs/mock", post(run_mock_workflow))
         .route("/api/v3/runs/{run_id}", get(get_run_detail))
         .route("/api/v3/runs/{run_id}/events", get(list_run_events))
+        .route(
+            "/api/v3/runs/{run_id}/artifacts/{artifact_name}",
+            get(get_run_artifact),
+        )
+        .route("/api/v3/blobs/sha256/{digest}", get(get_blob_sha256))
         .route("/api/v3/repo-evidence/{ref_id}", get(get_repo_evidence))
         .with_state(state)
 }
@@ -177,6 +182,31 @@ async fn get_repo_evidence(
     Ok(Json(RepoEvidenceResponse { ref_id, payload }))
 }
 
+async fn get_run_artifact(
+    State(state): State<ApiState>,
+    Path((run_id, artifact_name)): Path<(String, String)>,
+) -> Result<Json<RunArtifactResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    let payload = state.store.read_artifact_json(&run_id, &artifact_name)?;
+    Ok(Json(RunArtifactResponse {
+        run_id: run_id.to_string(),
+        artifact_name,
+        payload,
+    }))
+}
+
+async fn get_blob_sha256(
+    State(state): State<ApiState>,
+    Path(digest): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let content = state.store.read_blob_sha256(&digest)?;
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/octet-stream")],
+        content,
+    ))
+}
+
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
@@ -234,6 +264,13 @@ pub struct RunDetailResponse {
 #[derive(Debug, Serialize)]
 pub struct RepoEvidenceResponse {
     pub ref_id: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunArtifactResponse {
+    pub run_id: String,
+    pub artifact_name: String,
     pub payload: serde_json::Value,
 }
 
@@ -298,8 +335,12 @@ impl IntoResponse for ApiError {
 impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {
         match error {
-            StoreError::RepoEvidenceNotFound(_) => Self::not_found(error.to_string()),
-            StoreError::InvalidStoreSegment { .. } => Self {
+            StoreError::RepoEvidenceNotFound(_)
+            | StoreError::ArtifactNotFound { .. }
+            | StoreError::BlobNotFound(_) => Self::not_found(error.to_string()),
+            StoreError::InvalidStoreSegment { .. }
+            | StoreError::InvalidFileName(_)
+            | StoreError::InvalidBlobDigest(_) => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: error.to_string(),
             },
@@ -459,6 +500,7 @@ mod tests {
         assert_eq!(events_body["events"][0]["kind"], "run.started");
 
         let detail_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(format!("/api/v3/runs/{run_id}"))
@@ -475,6 +517,20 @@ mod tests {
             detail_body["report"]["evidence_refs"][0]["kind"],
             "event_log"
         );
+
+        let artifact_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v3/runs/{run_id}/artifacts/final-report.json"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(artifact_response.status(), StatusCode::OK);
+        let artifact_body = response_json(artifact_response).await;
+        assert_eq!(artifact_body["artifact_name"], "final-report.json");
+        assert_eq!(artifact_body["payload"]["status"], "completed");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -541,6 +597,80 @@ mod tests {
 
         assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
         assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn artifact_endpoint_reports_missing_and_invalid_names() {
+        let app = test_router();
+        let missing_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/artifacts/missing.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let invalid_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/artifacts/bad*name.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn blob_endpoint_returns_content_by_digest() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let blob_ref = store.write_blob(b"hello blob").unwrap();
+        let digest = blob_ref.strip_prefix("blob://sha256/").unwrap().to_owned();
+        let app = router(ApiState::new(store));
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v3/blobs/sha256/{digest}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(bytes.as_ref(), b"hello blob");
+
+        let missing_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/blobs/sha256/0000000000000000000000000000000000000000000000000000000000000000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let invalid_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/blobs/sha256/not-a-digest")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
+        let _ = fs::remove_dir_all(root);
     }
 
     fn test_router() -> Router {
