@@ -273,6 +273,7 @@ dependencies = [
  "async-trait",
  "coder-core",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

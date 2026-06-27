@@ -580,7 +580,10 @@ npm.cmd run build
   Supervisor and Task Execution must not write those files.
 - New tools, MCP manifests, and skills should be represented in the runtime
   capability registries before they are exposed to a harness. MCP manifests are
-  parsed and validated locally and are never enabled by default.
+  parsed and validated locally and are never enabled by default. The Rust
+  `coder-harness` crate now mirrors that MCP manifest validation baseline:
+  server and operation default enablement are forced off, and MCP operations
+  remain approval-required policy entries.
 - Budget-affecting work should use `BudgetBroker` preflight and reservations.
 - Large text should be persisted through `BlobStore`; do not add another durable
   context or tool-result ref format.
