@@ -221,24 +221,40 @@ agent-scoped memory plane:
 See [docs/hybrid_rag_tool.md](docs/hybrid_rag_tool.md) for reindexing,
 optional dependency, retrieval, ACL, and OpenHands custom tool details.
 
-## Native Code Context Plane
+## Agentic Hybrid Context Router And Native Code Context
 
-Coder separates current repository evidence from knowledge hints:
+Coder separates current repository evidence from knowledge hints through an
+agentic routing loop:
 
 - native repo discovery/search/read, test output, and diffs are evidence for
   current code facts;
+- run evidence covers execution results, verification summaries, blockers,
+  diff refs, log refs, and native runtime refs;
 - hybrid RAG, memory, external docs, project notes, roadmaps, and future
   Obsidian notes are knowledge hints;
 - RAG results that mention code must be verified with native repo search/read
   before they are used as current code facts.
 
+The router follows:
+
+```text
+classify -> route -> retrieve -> grade -> rewrite -> switch -> verify -> assemble
+```
+
+Planning Chat may use RAG early for planning, history, decisions, roadmaps,
+external docs, and user-maintained notes. Workflow Supervisor starts with run
+evidence. Task Execution starts with native repo evidence and never starts
+RAG-first.
+
 Native context services write refs under `.coder/runs/{run_id}/repo_evidence/`
-and inject compact records into `warm.repo_evidence`. Knowledge hints remain in
-`warm.knowledge_hints` or the existing memory/knowledge fields. OpenHands gets
-read-only `coder_repo_find_files`, `coder_repo_search_text`, and
+and inject compact records into `warm.repo_evidence`. Run facts go into
+`warm.run_evidence`. Knowledge hints remain in `warm.knowledge_hints` or the
+existing memory/knowledge fields. OpenHands gets read-only
+`coder_repo_find_files`, `coder_repo_search_text`, and
 `coder_repo_read_file` tools in addition to `coder_hybrid_rag_search`.
 
-See [docs/retrieval_policy.md](docs/retrieval_policy.md) and
+See [docs/agentic_context_router.md](docs/agentic_context_router.md),
+[docs/retrieval_policy.md](docs/retrieval_policy.md), and
 [docs/native_code_context.md](docs/native_code_context.md).
 
 Most low-level runtime behavior is feature-flagged during rollout:

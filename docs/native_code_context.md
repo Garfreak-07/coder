@@ -5,12 +5,14 @@ Batch F adds a Coder-native context plane for current repository facts.
 ## Architecture
 
 ```text
-ContextRetrievalRouter
+AgenticContextRouter
   -> NativeRepoContextService
        -> RepoFileDiscoveryService
        -> RepoTextSearchService
        -> RepoReadService
        -> RepoEvidenceStore
+  -> Run evidence summaries
+  -> Direct memory cards
   -> Hybrid RAG / memory as knowledge hints
 ```
 
@@ -41,8 +43,11 @@ under:
 Harness context packets now separate:
 
 - `warm.repo_evidence`
+- `warm.run_evidence`
 - `warm.knowledge_hints`
+- `warm.retrieval_route_trace`
 - `cold_refs.repo_evidence`
+- `cold_refs.run_evidence`
 - existing `cold_refs.knowledge` and `cold_refs.memory`
 
 Repo evidence is the only model-facing context class that can support current
@@ -74,4 +79,5 @@ Batch F does not implement:
 - raw Chroma/BM25 endpoints
 - a global QueryEngine
 - new executor write permissions
+- LangGraph as a required dependency
 - a required LangChain dependency

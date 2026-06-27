@@ -42,6 +42,22 @@ current code state by itself.
 
 Repo evidence overrides RAG, memory, and Obsidian notes when they disagree.
 
+## Agentic Routing
+
+`AgenticContextRouter` selects context with a deterministic state machine:
+
+```text
+classify -> route -> retrieve -> grade -> rewrite -> switch -> verify -> assemble
+```
+
+Planning Chat may start with RAG for planning, history, external docs, roadmap
+or decision questions. Workflow Supervisor starts with run evidence. Task
+Execution starts with native repo evidence and never starts RAG-first.
+
+Code-like knowledge hints set `requires_repo_verification=true`. They can tell
+an agent where to look, but they do not support current-code claims until repo
+search/read, test output, logs, or diffs verify them.
+
 ## Obsidian
 
 Obsidian vaults are future user-managed knowledge sources. They can be useful
@@ -51,6 +67,6 @@ they are not code evidence. Full Obsidian sync belongs to a future Batch G.
 ## MCP
 
 MCP is a future adapter layer, not the retrieval core. Future MCP tools should
-call Coder retrieval services such as `ContextRetrievalRouter` and
+call Coder retrieval services such as `AgenticContextRouter` and
 `NativeRepoContextService`; they must not expose raw Chroma or BM25 endpoints
 or bypass Coder ACLs. MCP adapter work belongs to a future Batch H.
