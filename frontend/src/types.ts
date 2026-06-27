@@ -206,6 +206,46 @@ export interface RustToolRegistryResponse {
   tools: RustToolRegistryEntry[];
 }
 
+export type RustExtensionType = "plugin" | "harness_runtime";
+export type RustExtensionRiskLevel = "low" | "medium" | "high";
+export type RustExtensionTrustLevel =
+  | "official"
+  | "verified"
+  | "community"
+  | "local"
+  | "untrusted";
+
+export interface RustPluginManifest {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  extension_type: RustExtensionType;
+  installed: boolean;
+  enabled: boolean;
+  risk_level: RustExtensionRiskLevel;
+  trust_level: RustExtensionTrustLevel;
+  tags: string[];
+  operations: string[];
+  external_effect: boolean;
+  requires_preview: boolean;
+}
+
+export interface RustExtensionPluginListResponse {
+  plugins: RustPluginManifest[];
+}
+
+export interface RustExtensionPluginValidationRequest {
+  manifest: unknown;
+}
+
+export interface RustPluginManifestValidation {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  manifest?: RustPluginManifest | null;
+}
+
 export interface RustAgentSpec {
   role: string;
   model: string;

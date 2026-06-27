@@ -48,7 +48,10 @@ import type {
   RustRunReportResponse,
   RustRunRepoEvidenceResponse,
   RustRunSummary,
+  RustExtensionPluginListResponse,
+  RustExtensionPluginValidationRequest,
   RustProjectConfig,
+  RustPluginManifestValidation,
   RustToolRegistryResponse,
   RustValidationReport,
   SkillUpdateInfo,
@@ -345,6 +348,20 @@ export function validateRustMcpManifest(
 export function getRustHarnessTools(harnessId?: string | null): Promise<RustToolRegistryResponse> {
   const query = harnessId ? `?harness_id=${encodeURIComponent(harnessId)}` : "";
   return requestJson<RustToolRegistryResponse>(`/api/v3/harness/tools${query}`);
+}
+
+export function getRustExtensionPlugins(): Promise<RustExtensionPluginListResponse> {
+  return requestJson<RustExtensionPluginListResponse>("/api/v3/extensions/plugins");
+}
+
+export function validateRustExtensionPlugin(
+  request: RustExtensionPluginValidationRequest
+): Promise<RustPluginManifestValidation> {
+  return requestJson<RustPluginManifestValidation>("/api/v3/extensions/plugins/validate", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(request)
+  });
 }
 
 export async function getRustRuns(): Promise<RustRunSummary[]> {

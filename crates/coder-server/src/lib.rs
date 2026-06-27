@@ -11,6 +11,9 @@ use coder_config::{
     validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel, ValidationReport,
 };
 use coder_core::{FinalReport, RunId, RunState, RunStatus};
+use coder_extensions::{
+    builtin_plugin_manifests, validate_plugin_manifest, PluginManifest, PluginManifestValidation,
+};
 use coder_harness::{
     validate_mcp_manifest, McpManifestValidation, ToolRegistry, ToolRegistryEntry,
 };
@@ -51,6 +54,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/config/validate", post(validate_config))
         .route("/api/v3/workflows/validate", post(validate_workflow))
         .route("/api/v3/mcp/manifests/validate", post(validate_mcp))
+        .route("/api/v3/extensions/plugins", get(list_extension_plugins))
+        .route(
+            "/api/v3/extensions/plugins/validate",
+            post(validate_extension_plugin),
+        )
         .route("/api/v3/harness/tools", get(list_harness_tools))
         .route("/api/v3/runs", get(list_runs))
         .route("/api/v3/runs/preview", post(preview_run))
@@ -182,6 +190,18 @@ async fn validate_mcp(
     Json(request): Json<McpManifestValidationRequest>,
 ) -> Json<McpManifestValidation> {
     Json(validate_mcp_manifest(&request.manifest))
+}
+
+async fn list_extension_plugins() -> Json<ExtensionPluginListResponse> {
+    Json(ExtensionPluginListResponse {
+        plugins: builtin_plugin_manifests(),
+    })
+}
+
+async fn validate_extension_plugin(
+    Json(request): Json<ExtensionPluginValidationRequest>,
+) -> Json<PluginManifestValidation> {
+    Json(validate_plugin_manifest(&request.manifest))
 }
 
 async fn list_harness_tools(Query(query): Query<ToolRegistryQuery>) -> Json<ToolRegistryResponse> {
@@ -590,6 +610,16 @@ pub struct WorkflowValidationRequest {
 #[derive(Debug, Deserialize)]
 pub struct McpManifestValidationRequest {
     pub manifest: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExtensionPluginValidationRequest {
+    pub manifest: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExtensionPluginListResponse {
+    pub plugins: Vec<PluginManifest>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1176,6 +1206,60 @@ mod tests {
             false
         );
         assert!(body["warnings"].as_array().unwrap().len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn extension_plugins_endpoint_lists_builtin_manifests() {
+        let app = test_router();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/extensions/plugins")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let plugin_ids = body["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|plugin| plugin["id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(plugin_ids.contains("command-runner"));
+        assert!(plugin_ids.contains("filesystem-patch"));
+        assert!(plugin_ids.contains("openhands-task-executor-runtime"));
+    }
+
+    #[tokio::test]
+    async fn extension_plugin_validate_endpoint_rejects_external_effect_without_preview() {
+        let app = test_router();
+        let response = post_json(
+            app,
+            "/api/v3/extensions/plugins/validate",
+            json!({
+                "manifest": {
+                    "id": "unsafe",
+                    "name": "Unsafe",
+                    "operations": ["publish"],
+                    "external_effect": true,
+                    "requires_preview": false
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ok"], false);
+        assert!(body["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error == "external_effect plugins must require preview"));
     }
 
     #[tokio::test]
