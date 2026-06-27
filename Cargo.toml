@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/coder-cli",
+  "crates/coder-config",
+  "crates/coder-core",
+  "crates/coder-events",
+  "crates/coder-harness",
+  "crates/coder-openhands",
+  "crates/coder-store",
+  "crates/coder-workflow",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Garfreak-07/Coder"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[workspace.dependencies.coder-config]
+path = "crates/coder-config"
+
+[workspace.dependencies.coder-core]
+path = "crates/coder-core"
+
+[workspace.dependencies.coder-events]
+path = "crates/coder-events"
+
+[workspace.dependencies.coder-harness]
+path = "crates/coder-harness"
+
+[workspace.dependencies.coder-openhands]
+path = "crates/coder-openhands"
+
+[workspace.dependencies.coder-store]
+path = "crates/coder-store"
+
+[workspace.dependencies.coder-workflow]
+path = "crates/coder-workflow"

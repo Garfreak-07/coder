@@ -1,0 +1,94 @@
+version: 1
+
+models:
+  default:
+    provider: openai-compatible
+    model: gpt-5.5
+    base_url_env: LLM_BASE_URL
+    api_key_env: LLM_API_KEY
+
+agents:
+  planner:
+    role: planner
+    model: default
+    system: |
+      You are a planning agent. Produce concise plans, identify open questions,
+      and decide whether executor work is ready.
+    memory:
+      read: [user, project, run, repo_facts, knowledge_hints]
+      write: [run]
+    output_contract: planner_order
+
+  executor:
+    role: executor
+    model: default
+    system: |
+      You are a coding executor. Make small safe changes and always report
+      verification evidence.
+    memory:
+      read: [project, run, repo_facts]
+      write: [run]
+    output_contract: execution_result
+
+harnesses:
+  review-only:
+    backend: native-rust
+    tools: [repo_search, read_file, git_diff]
+    permissions:
+      read_files: allow
+      write_files: deny
+      run_commands: deny
+      network: deny
+      secrets: deny
+      publish_external: deny
+      git_commit: deny
+      git_push: deny
+      deploy: deny
+    memory:
+      read: [project, run, repo_facts, knowledge_hints]
+      write: [run]
+
+  openhands-code-edit:
+    backend: openhands
+    openhands:
+      server_url: "http://127.0.0.1:8000"
+      session_api_key_env: SESSION_API_KEY
+      workspace_mode: local
+    tools: [terminal, file_editor, task_tracker]
+    permissions:
+      read_files: allow
+      write_files: ask
+      run_commands: ask
+      network: ask
+      secrets: ask
+      publish_external: deny
+      git_commit: deny
+      git_push: deny
+      deploy: deny
+    memory:
+      read: [project, run, repo_facts]
+      write: [run]
+    verification:
+      require_evidence: true
+
+workflows:
+  planner-led:
+    name: Planner-led Agent Workflow
+    max_rounds: 3
+    nodes:
+      - id: planner
+        agent: planner
+        harness: review-only
+      - id: executor
+        agent: executor
+        harness: openhands-code-edit
+    edges:
+      - from: planner
+        to: executor
+        on: ready
+      - from: executor
+        to: planner
+        on: completed
+    stop:
+      on_status: [completed, blocked, failed]
+      final_report_agent: planner

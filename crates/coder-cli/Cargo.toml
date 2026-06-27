@@ -1,0 +1,20 @@
+[package]
+name = "coder-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "coder-rust"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+coder-config.workspace = true
+coder-openhands.workspace = true
+coder-store.workspace = true
+coder-workflow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

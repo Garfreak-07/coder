@@ -2,6 +2,27 @@
 
 Planner-led local AgentGraph workbench for controlled coding tasks.
 
+## Rust Skeleton
+
+The Rust-first rebuild has started as an additive workspace. It does not replace
+the current Python/FastAPI runtime yet.
+
+Current Rust commands:
+
+```powershell
+cargo run -p coder-cli --bin coder-rust -- doctor
+cargo run -p coder-cli --bin coder-rust -- config validate --path examples\coder.yaml
+cargo run -p coder-cli --bin coder-rust -- workflow run --mock planner-led "summarize this repo"
+```
+
+Rust checks:
+
+```powershell
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
 Coder keeps the ordinary product path small:
 
 ```text
