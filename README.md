@@ -38,6 +38,8 @@ workflow path.
 The Rust API v3 server can read these runs through
 `GET /api/v3/runs/{run_id}` and `GET /api/v3/runs/{run_id}/events` when it is
 started with the same `--store` directory.
+It can also read stored repo evidence payloads through
+`GET /api/v3/repo-evidence/{ref_id}`.
 `POST /api/v3/runs/preview` provides a side-effect-free readiness and
 confirmation gate for a requested Rust workflow run.
 `coder-memory` is the first lightweight Rust memory milestone: JSON project

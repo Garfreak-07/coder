@@ -36,6 +36,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/runs/mock", post(run_mock_workflow))
         .route("/api/v3/runs/{run_id}", get(get_run_detail))
         .route("/api/v3/runs/{run_id}/events", get(list_run_events))
+        .route("/api/v3/repo-evidence/{ref_id}", get(get_repo_evidence))
         .with_state(state)
 }
 
@@ -168,6 +169,14 @@ async fn get_run_detail(
     }))
 }
 
+async fn get_repo_evidence(
+    State(state): State<ApiState>,
+    Path(ref_id): Path<String>,
+) -> Result<Json<RepoEvidenceResponse>, ApiError> {
+    let payload = state.store.read_repo_evidence(&ref_id)?;
+    Ok(Json(RepoEvidenceResponse { ref_id, payload }))
+}
+
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
@@ -220,6 +229,12 @@ pub struct RunDetailResponse {
     pub metadata: Option<RunState>,
     pub events: Vec<coder_events::CoderEvent>,
     pub report: Option<FinalReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RepoEvidenceResponse {
+    pub ref_id: String,
+    pub payload: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -282,7 +297,14 @@ impl IntoResponse for ApiError {
 
 impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {
-        Self::internal(error.to_string())
+        match error {
+            StoreError::RepoEvidenceNotFound(_) => Self::not_found(error.to_string()),
+            StoreError::InvalidStoreSegment { .. } => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: error.to_string(),
+            },
+            other => Self::internal(other.to_string()),
+        }
     }
 }
 
@@ -454,6 +476,71 @@ mod tests {
             "event_log"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn repo_evidence_endpoint_returns_payload_by_ref() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let reference = store
+            .write_repo_evidence(
+                &RunId::from_string("run-1"),
+                coder_store::RepoEvidenceKind::RepoRead,
+                "repo",
+                Vec::new(),
+                "Read src/app.py.",
+                json!({
+                    "evidence_kind": "repo_evidence",
+                    "operation": "read_file_range",
+                    "snippet": {"path": "src/app.py", "text": "safe"}
+                }),
+            )
+            .unwrap();
+        let app = router(ApiState::new(store));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v3/repo-evidence/{}", reference.ref_id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ref_id"], reference.ref_id);
+        assert_eq!(body["payload"]["operation"], "read_file_range");
+        assert_eq!(body["payload"]["snippet"]["path"], "src/app.py");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn repo_evidence_endpoint_reports_missing_and_invalid_refs() {
+        let app = test_router();
+        let missing_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/repo-evidence/repo-read:missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let invalid_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/repo-evidence/bad*ref")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(invalid_response.status(), StatusCode::BAD_REQUEST);
     }
 
     fn test_router() -> Router {
