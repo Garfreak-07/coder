@@ -32,7 +32,15 @@ class HarnessPermissionDecision(BaseModel):
 _PLANNER_MODES = {"planning_chat", "workflow_supervisor"}
 _PLANNER_DENIED_ACTIONS = {"write_file", "apply_patch", "run_command", "run_test"}
 _PLANNER_DENIED_TOOLS = {"terminal", "file_editor"}
-_EXECUTOR_ALLOWED_TOOLS = {"terminal", "file_editor", "task_tracker", "coder_hybrid_rag_search"}
+_EXECUTOR_ALLOWED_TOOLS = {
+    "terminal",
+    "file_editor",
+    "task_tracker",
+    "coder_repo_find_files",
+    "coder_repo_search_text",
+    "coder_repo_read_file",
+    "coder_hybrid_rag_search",
+}
 _LONG_TERM_MEMORY_ACTIONS = {"write_memory", "write_long_term_memory", "long_term_memory_write", "memory_write"}
 _USER_INTERACTION_TOOLS = {"ask_human", "browser", "user_input"}
 

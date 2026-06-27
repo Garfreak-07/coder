@@ -848,14 +848,20 @@ class OpenHandsRuntimeProvider:
         return Path(".")
 
     def _tool_names_for_request(self, request: HarnessRunRequest, sdk: Any) -> list[str]:
+        repo_context_tools = [
+            "coder_repo_find_files",
+            "coder_repo_search_text",
+            "coder_repo_read_file",
+            "coder_hybrid_rag_search",
+        ]
         if request.mode == "task_execution":
             return [
                 sdk.TerminalTool.name,
                 sdk.FileEditorTool.name,
                 sdk.TaskTrackerTool.name,
-                "coder_hybrid_rag_search",
+                *repo_context_tools,
             ]
-        return [sdk.TaskTrackerTool.name, "coder_hybrid_rag_search"]
+        return [sdk.TaskTrackerTool.name, *repo_context_tools]
 
     def _tools_for_request(self, request: HarnessRunRequest, sdk: Any) -> list[Any]:
         if str(getattr(sdk.Tool, "__module__", "")).startswith("openhands."):
@@ -864,6 +870,8 @@ class OpenHandsRuntimeProvider:
         for name in self._tool_names_for_request(request, sdk):
             if name == "coder_hybrid_rag_search":
                 tools.append(sdk.Tool(name=name, params=_rag_tool_params_for_request(request)))
+            elif name in {"coder_repo_find_files", "coder_repo_search_text", "coder_repo_read_file"}:
+                tools.append(sdk.Tool(name=name, params=_repo_tool_params_for_request(request)))
             else:
                 tools.append(sdk.Tool(name=name))
         return tools
@@ -1205,7 +1213,17 @@ def _denied_runtime_command(
 
 
 def _ensure_coder_openhands_tools_registered() -> None:
+    import coder_workbench.openhands_tools.repo_context  # noqa: F401
     import coder_workbench.openhands_tools.hybrid_rag_search  # noqa: F401
+
+
+def _repo_tool_params_for_request(request: HarnessRunRequest) -> dict[str, Any]:
+    return {
+        "coder_store_root": str(_memory_root_for_request(request)),
+        "repo_root": str(request.context.repo_root or "."),
+        "run_id": _optional_string(request.context.run_id or (request.context.initial_data or {}).get("run_id")) or "run",
+        "scope_paths": _scope_paths_for_request(request),
+    }
 
 
 def _rag_tool_params_for_request(request: HarnessRunRequest) -> dict[str, Any]:

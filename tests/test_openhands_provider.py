@@ -106,15 +106,25 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(state["llm"]["model"], "test-model")
         self.assertEqual(
             [tool.name for tool in state["agent"]["tools"]],
-            ["terminal", "file_editor", "task_tracker", "coder_hybrid_rag_search"],
+            [
+                "terminal",
+                "file_editor",
+                "task_tracker",
+                "coder_repo_find_files",
+                "coder_repo_search_text",
+                "coder_repo_read_file",
+                "coder_hybrid_rag_search",
+            ],
         )
+        self.assertEqual(state["agent"]["tools"][3].params["repo_root"], "F:\\repo")
+        self.assertEqual(state["agent"]["tools"][3].params["run_id"], "run-1")
         self.assertEqual(state["agent"]["tools"][-1].params["role"], "task_execution")
         self.assertEqual(state["agent"]["tools"][-1].params["requested_context"], "execution_prompt")
         self.assertIn("Do not ask the user", state["conversation"]["prompt"])
         event_types = [event.native_type for event in store.list_events("run-1")]
         self.assertIn("provider.selected", event_types)
         self.assertIn("sandbox.prepared", event_types)
-        self.assertEqual(event_types.count("harness_permission.allowed"), 4)
+        self.assertEqual(event_types.count("harness_permission.allowed"), 7)
         self.assertIn("conversation.started", event_types)
         self.assertIn("conversation.completed", event_types)
         self.assertIn("harness_loop.completed", event_types)
@@ -436,10 +446,19 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
 
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.artifact_type, "final_report")
-        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker", "coder_hybrid_rag_search"])
+        self.assertEqual(
+            [tool.name for tool in state["agent"]["tools"]],
+            [
+                "task_tracker",
+                "coder_repo_find_files",
+                "coder_repo_search_text",
+                "coder_repo_read_file",
+                "coder_hybrid_rag_search",
+            ],
+        )
         self.assertEqual(state["agent"]["tools"][-1].params["role"], "workflow_supervisor")
         self.assertEqual(state["agent"]["tools"][-1].params["requested_context"], "workflow_supervision")
-        self.assertEqual(_native_types(store).count("harness_permission.allowed"), 2)
+        self.assertEqual(_native_types(store).count("harness_permission.allowed"), 5)
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
 
     def test_workflow_supervisor_requested_artifact_target_drives_output(self) -> None:
@@ -464,7 +483,16 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
         self.assertEqual(result.artifact["artifact_type"], "planner_order")
         self.assertIn("Current Coder artifact target: planner_order", state["conversation"]["prompt"])
         self.assertIn("Do not write files or run commands", state["conversation"]["prompt"])
-        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker", "coder_hybrid_rag_search"])
+        self.assertEqual(
+            [tool.name for tool in state["agent"]["tools"]],
+            [
+                "task_tracker",
+                "coder_repo_find_files",
+                "coder_repo_search_text",
+                "coder_repo_read_file",
+                "coder_hybrid_rag_search",
+            ],
+        )
 
     def test_planning_chat_prompt_contains_planner_chat_turn_contract(self) -> None:
         state: dict[str, Any] = {}
@@ -578,7 +606,16 @@ class OpenHandsRuntimeProviderTests(unittest.TestCase):
             result = provider.run(_planning_chat_request())
 
         self.assertEqual(result.status, "completed")
-        self.assertEqual([tool.name for tool in state["agent"]["tools"]], ["task_tracker", "coder_hybrid_rag_search"])
+        self.assertEqual(
+            [tool.name for tool in state["agent"]["tools"]],
+            [
+                "task_tracker",
+                "coder_repo_find_files",
+                "coder_repo_search_text",
+                "coder_repo_read_file",
+                "coder_hybrid_rag_search",
+            ],
+        )
         self.assertEqual(state["agent"]["tools"][-1].params["role"], "planning_chat")
         self.assertEqual(state["agent"]["tools"][-1].params["requested_context"], "assistant_message")
 

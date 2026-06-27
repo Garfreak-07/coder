@@ -23,6 +23,10 @@ _KIND_PREFIX: dict[RepoEvidenceKind, str] = {
 _MAX_STRING_CHARS = 16_000
 _MAX_LIST_ITEMS = 300
 _MAX_JSON_CHARS = 256_000
+_EVIDENCE_SECRET_MARKERS = tuple(marker for marker in SECRET_MARKERS if marker != "token") + (
+    "secret_key",
+    "private_key",
+)
 
 
 class RepoEvidenceStore:
@@ -115,7 +119,7 @@ def _compact_string(value: str, *, limit: int) -> str:
 
 def _reject_secret_like_text(value: str) -> None:
     lowered = value.lower()
-    for marker in SECRET_MARKERS:
+    for marker in _EVIDENCE_SECRET_MARKERS:
         if marker in lowered:
             raise ValueError("repo evidence payload contains secret-like text")
 
