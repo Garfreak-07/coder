@@ -1,9 +1,10 @@
-use std::{fs, path::PathBuf};
+use std::{fs, net::SocketAddr, path::PathBuf};
 
 use clap::{Parser, Subcommand};
 use coder_config::{load_project_config, validate_project_config};
 use coder_core::RunId;
 use coder_openhands::{normalize_openhands_event, OpenHandsClient, OpenHandsServerConfig};
+use coder_server::{serve, ApiState};
 use coder_store::RunStore;
 use coder_workflow::MockWorkflowRunner;
 
@@ -29,6 +30,14 @@ enum Command {
     Openhands {
         #[command(subcommand)]
         command: OpenHandsCommand,
+    },
+    Server {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 8766)]
+        port: u16,
+        #[arg(long, default_value = ".coder-rust-server")]
+        store: PathBuf,
     },
 }
 
@@ -208,6 +217,11 @@ async fn main() -> anyhow::Result<()> {
                 "events_websocket_url={}",
                 client.events_websocket_url(&conversation.id)?
             );
+        }
+        Command::Server { host, port, store } => {
+            let addr: SocketAddr = format!("{host}:{port}").parse()?;
+            println!("coder-rust server listening on http://{addr}");
+            serve(addr, ApiState::new(RunStore::new(store))).await?;
         }
     }
     Ok(())
