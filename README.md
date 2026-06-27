@@ -20,6 +20,7 @@ cargo run -p coder-cli --bin coder-rust -- tools find-files --repo . --query pla
 cargo run -p coder-cli --bin coder-rust -- tools read-file --repo . README.md
 cargo run -p coder-cli --bin coder-rust -- tools read-file-range --repo . --start-line 1 --max-lines 40 README.md
 cargo run -p coder-cli --bin coder-rust -- tools search-text --repo . "Planner Chat"
+cargo run -p coder-cli --bin coder-rust -- tools search-text --repo . "Planner Chat" --store .coder-rust --run-id <run_id>
 cargo run -p coder-cli --bin coder-rust -- tools git-status --repo .
 cargo run -p coder-cli --bin coder-rust -- tools git-diff --repo . --max-output-bytes 4096
 cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8766
@@ -51,6 +52,9 @@ patch, command, or network effects.
 `runs/{run_id}/repo_evidence/`, append `index.jsonl`, and return refs such as
 `repo-read:*`, `repo-text-search:*`, and `repo-file-list:*` for later reports
 and context packets.
+The `find-files`, `read-file-range`, `search-text`, and `git-diff` CLI tools
+can record those refs with `--store <dir> --run-id <id>` while preserving the
+default side-effect-free JSON output when those flags are omitted.
 
 Rust checks:
 

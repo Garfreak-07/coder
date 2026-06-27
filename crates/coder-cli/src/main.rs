@@ -1,6 +1,6 @@
 use std::{fs, net::SocketAddr, path::PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use coder_config::{load_project_config, validate_project_config, ProjectConfig};
 use coder_core::{RunId, RunState, RunStatus, WorkflowId};
 use coder_events::CoderEvent;
@@ -8,7 +8,7 @@ use coder_openhands::{
     normalize_openhands_event, openhands_final_report, OpenHandsClient, OpenHandsServerConfig,
 };
 use coder_server::{serve, ApiState};
-use coder_store::RunStore;
+use coder_store::{RepoEvidenceKind, RepoEvidenceRef, RunStore};
 use coder_tools::{
     find_files, git_diff, git_status, read_file, read_file_range, search_text, RepoToolConfig,
 };
@@ -116,6 +116,8 @@ enum ToolsCommand {
         extensions: Vec<String>,
         #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_FILE_RESULTS)]
         max_results: usize,
+        #[command(flatten)]
+        evidence: EvidenceRecordArgs,
     },
     ReadFile {
         #[arg(long, default_value = ".")]
@@ -134,6 +136,8 @@ enum ToolsCommand {
         #[arg(long, default_value_t = 16_000)]
         max_chars: usize,
         path: PathBuf,
+        #[command(flatten)]
+        evidence: EvidenceRecordArgs,
     },
     SearchText {
         #[arg(long, default_value = ".")]
@@ -143,6 +147,8 @@ enum ToolsCommand {
         #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_SEARCH_MATCHES)]
         max_matches: usize,
         query: String,
+        #[command(flatten)]
+        evidence: EvidenceRecordArgs,
     },
     GitStatus {
         #[arg(long, default_value = ".")]
@@ -153,7 +159,17 @@ enum ToolsCommand {
         repo: PathBuf,
         #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_GIT_OUTPUT_BYTES)]
         max_output_bytes: usize,
+        #[command(flatten)]
+        evidence: EvidenceRecordArgs,
     },
+}
+
+#[derive(Debug, Clone, Args)]
+struct EvidenceRecordArgs {
+    #[arg(long)]
+    store: Option<PathBuf>,
+    #[arg(long)]
+    run_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -361,6 +377,49 @@ fn print_openhands_run_output(output: &OpenHandsRecordedRunOutput) {
     println!("events_websocket_url={}", output.websocket_url);
 }
 
+fn write_optional_repo_evidence(
+    args: &EvidenceRecordArgs,
+    kind: RepoEvidenceKind,
+    repo: &std::path::Path,
+    summary: impl Into<String>,
+    payload: serde_json::Value,
+) -> anyhow::Result<Option<RepoEvidenceRef>> {
+    match (&args.store, &args.run_id) {
+        (None, None) => Ok(None),
+        (Some(_), None) | (None, Some(_)) => {
+            anyhow::bail!("use --store and --run-id together when recording repo evidence");
+        }
+        (Some(store), Some(run_id)) => {
+            let repo_root = fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+            let reference = RunStore::new(store.clone()).write_repo_evidence(
+                &RunId::from_string(run_id.clone()),
+                kind,
+                repo_root.display().to_string(),
+                Vec::new(),
+                summary,
+                payload,
+            )?;
+            Ok(Some(reference))
+        }
+    }
+}
+
+fn print_tool_output(
+    output: serde_json::Value,
+    evidence_ref: Option<RepoEvidenceRef>,
+) -> anyhow::Result<()> {
+    let response = if let Some(evidence_ref) = evidence_ref {
+        json!({
+            "evidence_ref": evidence_ref,
+            "payload": output,
+        })
+    } else {
+        output
+    };
+    println!("{}", serde_json::to_string_pretty(&response)?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -475,10 +534,27 @@ async fn main() -> anyhow::Result<()> {
                     query,
                     extensions,
                     max_results,
+                    evidence,
                 },
         } => {
-            let output = find_files(repo, query.as_deref(), &extensions, max_results)?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            let output = find_files(&repo, query.as_deref(), &extensions, max_results)?;
+            let output_json = serde_json::to_value(&output)?;
+            let payload = json!({
+                "evidence_kind": "repo_evidence",
+                "operation": "find_files",
+                "query": query,
+                "extensions": extensions,
+                "max_results": max_results,
+                "files": output_json,
+            });
+            let evidence_ref = write_optional_repo_evidence(
+                &evidence,
+                RepoEvidenceKind::RepoFileList,
+                &repo,
+                format!("Found {} repo file(s).", output.len()),
+                payload,
+            )?;
+            print_tool_output(serde_json::to_value(&output)?, evidence_ref)?;
         }
         Command::Tools {
             command:
@@ -506,10 +582,29 @@ async fn main() -> anyhow::Result<()> {
                     max_lines,
                     max_chars,
                     path,
+                    evidence,
                 },
         } => {
-            let output = read_file_range(repo, path, start_line, max_lines, max_chars)?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            let requested_path = path.display().to_string();
+            let output = read_file_range(&repo, path, start_line, max_lines, max_chars)?;
+            let output_json = serde_json::to_value(&output)?;
+            let payload = json!({
+                "evidence_kind": "repo_evidence",
+                "operation": "read_file_range",
+                "path": requested_path,
+                "snippet": output_json,
+            });
+            let evidence_ref = write_optional_repo_evidence(
+                &evidence,
+                RepoEvidenceKind::RepoRead,
+                &repo,
+                format!(
+                    "Read {}:{}-{}.",
+                    output.path, output.start_line, output.end_line
+                ),
+                payload,
+            )?;
+            print_tool_output(serde_json::to_value(&output)?, evidence_ref)?;
         }
         Command::Tools {
             command:
@@ -518,17 +613,33 @@ async fn main() -> anyhow::Result<()> {
                     max_file_bytes,
                     max_matches,
                     query,
+                    evidence,
                 },
         } => {
             let output = search_text(
-                repo,
+                &repo,
                 &query,
                 &RepoToolConfig {
                     max_file_bytes,
                     max_search_matches: max_matches,
                 },
             )?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            let output_json = serde_json::to_value(&output)?;
+            let payload = json!({
+                "evidence_kind": "repo_evidence",
+                "operation": "search_text",
+                "pattern": query,
+                "max_results": max_matches,
+                "hits": output_json,
+            });
+            let evidence_ref = write_optional_repo_evidence(
+                &evidence,
+                RepoEvidenceKind::RepoTextSearch,
+                &repo,
+                format!("Found {} repo text hit(s).", output.len()),
+                payload,
+            )?;
+            print_tool_output(serde_json::to_value(&output)?, evidence_ref)?;
         }
         Command::Tools {
             command: ToolsCommand::GitStatus { repo },
@@ -541,10 +652,25 @@ async fn main() -> anyhow::Result<()> {
                 ToolsCommand::GitDiff {
                     repo,
                     max_output_bytes,
+                    evidence,
                 },
         } => {
-            let output = git_diff(repo, max_output_bytes)?;
-            println!("{}", serde_json::to_string_pretty(&output)?);
+            let output = git_diff(&repo, max_output_bytes)?;
+            let output_json = serde_json::to_value(&output)?;
+            let payload = json!({
+                "evidence_kind": "repo_evidence",
+                "operation": "git_diff",
+                "max_output_bytes": max_output_bytes,
+                "diff": output_json,
+            });
+            let evidence_ref = write_optional_repo_evidence(
+                &evidence,
+                RepoEvidenceKind::RepoDiff,
+                &repo,
+                "Captured git diff preview.",
+                payload,
+            )?;
+            print_tool_output(serde_json::to_value(&output)?, evidence_ref)?;
         }
         Command::Server { host, port, store } => {
             let addr: SocketAddr = format!("{host}:{port}").parse()?;
@@ -588,5 +714,73 @@ mod tests {
         let error = select_openhands_workflow_target(&config, "planner-led").unwrap_err();
 
         assert!(error.to_string().contains("no OpenHands-backed node"));
+    }
+
+    #[test]
+    fn optional_repo_evidence_writes_payload_when_store_and_run_id_are_set() {
+        let repo = temp_root("coder-cli-repo");
+        let store_root = temp_root("coder-cli-store");
+        std::fs::create_dir_all(&repo).unwrap();
+        let args = EvidenceRecordArgs {
+            store: Some(store_root.clone()),
+            run_id: Some("run-1".to_owned()),
+        };
+
+        let reference = write_optional_repo_evidence(
+            &args,
+            RepoEvidenceKind::RepoRead,
+            &repo,
+            "Read src/app.py.",
+            json!({
+                "evidence_kind": "repo_evidence",
+                "operation": "read_file_range",
+                "snippet": {"path": "src/app.py", "text": "safe"}
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        let payload = RunStore::new(&store_root)
+            .read_repo_evidence(&reference.ref_id)
+            .unwrap();
+
+        assert!(reference.ref_id.starts_with("repo-read:"));
+        assert_eq!(payload["operation"], "read_file_range");
+        let _ = std::fs::remove_dir_all(repo);
+        let _ = std::fs::remove_dir_all(store_root);
+    }
+
+    #[test]
+    fn optional_repo_evidence_requires_store_and_run_id_together() {
+        let repo = temp_root("coder-cli-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let args = EvidenceRecordArgs {
+            store: Some(temp_root("coder-cli-store")),
+            run_id: None,
+        };
+
+        let error = write_optional_repo_evidence(
+            &args,
+            RepoEvidenceKind::RepoRead,
+            &repo,
+            "bad",
+            json!({"snippet": "safe"}),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("use --store and --run-id together"));
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    fn temp_root(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "{}-{}",
+            prefix,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
     }
 }
