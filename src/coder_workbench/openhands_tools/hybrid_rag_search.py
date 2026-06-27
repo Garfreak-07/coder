@@ -138,9 +138,9 @@ class CoderHybridRagSearchTool(ToolDefinition[CoderHybridRagSearchAction, CoderH
             cls(
                 description=(
                     "Read-only hybrid RAG search over Coder's ACL-scoped memory "
-                    "and knowledge library. Use it to retrieve compact project, "
-                    "code, documentation, and workflow context. It returns refs "
-                    "and summaries, not raw full documents."
+                    "and knowledge library. Use it for compact knowledge hints, "
+                    "documentation, project notes, and workflow context. It returns "
+                    "refs and summaries, not code evidence or raw full documents."
                 ),
                 action_type=CoderHybridRagSearchAction,
                 observation_type=CoderHybridRagSearchObservation,
@@ -173,6 +173,9 @@ def _format_observation(observation: CoderHybridRagSearchObservation) -> str:
     for index, result in enumerate(observation.results, start=1):
         lines.append(f"{index}. {_redact(str(result.get('title') or result.get('id') or 'Untitled'))}")
         lines.append(f"   Summary: {_redact(str(result.get('summary') or ''))}")
+        lines.append(f"   Evidence kind: {result.get('evidence_kind') or 'knowledge_hint'}")
+        if result.get("requires_repo_verification"):
+            lines.append("   Requires repo verification: true")
         lines.append(f"   Ref: {_redact(str(result.get('id') or ''))}")
         source_refs = result.get("source_refs") or []
         if source_refs:
@@ -191,6 +194,9 @@ def _format_observation(observation: CoderHybridRagSearchObservation) -> str:
     if observation.cold_refs:
         lines.append("")
         lines.append("Cold refs: " + ", ".join(_redact(ref) for ref in observation.cold_refs[:10]))
+    if any(result.get("requires_repo_verification") for result in observation.results):
+        lines.append("")
+        lines.append("This is a knowledge hint. Verify code claims with repo search/read before relying on it.")
     return "\n".join(lines).strip()
 
 

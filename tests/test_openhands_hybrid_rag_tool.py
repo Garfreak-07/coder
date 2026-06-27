@@ -133,6 +133,28 @@ class OpenHandsHybridRagToolTests(unittest.TestCase):
 
             self.assertLessEqual(len(observation.results[0]["text_preview"]), 500)
 
+    def test_rag_results_are_labeled_as_knowledge_hints(self) -> None:
+        with _indexed_store() as data:
+            _memory_store, knowledge_store, root = data
+            chunk = knowledge_store.append_chunk(_chunk("chunk-1", text="Function PlannerTaskState controls readiness."))
+            BM25Index(root).rebuild(memory_records=[], knowledge_chunks=[chunk])
+            tool = CoderHybridRagSearchTool.create(
+                conv_state=None,
+                memory_root=str(root),
+                role="task_execution",
+                requested_context="execution_prompt",
+                project_id="project",
+                max_tokens=1000,
+            )[0]
+
+            observation = tool(CoderHybridRagSearchAction(query="PlannerTaskState readiness"))
+            text = "".join(part.text for part in observation.to_llm_content)
+
+            self.assertEqual(observation.results[0]["evidence_kind"], "knowledge_hint")
+            self.assertTrue(observation.results[0]["requires_repo_verification"])
+            self.assertIn("Requires repo verification: true", text)
+            self.assertIn("Verify code claims with repo search/read", text)
+
     def test_annotations_mark_tool_read_only(self) -> None:
         tool = CoderHybridRagSearchTool.create(
             conv_state=None,

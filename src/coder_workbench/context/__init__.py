@@ -1,5 +1,6 @@
 from .budget import ContextBudget, context_compaction_enabled
 from .compaction import CompactionResult, ContextCompactor
+from .evidence_policy import EvidenceKind, KnowledgeHint
 from .external_refs import ContextExternalRefStore, ExternalRef
 from .harness_packets import build_harness_context_packet
 from .repo_context_service import NativeRepoContextService
@@ -25,9 +26,11 @@ __all__ = [
     "ContextCompactor",
     "ContextRetrievalDecision",
     "ContextRetrievalRouter",
+    "EvidenceKind",
     "ContextExternalRefStore",
     "ContextService",
     "ExternalRef",
+    "KnowledgeHint",
     "NativeRepoContextService",
     "build_harness_context_packet",
     "context_compaction_enabled",

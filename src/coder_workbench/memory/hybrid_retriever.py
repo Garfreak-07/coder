@@ -175,6 +175,11 @@ class HybridRagRetriever:
                     evidence_refs=card.evidence_refs,
                     fusion_score=card.score,
                     token_estimate=card.token_estimate,
+                    requires_repo_verification=_rag_result_requires_repo_verification(
+                        request.query,
+                        card.title,
+                        card.summary,
+                    ),
                     metadata={"fallback": "memory_retriever"},
                 )
             )
@@ -200,9 +205,10 @@ def weighted_rrf(
 def is_code_like_query(query: str) -> bool:
     return bool(
         re.search(r"[\\/][A-Za-z0-9_.-]+", query)
-        or re.search(r"\.[A-Za-z0-9]{1,6}\b", query)
+        or re.search(r"\.[A-Za-z0-9]{1,8}\b", query)
         or re.search(r"\b[a-z]+_[a-z0-9_]+\b", query)
         or re.search(r"\b[a-z]+[A-Z][A-Za-z0-9]*\b", query)
+        or re.search(r"\b[A-Z][A-Za-z0-9]*[A-Z][A-Za-z0-9]*\b", query)
         or re.search(r"\b[A-Z][A-Z0-9_]{2,}\b", query)
         or re.search(r"\b(?:E[A-Z0-9]{2,}|[A-Z]+-\d+|\d{3,})\b", query)
         or re.search(r"\btest_[A-Za-z0-9_]+\b", query)
@@ -296,6 +302,12 @@ def _result_from_chunk(
         bm25_score=bm25_hit.score if bm25_hit else None,
         fusion_score=round(fusion_score, 8),
         token_estimate=token_estimate,
+        requires_repo_verification=_rag_result_requires_repo_verification(
+            request.query,
+            chunk.title,
+            chunk.summary,
+            preview,
+        ),
         metadata={"source_id": chunk.source_id, "content_hash": chunk.content_hash},
     )
 
@@ -328,6 +340,12 @@ def _result_from_record(
         bm25_score=bm25_hit.score if bm25_hit else None,
         fusion_score=round(fusion_score, 8),
         token_estimate=token_estimate,
+        requires_repo_verification=_rag_result_requires_repo_verification(
+            request.query,
+            record.title,
+            record.summary,
+            preview,
+        ),
         metadata={"project_id": record.project_id, "session_id": record.session_id, "run_id": record.run_id},
     )
 
@@ -374,6 +392,10 @@ def _token_estimate(value: int, *texts: str) -> int:
         return value
     chars = sum(len(text) for text in texts)
     return max(1, math.ceil(chars / 4))
+
+
+def _rag_result_requires_repo_verification(*texts: str | None) -> bool:
+    return any(is_code_like_query(text or "") for text in texts)
 
 
 def _scope_identity_allowed(record_value: str | None, request_value: str | None) -> bool:

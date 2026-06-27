@@ -67,6 +67,8 @@ class HybridRagResult(BaseModel):
 
     source_refs: list[MemorySourceRef] = Field(default_factory=list)
     evidence_refs: list[str] = Field(default_factory=list)
+    evidence_kind: Literal["knowledge_hint"] = "knowledge_hint"
+    requires_repo_verification: bool = False
 
     dense_rank: int | None = None
     bm25_rank: int | None = None

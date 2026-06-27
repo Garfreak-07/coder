@@ -58,6 +58,8 @@ class HybridRagRetrieverTests(unittest.TestCase):
 
             self.assertEqual([result.id for result in results], ["chunk-1"])
             self.assertEqual(results[0].bm25_rank, 1)
+            self.assertEqual(results[0].evidence_kind, "knowledge_hint")
+            self.assertTrue(results[0].requires_repo_verification)
 
     def test_both_missing_falls_back_to_memory_retriever(self) -> None:
         with _stores() as stores:
