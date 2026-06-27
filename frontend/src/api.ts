@@ -24,6 +24,8 @@ import type {
   RunEventsPage,
   RunSummaryItem,
   RustRepoEvidenceResponse,
+  RustCommandPreview,
+  RustCommandPreviewRequest,
   RustRunArtifactResponse,
   RustRunDetail,
   RustRunEventsResponse,
@@ -263,6 +265,14 @@ export function validateRustWorkflowSpec(config: RustProjectConfig, workflowId: 
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({ config, workflow_id: workflowId })
+  });
+}
+
+export function previewRustCommand(request: RustCommandPreviewRequest): Promise<RustCommandPreview> {
+  return requestJson<RustCommandPreview>("/api/v3/tools/command/preview", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(request)
   });
 }
 

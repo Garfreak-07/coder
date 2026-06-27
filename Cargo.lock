@@ -309,6 +309,7 @@ dependencies = [
  "coder-core",
  "coder-events",
  "coder-store",
+ "coder-tools",
  "coder-workflow",
  "serde",
  "serde_json",

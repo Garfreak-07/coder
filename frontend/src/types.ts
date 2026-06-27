@@ -305,6 +305,32 @@ export interface RustRepoEvidenceResponse {
   payload: unknown;
 }
 
+export interface RustCommandPolicyDecision {
+  allowed: boolean;
+  requires_approval: boolean;
+  risk: string;
+  reason: string;
+}
+
+export interface RustCommandPreviewRequest {
+  repo_root: string;
+  cwd?: string | null;
+  argv: string[];
+  source?: string | null;
+  sandbox?: boolean | null;
+}
+
+export interface RustCommandPreview {
+  repo_root: string;
+  cwd: string;
+  argv: string[];
+  command: string;
+  requires_approval: boolean;
+  approval_key: string;
+  policy: RustCommandPolicyDecision;
+  evidence_kind: string;
+}
+
 export interface PreflightIssue {
   level: "error" | "warning" | string;
   code: string;

@@ -12,6 +12,7 @@ use coder_config::{
 };
 use coder_core::{FinalReport, RunId, RunState};
 use coder_store::{RepoEvidenceRef, RunStore, StoreError, StoredRunSummary};
+use coder_tools::{preview_command, CommandPreview, RepoToolError};
 use coder_workflow::{MockWorkflowRunner, WorkflowError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -34,6 +35,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/workflows/validate", post(validate_workflow))
         .route("/api/v3/runs", get(list_runs))
         .route("/api/v3/runs/preview", post(preview_run))
+        .route(
+            "/api/v3/tools/command/preview",
+            post(preview_command_endpoint),
+        )
         .route("/api/v3/runs/mock", post(run_mock_workflow))
         .route("/api/v3/runs/{run_id}", get(get_run_detail))
         .route("/api/v3/runs/{run_id}/events", get(list_run_events))
@@ -143,6 +148,19 @@ async fn preview_run(Json(request): Json<RunPreviewRequest>) -> Json<RunPreviewR
         backends,
         issues,
     })
+}
+
+async fn preview_command_endpoint(
+    Json(request): Json<CommandPreviewRequest>,
+) -> Result<Json<CommandPreview>, ApiError> {
+    let preview = preview_command(
+        &request.repo_root,
+        request.cwd.unwrap_or_else(|| ".".to_owned()),
+        request.argv,
+        request.source.as_deref().unwrap_or("model"),
+        request.sandbox.unwrap_or(false),
+    )?;
+    Ok(Json(preview))
 }
 
 async fn list_run_events(
@@ -262,6 +280,15 @@ pub struct RunPreviewRequest {
     pub config: ProjectConfig,
     pub workflow_id: String,
     pub task: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommandPreviewRequest {
+    pub repo_root: String,
+    pub cwd: Option<String>,
+    pub argv: Vec<String>,
+    pub source: Option<String>,
+    pub sandbox: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -398,6 +425,29 @@ impl From<WorkflowError> for ApiError {
     }
 }
 
+impl From<RepoToolError> for ApiError {
+    fn from(error: RepoToolError) -> Self {
+        match error {
+            RepoToolError::InvalidRoot { .. }
+            | RepoToolError::InvalidRootKind(_)
+            | RepoToolError::PathNotFound { .. }
+            | RepoToolError::PathOutsideRepo(_)
+            | RepoToolError::NotAFile(_)
+            | RepoToolError::NotADirectory(_)
+            | RepoToolError::SensitivePath(_)
+            | RepoToolError::BinaryFile(_)
+            | RepoToolError::FileTooLarge { .. }
+            | RepoToolError::EmptyQuery
+            | RepoToolError::PatchNoFiles(_)
+            | RepoToolError::EmptyCommandArgv => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: error.to_string(),
+            },
+            other => Self::internal(other.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf};
@@ -518,6 +568,55 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(codes.contains(&"workflow_not_found"));
         assert!(codes.contains(&"task_empty"));
+    }
+
+    #[tokio::test]
+    async fn command_preview_endpoint_returns_policy_without_running() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let app = test_router();
+        let response = post_json(
+            app,
+            "/api/v3/tools/command/preview",
+            json!({
+                "repo_root": root.display().to_string(),
+                "cwd": ".",
+                "argv": ["cmd.exe", "/C", "echo", "preview"],
+                "source": "model",
+                "sandbox": false
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["cwd"], ".");
+        assert_eq!(body["requires_approval"], true);
+        assert_eq!(body["policy"]["risk"], "medium");
+        assert!(body["approval_key"].as_str().unwrap().starts_with("cmd:"));
+        assert_eq!(body["evidence_kind"], "command_preview");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn command_preview_endpoint_rejects_cwd_escape() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let app = test_router();
+        let response = post_json(
+            app,
+            "/api/v3/tools/command/preview",
+            json!({
+                "repo_root": root.display().to_string(),
+                "cwd": "..",
+                "argv": ["cmd.exe", "/C", "echo", "preview"],
+                "source": "discovered"
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]

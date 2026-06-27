@@ -11,6 +11,7 @@ coder-config.workspace = true
 coder-core.workspace = true
 coder-events.workspace = true
 coder-store.workspace = true
+coder-tools.workspace = true
 coder-workflow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

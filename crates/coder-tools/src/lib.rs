@@ -189,6 +189,18 @@ pub struct CommandRunEvidence {
     pub evidence_kind: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandPreview {
+    pub repo_root: String,
+    pub cwd: String,
+    pub argv: Vec<String>,
+    pub command: String,
+    pub requires_approval: bool,
+    pub approval_key: String,
+    pub policy: CommandPolicyDecision,
+    pub evidence_kind: String,
+}
+
 pub fn read_file(
     repo_root: impl AsRef<Path>,
     requested_path: impl AsRef<Path>,
@@ -489,6 +501,34 @@ pub fn run_command(
     })
 }
 
+pub fn preview_command(
+    repo_root: impl AsRef<Path>,
+    cwd: impl AsRef<Path>,
+    argv: Vec<String>,
+    source: &str,
+    sandbox: bool,
+) -> Result<CommandPreview, RepoToolError> {
+    if argv.is_empty() || argv.iter().any(|item| item.trim().is_empty()) {
+        return Err(RepoToolError::EmptyCommandArgv);
+    }
+    let root = canonical_repo_root(repo_root)?;
+    let workdir = resolve_repo_dir(&root, cwd)?;
+    let cwd = relative_dir_display(&root, &workdir);
+    let command = argv.join(" ");
+    let policy = evaluate_command_policy(&argv, source, sandbox);
+    let approval_key = command_approval_key(&command, &cwd);
+    Ok(CommandPreview {
+        repo_root: root.display().to_string(),
+        cwd,
+        argv,
+        command,
+        requires_approval: policy.requires_approval,
+        approval_key,
+        policy,
+        evidence_kind: "command_preview".to_owned(),
+    })
+}
+
 pub fn evaluate_command_policy(
     argv: &[String],
     source: &str,
@@ -734,7 +774,7 @@ fn search_file(
     Ok(())
 }
 
-struct CommandPreview {
+struct CommandOutputPreview {
     preview: String,
     truncated: bool,
 }
@@ -795,7 +835,7 @@ fn run_git(
     root: &Path,
     args: &[&str],
     max_output_bytes: usize,
-) -> Result<CommandPreview, RepoToolError> {
+) -> Result<CommandOutputPreview, RepoToolError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -818,7 +858,7 @@ fn run_git(
     } else {
         &output.stdout
     };
-    Ok(CommandPreview {
+    Ok(CommandOutputPreview {
         preview: String::from_utf8_lossy(preview_bytes).into_owned(),
         truncated,
     })
@@ -1434,6 +1474,42 @@ diff --git a/.env b/.env
         assert!(evidence.requires_approval);
         assert_eq!(evidence.policy.risk, "medium");
         assert!(evidence.approval_key.starts_with("cmd:"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn command_preview_reports_approval_key_without_running() {
+        let root = temp_repo();
+
+        let preview =
+            preview_command(&root, ".", platform_echo_args("preview"), "model", false).unwrap();
+
+        assert_eq!(preview.cwd, ".");
+        assert!(preview.requires_approval);
+        assert_eq!(preview.policy.risk, "medium");
+        assert_eq!(
+            preview.approval_key,
+            command_approval_key(&preview.command, ".")
+        );
+        assert_eq!(preview.evidence_kind, "command_preview");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn command_preview_allows_discovered_sandbox_command() {
+        let root = temp_repo();
+
+        let preview = preview_command(
+            &root,
+            ".",
+            platform_echo_args("preview"),
+            "discovered",
+            true,
+        )
+        .unwrap();
+
+        assert!(!preview.requires_approval);
+        assert_eq!(preview.policy.risk, "low");
         let _ = fs::remove_dir_all(root);
     }
 
