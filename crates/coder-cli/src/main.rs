@@ -9,7 +9,9 @@ use coder_openhands::{
 };
 use coder_server::{serve, ApiState};
 use coder_store::RunStore;
-use coder_tools::{find_files, git_diff, git_status, read_file, search_text, RepoToolConfig};
+use coder_tools::{
+    find_files, git_diff, git_status, read_file, read_file_range, search_text, RepoToolConfig,
+};
 use coder_workflow::MockWorkflowRunner;
 use serde_json::json;
 
@@ -120,6 +122,17 @@ enum ToolsCommand {
         repo: PathBuf,
         #[arg(long, default_value_t = coder_tools::DEFAULT_MAX_FILE_BYTES)]
         max_file_bytes: u64,
+        path: PathBuf,
+    },
+    ReadFileRange {
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long, default_value_t = 1)]
+        start_line: usize,
+        #[arg(long, default_value_t = 120)]
+        max_lines: usize,
+        #[arg(long, default_value_t = 16_000)]
+        max_chars: usize,
         path: PathBuf,
     },
     SearchText {
@@ -483,6 +496,19 @@ async fn main() -> anyhow::Result<()> {
                     max_search_matches: coder_tools::DEFAULT_MAX_SEARCH_MATCHES,
                 },
             )?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        }
+        Command::Tools {
+            command:
+                ToolsCommand::ReadFileRange {
+                    repo,
+                    start_line,
+                    max_lines,
+                    max_chars,
+                    path,
+                },
+        } => {
+            let output = read_file_range(repo, path, start_line, max_lines, max_chars)?;
             println!("{}", serde_json::to_string_pretty(&output)?);
         }
         Command::Tools {

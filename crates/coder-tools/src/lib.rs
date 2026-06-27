@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -57,6 +58,16 @@ pub struct RepoFileEvidence {
     pub path: String,
     pub size_bytes: u64,
     pub content: String,
+    pub evidence_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoReadSnippet {
+    pub path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub text: String,
+    pub truncated: bool,
     pub evidence_kind: String,
 }
 
@@ -123,6 +134,77 @@ pub fn read_file(
         path: relative_display(&root, &path),
         size_bytes: metadata.len(),
         content,
+        evidence_kind: "repo_evidence".to_owned(),
+    })
+}
+
+pub fn read_file_range(
+    repo_root: impl AsRef<Path>,
+    requested_path: impl AsRef<Path>,
+    start_line: usize,
+    max_lines: usize,
+    max_chars: usize,
+) -> Result<RepoReadSnippet, RepoToolError> {
+    let root = canonical_repo_root(repo_root)?;
+    let path = resolve_existing_repo_path(&root, requested_path)?;
+    validate_readable_evidence_path(&root, &path)?;
+
+    let start = start_line.max(1);
+    let line_limit = max_lines.clamp(1, 200);
+    let char_limit = max_chars.clamp(1, 100_000);
+    let last_requested = start + line_limit - 1;
+    let relative_path = relative_display(&root, &path);
+
+    let file = fs::File::open(&path)?;
+    let mut reader = BufReader::new(file);
+    let mut text = String::new();
+    let mut chars_used = 0;
+    let mut end_line = start;
+    let mut truncated = false;
+
+    let mut line_number = 0;
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader
+            .read_line(&mut line)
+            .map_err(|source| RepoToolError::ReadText {
+                path: relative_path.clone(),
+                source,
+            })?;
+        if bytes_read == 0 {
+            break;
+        }
+        line_number += 1;
+        if line_number < start {
+            continue;
+        }
+        if line_number > last_requested {
+            truncated = true;
+            break;
+        }
+        let remaining = char_limit - chars_used;
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let line_chars = line.chars().count();
+        if line_chars > remaining {
+            text.push_str(&line.chars().take(remaining).collect::<String>());
+            end_line = line_number;
+            truncated = true;
+            break;
+        }
+        chars_used += line_chars;
+        text.push_str(&line);
+        end_line = line_number;
+    }
+
+    Ok(RepoReadSnippet {
+        path: relative_path,
+        start_line: start,
+        end_line,
+        text,
+        truncated,
         evidence_kind: "repo_evidence".to_owned(),
     })
 }
@@ -401,6 +483,24 @@ fn resolve_existing_repo_path(
     Ok(resolved)
 }
 
+fn validate_readable_evidence_path(root: &Path, path: &Path) -> Result<String, RepoToolError> {
+    let metadata = fs::metadata(path)?;
+    let relative_path = relative_display(root, path);
+    if !metadata.is_file() {
+        return Err(RepoToolError::NotAFile(relative_path));
+    }
+    if sensitive_repo_path(&relative_path) {
+        return Err(RepoToolError::SensitivePath(relative_path));
+    }
+    let mut file = fs::File::open(path)?;
+    let mut sample = [0_u8; 4096];
+    let bytes_read = file.read(&mut sample)?;
+    if sample[..bytes_read].contains(&0) {
+        return Err(RepoToolError::BinaryFile(relative_path));
+    }
+    Ok(relative_path)
+}
+
 fn should_skip_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -498,6 +598,8 @@ pub enum RepoToolError {
     NotAFile(String),
     #[error("path is sensitive and cannot be read as repo evidence: {0}")]
     SensitivePath(String),
+    #[error("binary files cannot be read as repo evidence: {0}")]
+    BinaryFile(String),
     #[error("file {path} is {size_bytes} bytes, over limit {max_bytes}")]
     FileTooLarge {
         path: String,
@@ -561,6 +663,55 @@ mod tests {
         let error = read_file(&root, "large.txt", &config).unwrap_err();
 
         assert!(matches!(error, RepoToolError::FileTooLarge { .. }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_file_range_returns_line_refs() {
+        let root = temp_repo();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src").join("app.py"), "one\ntwo\nthree\n").unwrap();
+
+        let snippet = read_file_range(&root, "src/app.py", 2, 1, 16_000).unwrap();
+
+        assert_eq!(snippet.path, "src/app.py");
+        assert_eq!(snippet.start_line, 2);
+        assert_eq!(snippet.end_line, 2);
+        assert_eq!(snippet.text, "two\n");
+        assert!(snippet.truncated);
+        assert_eq!(snippet.evidence_kind, "repo_evidence");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_file_range_reports_line_and_char_truncation() {
+        let root = temp_repo();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src").join("app.py"), "one\ntwo\nthree\n").unwrap();
+        fs::write(root.join("src").join("unicode.txt"), "abcédef\n").unwrap();
+
+        let by_lines = read_file_range(&root, "src/app.py", 1, 2, 16_000).unwrap();
+        let by_chars = read_file_range(&root, "src/unicode.txt", 1, 120, 4).unwrap();
+
+        assert_eq!(by_lines.end_line, 2);
+        assert!(by_lines.truncated);
+        assert_eq!(by_chars.text, "abcé");
+        assert!(by_chars.truncated);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_file_range_rejects_sensitive_and_binary_files() {
+        let root = temp_repo();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join(".env"), "SECRET=value\n").unwrap();
+        fs::write(root.join("src").join("bin.dat"), b"abc\0def").unwrap();
+
+        let sensitive = read_file_range(&root, ".env", 1, 120, 16_000).unwrap_err();
+        let binary = read_file_range(&root, "src/bin.dat", 1, 120, 16_000).unwrap_err();
+
+        assert!(matches!(sensitive, RepoToolError::SensitivePath(_)));
+        assert!(matches!(binary, RepoToolError::BinaryFile(_)));
         let _ = fs::remove_dir_all(root);
     }
 
