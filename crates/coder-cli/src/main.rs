@@ -1296,6 +1296,8 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use clap::CommandFactory;
+
     use super::*;
 
     #[test]
@@ -1645,6 +1647,35 @@ diff --git a/tracked.txt b/tracked.txt
     }
 
     #[test]
+    fn cli_exposes_phase10_command_surface() {
+        let command = Cli::command();
+        let root = subcommand_names(&command);
+
+        assert!(root.contains(&"doctor"));
+        assert!(root.contains(&"config"));
+        assert!(root.contains(&"workflow"));
+        assert!(root.contains(&"runs"));
+        assert!(root.contains(&"server"));
+        assert!(root.contains(&"openhands"));
+        assert!(root.contains(&"tools"));
+
+        let workflow = find_subcommand(&command, "workflow");
+        let workflow_commands = subcommand_names(workflow);
+        assert!(workflow_commands.contains(&"validate"));
+        assert!(workflow_commands.contains(&"preview"));
+        assert!(workflow_commands.contains(&"run"));
+
+        let runs = find_subcommand(&command, "runs");
+        let runs_commands = subcommand_names(runs);
+        assert!(runs_commands.contains(&"list"));
+        assert!(runs_commands.contains(&"show"));
+
+        let openhands = find_subcommand(&command, "openhands");
+        let openhands_commands = subcommand_names(openhands);
+        assert!(openhands_commands.contains(&"doctor"));
+    }
+
+    #[test]
     fn run_detail_helper_reports_missing_run() {
         let store_root = temp_root("coder-cli-store");
         let store = RunStore::new(&store_root);
@@ -1653,6 +1684,20 @@ diff --git a/tracked.txt b/tracked.txt
 
         assert!(error.to_string().contains("run 'missing' was not found"));
         let _ = std::fs::remove_dir_all(store_root);
+    }
+
+    fn subcommand_names(command: &clap::Command) -> std::collections::BTreeSet<&str> {
+        command
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect()
+    }
+
+    fn find_subcommand<'a>(command: &'a clap::Command, name: &str) -> &'a clap::Command {
+        command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == name)
+            .unwrap()
     }
 
     fn temp_root(prefix: &str) -> PathBuf {

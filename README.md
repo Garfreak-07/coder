@@ -112,6 +112,9 @@ cargo run -p coder-cli --bin coder-rust -- workflow run --mock planner-led "summ
 cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8766
 ```
 
+The Rust CLI/distribution baseline is documented in
+[`docs/distribution.md`](docs/distribution.md).
+
 ## OpenHands
 
 OpenHands is an optional runtime provider. Without credentials or the runtime
