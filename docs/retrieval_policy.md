@@ -27,6 +27,18 @@ Use RAG and memory for knowledge hints:
 - prior run summaries
 - user-maintained notes
 
+Rust v3 exposes three retrieval backends through
+`POST /api/v3/knowledge/retrieve`:
+
+- `lexical`: always available and the default when no backend is selected.
+- `dense_mock`: deterministic local hash-vector retrieval for CI-safe dense
+  retrieval coverage.
+- `hybrid`: score-fuses lexical and deterministic dense results while applying
+  the same ACL and sensitivity filters.
+
+Dense retrieval is config-selected per request. It does not call live embedding
+providers in normal CI.
+
 If a RAG result mentions code, verify the claim with repo search/read before
 relying on it.
 

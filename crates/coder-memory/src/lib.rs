@@ -181,11 +181,66 @@ pub struct KnowledgeImportResult {
     pub chunks: Vec<KnowledgeChunk>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalBackendKind {
+    Lexical,
+    DenseMock,
+    Hybrid,
+}
+
+impl Default for RetrievalBackendKind {
+    fn default() -> Self {
+        Self::Lexical
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalIndexResult {
+    pub backend: RetrievalBackendKind,
+    pub source_id: String,
+    pub chunk_count: usize,
+}
+
+pub trait RetrievalBackend {
+    fn backend(&self) -> RetrievalBackendKind;
+
+    fn index(
+        &self,
+        source: &KnowledgeSource,
+        chunks: &[KnowledgeChunk],
+    ) -> Result<RetrievalIndexResult, MemoryError> {
+        Ok(RetrievalIndexResult {
+            backend: self.backend(),
+            source_id: source.source_id.clone(),
+            chunk_count: chunks.len(),
+        })
+    }
+
+    fn retrieve(
+        &self,
+        chunks: &[KnowledgeChunk],
+        request: &KnowledgeRetrievalRequest,
+    ) -> Result<Vec<KnowledgeHint>, MemoryError>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LexicalRetrievalBackend;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeterministicDenseRetrievalBackend;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HybridRetrievalBackend;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeRetrievalRequest {
     pub role: AgentMemoryRole,
     pub query: String,
     pub requested_context: MemoryAllowedContext,
+    #[serde(default)]
+    pub backend: RetrievalBackendKind,
+    pub scope: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     pub token_budget: Option<usize>,
@@ -209,8 +264,38 @@ pub struct KnowledgeHint {
     pub content_hash: String,
     pub token_estimate: usize,
     pub score: f64,
+    #[serde(default)]
+    pub backend: RetrievalBackendKind,
     pub content_preview: Option<String>,
     pub content_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeRetrievalHit {
+    pub source_id: String,
+    pub chunk_id: String,
+    pub score: f64,
+    pub backend: RetrievalBackendKind,
+    pub preview: String,
+    pub trust_level: MemoryTrustLevel,
+    pub evidence_ref: String,
+}
+
+impl KnowledgeRetrievalHit {
+    pub fn from_hint(hint: &KnowledgeHint) -> Self {
+        Self {
+            source_id: hint.source_id.clone(),
+            chunk_id: hint.id.clone(),
+            score: hint.score,
+            backend: hint.backend,
+            preview: hint
+                .content_preview
+                .clone()
+                .unwrap_or_else(|| hint.summary.clone()),
+            trust_level: hint.trust_level,
+            evidence_ref: format!("knowledge://{}/{}", hint.source_id, hint.id),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -479,6 +564,63 @@ pub fn retrieve_knowledge_hints(
     chunks: &[KnowledgeChunk],
     request: &KnowledgeRetrievalRequest,
 ) -> Result<Vec<KnowledgeHint>, MemoryError> {
+    match request.backend {
+        RetrievalBackendKind::Lexical => LexicalRetrievalBackend.retrieve(chunks, request),
+        RetrievalBackendKind::DenseMock => {
+            DeterministicDenseRetrievalBackend.retrieve(chunks, request)
+        }
+        RetrievalBackendKind::Hybrid => HybridRetrievalBackend.retrieve(chunks, request),
+    }
+}
+
+impl RetrievalBackend for LexicalRetrievalBackend {
+    fn backend(&self) -> RetrievalBackendKind {
+        RetrievalBackendKind::Lexical
+    }
+
+    fn retrieve(
+        &self,
+        chunks: &[KnowledgeChunk],
+        request: &KnowledgeRetrievalRequest,
+    ) -> Result<Vec<KnowledgeHint>, MemoryError> {
+        retrieve_ranked_hints(chunks, request, self.backend(), lexical_score_chunk)
+    }
+}
+
+impl RetrievalBackend for DeterministicDenseRetrievalBackend {
+    fn backend(&self) -> RetrievalBackendKind {
+        RetrievalBackendKind::DenseMock
+    }
+
+    fn retrieve(
+        &self,
+        chunks: &[KnowledgeChunk],
+        request: &KnowledgeRetrievalRequest,
+    ) -> Result<Vec<KnowledgeHint>, MemoryError> {
+        retrieve_ranked_hints(chunks, request, self.backend(), dense_score_chunk)
+    }
+}
+
+impl RetrievalBackend for HybridRetrievalBackend {
+    fn backend(&self) -> RetrievalBackendKind {
+        RetrievalBackendKind::Hybrid
+    }
+
+    fn retrieve(
+        &self,
+        chunks: &[KnowledgeChunk],
+        request: &KnowledgeRetrievalRequest,
+    ) -> Result<Vec<KnowledgeHint>, MemoryError> {
+        retrieve_ranked_hints(chunks, request, self.backend(), hybrid_score_chunk)
+    }
+}
+
+fn retrieve_ranked_hints(
+    chunks: &[KnowledgeChunk],
+    request: &KnowledgeRetrievalRequest,
+    backend: RetrievalBackendKind,
+    scorer: fn(&KnowledgeChunk, &KnowledgeRetrievalRequest) -> f64,
+) -> Result<Vec<KnowledgeHint>, MemoryError> {
     if request.query.trim().is_empty() {
         return Err(MemoryError::Validation(
             "knowledge retrieval query is required".to_owned(),
@@ -498,7 +640,7 @@ pub fn retrieve_knowledge_hints(
         if !chunk_allowed(chunk, request, &policy) {
             continue;
         }
-        let score = score_chunk(chunk, request);
+        let score = scorer(chunk, request);
         if score <= 0.0 {
             continue;
         }
@@ -523,6 +665,7 @@ pub fn retrieve_knowledge_hints(
             content_hash: chunk.content_hash.clone(),
             token_estimate: chunk.token_estimate.max(token_estimate(&chunk.summary)),
             score,
+            backend,
             content_preview,
             content_truncated,
         });
@@ -710,6 +853,15 @@ fn chunk_allowed(
     {
         return false;
     }
+    if request.role == AgentMemoryRole::TaskExecution
+        && (chunk.sensitivity == MemorySensitivity::Private
+            || chunk.acl.sensitivity == MemorySensitivity::Private)
+    {
+        return false;
+    }
+    if !scope_allows_chunk(request.scope.as_deref(), chunk) {
+        return false;
+    }
     if !chunk.acl.allowed_agents.contains(&request.role) {
         return false;
     }
@@ -726,7 +878,7 @@ fn chunk_allowed(
         .all(|purpose| policy.allowed_purposes.contains(purpose))
 }
 
-fn score_chunk(chunk: &KnowledgeChunk, request: &KnowledgeRetrievalRequest) -> f64 {
+fn lexical_score_chunk(chunk: &KnowledgeChunk, request: &KnowledgeRetrievalRequest) -> f64 {
     let mut searchable = String::new();
     searchable.push_str(&chunk.title);
     searchable.push(' ');
@@ -745,6 +897,55 @@ fn score_chunk(chunk: &KnowledgeChunk, request: &KnowledgeRetrievalRequest) -> f
     };
     score -= (chunk.token_estimate as f64 / 4000.0).min(1.0);
     round_score(score)
+}
+
+fn dense_score_chunk(chunk: &KnowledgeChunk, request: &KnowledgeRetrievalRequest) -> f64 {
+    let query_vector = deterministic_embedding(&request.query);
+    let mut searchable = String::new();
+    searchable.push_str(&chunk.title);
+    searchable.push(' ');
+    searchable.push_str(&chunk.summary);
+    searchable.push(' ');
+    searchable.push_str(&chunk.text);
+    searchable.push(' ');
+    searchable.push_str(&chunk.tags.join(" "));
+    let chunk_vector = deterministic_embedding(&searchable);
+    let semantic_score = cosine_similarity(&query_vector, &chunk_vector);
+    if semantic_score <= 0.0 {
+        return 0.0;
+    }
+    let mut score = semantic_score * 4.0;
+    score += tag_overlap_score(&request.tags, &chunk.tags);
+    score += match chunk.trust_level {
+        MemoryTrustLevel::UserConfirmed => 0.7,
+        MemoryTrustLevel::SystemRecorded => 0.5,
+        MemoryTrustLevel::Source => 0.3,
+        MemoryTrustLevel::ModelInferred => 0.05,
+    };
+    score -= (chunk.token_estimate as f64 / 6000.0).min(0.7);
+    round_score(score)
+}
+
+fn hybrid_score_chunk(chunk: &KnowledgeChunk, request: &KnowledgeRetrievalRequest) -> f64 {
+    let lexical = lexical_score_chunk(chunk, request);
+    let dense = dense_score_chunk(chunk, request);
+    if lexical <= 0.0 && dense <= 0.0 {
+        return 0.0;
+    }
+    round_score((lexical * 0.55) + (dense * 0.45))
+}
+
+fn scope_allows_chunk(scope: Option<&str>, chunk: &KnowledgeChunk) -> bool {
+    match scope.unwrap_or("all") {
+        "" | "all" | "*" => true,
+        "project" => matches!(
+            chunk.sensitivity,
+            MemorySensitivity::Public | MemorySensitivity::Project
+        ),
+        "private" => chunk.sensitivity == MemorySensitivity::Private,
+        "public" => chunk.sensitivity == MemorySensitivity::Public,
+        _ => false,
+    }
 }
 
 fn term_overlap_score(query: &str, text: &str) -> f64 {
@@ -770,6 +971,38 @@ fn tag_overlap_score(request_tags: &[String], chunk_tags: &[String]) -> f64 {
         .map(|tag| tag.to_ascii_lowercase())
         .collect::<BTreeSet<_>>();
     requested.intersection(&available).count() as f64 * 2.0
+}
+
+fn deterministic_embedding(text: &str) -> [f64; 32] {
+    let mut vector = [0.0; 32];
+    for term in terms(text) {
+        let digest = Sha256::digest(term.as_bytes());
+        let index = digest[0] as usize % vector.len();
+        let sign = if digest[1] % 2 == 0 { 1.0 } else { -1.0 };
+        let weight = 1.0 + (digest[2] as f64 / 255.0);
+        vector[index] += sign * weight;
+    }
+    normalize_vector(vector)
+}
+
+fn normalize_vector(mut vector: [f64; 32]) -> [f64; 32] {
+    let norm = vector.iter().map(|value| value * value).sum::<f64>().sqrt();
+    if norm <= f64::EPSILON {
+        return vector;
+    }
+    for value in &mut vector {
+        *value /= norm;
+    }
+    vector
+}
+
+fn cosine_similarity(left: &[f64; 32], right: &[f64; 32]) -> f64 {
+    round_score(
+        left.iter()
+            .zip(right.iter())
+            .map(|(left, right)| left * right)
+            .sum::<f64>(),
+    )
 }
 
 fn validate_memory_record_safety(record: &MemoryRecord) -> Result<(), MemoryError> {
@@ -1317,6 +1550,8 @@ mod tests {
                 role: AgentMemoryRole::WorkflowSupervisor,
                 query: "workflow evidence".to_owned(),
                 requested_context: MemoryAllowedContext::PlannerOrder,
+                backend: RetrievalBackendKind::Lexical,
+                scope: Some("project".to_owned()),
                 tags: vec!["rust".to_owned()],
                 token_budget: Some(1000),
                 max_results: Some(5),
@@ -1335,6 +1570,8 @@ mod tests {
                 role: AgentMemoryRole::TaskExecution,
                 query: "workflow evidence".to_owned(),
                 requested_context: MemoryAllowedContext::ExecutionPrompt,
+                backend: RetrievalBackendKind::Lexical,
+                scope: Some("project".to_owned()),
                 tags: Vec::new(),
                 token_budget: None,
                 max_results: None,
@@ -1344,6 +1581,164 @@ mod tests {
         .unwrap();
         assert!(denied.is_empty());
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dense_and_hybrid_retrieval_are_deterministic_and_opt_in() {
+        let root = temp_path("knowledge-dense-store");
+        let store = KnowledgeStore::new(&root);
+        let result = import_text_knowledge_source(
+            &store,
+            KnowledgeTextImportRequest {
+                title: "Runtime notes".to_owned(),
+                text: "# Rust Runtime\n\nRust native backend owns workflow canvas orchestration and run events.\n\n# Recipe\n\nTomato sauce simmers with basil and pasta.".to_owned(),
+                owner_scope: "project".to_owned(),
+                tags: vec!["rust".to_owned(), "runtime".to_owned()],
+                allowed_agents: vec![AgentMemoryRole::WorkflowSupervisor],
+                purpose: vec![MemoryPurpose::ProjectRules],
+                allowed_contexts: vec![MemoryAllowedContext::PlannerOrder],
+                sensitivity: MemorySensitivity::Project,
+            },
+        )
+        .unwrap();
+
+        let index = DeterministicDenseRetrievalBackend
+            .index(&result.source, &result.chunks)
+            .unwrap();
+        assert_eq!(index.backend, RetrievalBackendKind::DenseMock);
+        assert_eq!(index.chunk_count, result.chunks.len());
+
+        let default_backend = RetrievalBackendKind::default();
+        assert_eq!(default_backend, RetrievalBackendKind::Lexical);
+        let lexical = retrieve_knowledge_hints(
+            &result.chunks,
+            &retrieval_request(
+                AgentMemoryRole::WorkflowSupervisor,
+                MemoryAllowedContext::PlannerOrder,
+                "native backend run events",
+                default_backend,
+            ),
+        )
+        .unwrap();
+        let dense = retrieve_knowledge_hints(
+            &result.chunks,
+            &retrieval_request(
+                AgentMemoryRole::WorkflowSupervisor,
+                MemoryAllowedContext::PlannerOrder,
+                "native backend run events",
+                RetrievalBackendKind::DenseMock,
+            ),
+        )
+        .unwrap();
+        let hybrid = retrieve_knowledge_hints(
+            &result.chunks,
+            &retrieval_request(
+                AgentMemoryRole::WorkflowSupervisor,
+                MemoryAllowedContext::PlannerOrder,
+                "native backend run events",
+                RetrievalBackendKind::Hybrid,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(lexical[0].backend, RetrievalBackendKind::Lexical);
+        assert_eq!(dense[0].backend, RetrievalBackendKind::DenseMock);
+        assert_eq!(hybrid[0].backend, RetrievalBackendKind::Hybrid);
+        assert_eq!(dense[0].title, "Rust Runtime");
+        assert_eq!(hybrid[0].title, "Rust Runtime");
+        let dense_again = retrieve_knowledge_hints(
+            &result.chunks,
+            &retrieval_request(
+                AgentMemoryRole::WorkflowSupervisor,
+                MemoryAllowedContext::PlannerOrder,
+                "native backend run events",
+                RetrievalBackendKind::DenseMock,
+            ),
+        )
+        .unwrap();
+        assert_eq!(dense[0].id, dense_again[0].id);
+        assert_eq!(dense[0].score, dense_again[0].score);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dense_retrieval_keeps_acl_scope_and_secret_filters() {
+        let private_chunk = KnowledgeChunk {
+            chunk_id: "private-1".to_owned(),
+            source_id: "manual-private".to_owned(),
+            title: "Private executor note".to_owned(),
+            text: "Executor should not see private workflow notes.".to_owned(),
+            summary: "Private workflow notes.".to_owned(),
+            tags: vec!["private".to_owned()],
+            purpose: vec![MemoryPurpose::ExecutionContext],
+            acl: MemoryAcl {
+                allowed_agents: vec![AgentMemoryRole::TaskExecution],
+                allowed_contexts: vec![MemoryAllowedContext::ExecutionPrompt],
+                sensitivity: MemorySensitivity::Private,
+            },
+            sensitivity: MemorySensitivity::Private,
+            trust_level: MemoryTrustLevel::UserConfirmed,
+            content_hash: "sha256:private".to_owned(),
+            embedding_id: None,
+            token_estimate: 8,
+        };
+        let secret_chunk = KnowledgeChunk {
+            chunk_id: "secret-1".to_owned(),
+            source_id: "manual-secret".to_owned(),
+            title: "Secret note".to_owned(),
+            text: "api_key should not appear in retrieval output.".to_owned(),
+            summary: "Secret note.".to_owned(),
+            tags: vec!["secret".to_owned()],
+            purpose: vec![MemoryPurpose::ProjectRules],
+            acl: MemoryAcl {
+                allowed_agents: vec![AgentMemoryRole::WorkflowSupervisor],
+                allowed_contexts: vec![MemoryAllowedContext::PlannerOrder],
+                sensitivity: MemorySensitivity::Secret,
+            },
+            sensitivity: MemorySensitivity::Secret,
+            trust_level: MemoryTrustLevel::UserConfirmed,
+            content_hash: "sha256:secret".to_owned(),
+            embedding_id: None,
+            token_estimate: 8,
+        };
+        let chunks = vec![private_chunk, secret_chunk];
+
+        let executor_dense = retrieve_knowledge_hints(
+            &chunks,
+            &KnowledgeRetrievalRequest {
+                role: AgentMemoryRole::TaskExecution,
+                query: "private workflow notes".to_owned(),
+                requested_context: MemoryAllowedContext::ExecutionPrompt,
+                backend: RetrievalBackendKind::DenseMock,
+                scope: Some("private".to_owned()),
+                tags: Vec::new(),
+                token_budget: None,
+                max_results: Some(5),
+                include_content: true,
+            },
+        )
+        .unwrap();
+        let supervisor_hybrid = retrieve_knowledge_hints(
+            &chunks,
+            &KnowledgeRetrievalRequest {
+                role: AgentMemoryRole::WorkflowSupervisor,
+                query: "api_key retrieval output".to_owned(),
+                requested_context: MemoryAllowedContext::PlannerOrder,
+                backend: RetrievalBackendKind::Hybrid,
+                scope: Some("all".to_owned()),
+                tags: Vec::new(),
+                token_budget: None,
+                max_results: Some(5),
+                include_content: true,
+            },
+        )
+        .unwrap();
+
+        assert!(executor_dense.is_empty());
+        assert!(supervisor_hybrid.is_empty());
+        assert!(!serde_json::to_string(&supervisor_hybrid)
+            .unwrap()
+            .contains("api_key"));
     }
 
     fn fixture_record(content: &str) -> MemoryRecord {
@@ -1366,5 +1761,24 @@ mod tests {
         static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!("coder-memory-{}-{}-{name}", std::process::id(), id))
+    }
+
+    fn retrieval_request(
+        role: AgentMemoryRole,
+        requested_context: MemoryAllowedContext,
+        query: &str,
+        backend: RetrievalBackendKind,
+    ) -> KnowledgeRetrievalRequest {
+        KnowledgeRetrievalRequest {
+            role,
+            query: query.to_owned(),
+            requested_context,
+            backend,
+            scope: Some("project".to_owned()),
+            tags: Vec::new(),
+            token_budget: Some(1000),
+            max_results: Some(5),
+            include_content: false,
+        }
     }
 }

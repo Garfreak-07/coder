@@ -37,6 +37,8 @@ import type {
   RustMcpToolCallRequest,
   RustMcpToolCallResult,
   RustMcpToolListResponse,
+  RustKnowledgeRetrieveRequest,
+  RustKnowledgeRetrieveResponse,
   RustProjectMemoryLoadRequest,
   RustProjectMemoryLoadResponse,
   RustProjectMemoryWriteProposalRequest,
@@ -605,6 +607,16 @@ export function proposeRustProjectMemoryWrite(
       body: JSON.stringify(request)
     }
   );
+}
+
+export function retrieveRustKnowledge(
+  request: RustKnowledgeRetrieveRequest
+): Promise<RustKnowledgeRetrieveResponse> {
+  return requestJson<RustKnowledgeRetrieveResponse>("/api/v3/knowledge/retrieve", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(request)
+  });
 }
 
 export function validateRustMcpManifest(

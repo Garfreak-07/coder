@@ -157,6 +157,80 @@ export interface RustProjectMemoryWriteProposalResponse {
   event: RustCoderEvent;
 }
 
+export type RustAgentMemoryRole =
+  | "planning_chat"
+  | "workflow_supervisor"
+  | "task_execution"
+  | "planner"
+  | "executor"
+  | "verifier"
+  | string;
+
+export type RustMemoryAllowedContext =
+  | "assistant_message"
+  | "planner_task_state"
+  | "planner_order"
+  | "execution_prompt"
+  | "workflow_supervision"
+  | "final_report"
+  | string;
+
+export type RustMemoryTrustLevel =
+  | "source"
+  | "user_confirmed"
+  | "system_recorded"
+  | "model_inferred"
+  | string;
+
+export type RustRetrievalBackendKind = "lexical" | "dense_mock" | "hybrid";
+
+export interface RustKnowledgeRetrieveRequest {
+  repo_root: string;
+  role: RustAgentMemoryRole;
+  query: string;
+  requested_context: RustMemoryAllowedContext;
+  backend?: RustRetrievalBackendKind;
+  scope?: "project" | "private" | "public" | "all" | string;
+  tags?: string[];
+  token_budget?: number;
+  top_k?: number;
+  max_results?: number;
+  include_content?: boolean;
+}
+
+export interface RustKnowledgeHint {
+  id: string;
+  source_id: string;
+  title: string;
+  summary: string;
+  tags: string[];
+  evidence_kind: string;
+  requires_repo_verification: boolean;
+  trust_level: RustMemoryTrustLevel;
+  sensitivity: string;
+  content_hash: string;
+  token_estimate: number;
+  score: number;
+  backend: RustRetrievalBackendKind;
+  content_preview?: string | null;
+  content_truncated: boolean;
+}
+
+export interface RustKnowledgeRetrievalHit {
+  source_id: string;
+  chunk_id: string;
+  score: number;
+  backend: RustRetrievalBackendKind;
+  preview: string;
+  trust_level: RustMemoryTrustLevel;
+  evidence_ref: string;
+}
+
+export interface RustKnowledgeRetrieveResponse {
+  results: RustKnowledgeHint[];
+  hits: RustKnowledgeRetrievalHit[];
+}
+
 export type RustMcpRiskLevel = "low" | "medium" | "high";
 export type RustMcpSideEffectLevel = "none" | "read" | "write" | "external";
 

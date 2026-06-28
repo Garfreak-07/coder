@@ -25,7 +25,8 @@ Rust v3 covers the ordinary product surface behind the same React UI:
 health/capabilities, role cards, workflow validation/import/export, library
 workflow storage, Planner Chat sessions and run preview/confirmation, stored
 run inspection, evidence-backed reports, repo/command/patch tools,
-memory/knowledge import and lexical retrieval, skills/extensions/MCP lifecycle
+memory/knowledge import with lexical, deterministic dense, and hybrid retrieval,
+skills/extensions/MCP lifecycle
 baselines, and provider settings without secret leakage. Python/FastAPI v2 is
 kept for explicit legacy fallback and compatibility tests.
 

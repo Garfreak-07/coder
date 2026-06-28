@@ -33,9 +33,9 @@ use coder_memory::{
     append_project_memory_record, ensure_memory_write_allowed, import_text_knowledge_source,
     load_project_memory_file, memory_read_event, memory_write_confirmed_event,
     memory_write_proposed_event, retrieve_knowledge_hints, AgentMemoryRole, KnowledgeChunk,
-    KnowledgeRetrievalRequest, KnowledgeSource, KnowledgeStore, KnowledgeTextImportRequest,
-    MemoryAllowedContext, MemoryError, MemoryPurpose, MemoryRecord, MemoryScope, MemorySensitivity,
-    ProjectMemoryFile,
+    KnowledgeRetrievalHit, KnowledgeRetrievalRequest, KnowledgeSource, KnowledgeStore,
+    KnowledgeTextImportRequest, MemoryAllowedContext, MemoryError, MemoryPurpose, MemoryRecord,
+    MemoryScope, MemorySensitivity, ProjectMemoryFile, RetrievalBackendKind,
 };
 use coder_store::{
     RepoEvidenceKind, RepoEvidenceRef, RunCheckpointRef, RunStore, StoreError, StoredRunSummary,
@@ -664,13 +664,19 @@ async fn retrieve_knowledge(
             role: request.role,
             query: request.query,
             requested_context: request.requested_context,
+            backend: request.backend.unwrap_or_default(),
+            scope: request.scope,
             tags: request.tags.unwrap_or_default(),
             token_budget: request.token_budget,
-            max_results: request.max_results,
+            max_results: request.max_results.or(request.top_k),
             include_content: request.include_content.unwrap_or(false),
         },
     )?;
-    Ok(Json(KnowledgeRetrieveResponse { results }))
+    let hits = results
+        .iter()
+        .map(KnowledgeRetrievalHit::from_hint)
+        .collect();
+    Ok(Json(KnowledgeRetrieveResponse { results, hits }))
 }
 
 async fn validate_config(Json(request): Json<ConfigValidationRequest>) -> Json<ValidationReport> {
@@ -1985,8 +1991,11 @@ pub struct KnowledgeRetrieveApiRequest {
     pub role: AgentMemoryRole,
     pub query: String,
     pub requested_context: MemoryAllowedContext,
+    pub backend: Option<RetrievalBackendKind>,
+    pub scope: Option<String>,
     pub tags: Option<Vec<String>>,
     pub token_budget: Option<usize>,
+    pub top_k: Option<usize>,
     pub max_results: Option<usize>,
     pub include_content: Option<bool>,
 }
@@ -1994,6 +2003,7 @@ pub struct KnowledgeRetrieveApiRequest {
 #[derive(Debug, Serialize)]
 pub struct KnowledgeRetrieveResponse {
     pub results: Vec<coder_memory::KnowledgeHint>,
+    pub hits: Vec<KnowledgeRetrievalHit>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3641,7 +3651,33 @@ mod tests {
             retrieve_body["results"][0]["requires_repo_verification"],
             true
         );
+        assert_eq!(retrieve_body["results"][0]["backend"], "lexical");
+        assert_eq!(retrieve_body["hits"][0]["backend"], "lexical");
+        assert_eq!(retrieve_body["hits"][0]["source_id"], source_id);
         assert_eq!(retrieve_body["results"][0]["content_preview"], Value::Null);
+
+        let dense_response = post_json(
+            app.clone(),
+            "/api/v3/knowledge/retrieve",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "role": "workflow_supervisor",
+                "query": "workflow evidence coder server",
+                "requested_context": "planner_order",
+                "backend": "dense_mock",
+                "scope": "project",
+                "top_k": 5,
+                "include_content": true
+            }),
+        )
+        .await;
+        let dense_body = response_json(dense_response).await;
+        assert_eq!(dense_body["results"][0]["backend"], "dense_mock");
+        assert_eq!(dense_body["hits"][0]["backend"], "dense_mock");
+        assert!(dense_body["hits"][0]["evidence_ref"]
+            .as_str()
+            .unwrap()
+            .starts_with("knowledge://"));
 
         let denied_response = post_json(
             app,
