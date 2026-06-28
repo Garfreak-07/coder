@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    env, fs,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -55,6 +55,7 @@ pub struct ApiState {
     library_workflows: Arc<Mutex<BTreeMap<String, Value>>>,
     planner_sessions: Arc<Mutex<BTreeMap<String, PlannerChatSession>>>,
     installed_skills: Arc<Mutex<BTreeMap<String, InstalledSkillRecord>>>,
+    provider_settings: Arc<Mutex<ProviderSettings>>,
 }
 
 impl ApiState {
@@ -64,6 +65,7 @@ impl ApiState {
             library_workflows: Arc::new(Mutex::new(BTreeMap::new())),
             planner_sessions: Arc::new(Mutex::new(BTreeMap::new())),
             installed_skills: Arc::new(Mutex::new(BTreeMap::new())),
+            provider_settings: Arc::new(Mutex::new(ProviderSettings::default())),
         }
     }
 }
@@ -155,6 +157,12 @@ pub fn router(state: ApiState) -> Router {
             post(set_skill_update_policy),
         )
         .route("/api/v3/harness/tools", get(list_harness_tools))
+        .route(
+            "/api/v3/providers/settings",
+            get(get_provider_settings).post(save_provider_settings),
+        )
+        .route("/api/v3/providers/status", get(get_provider_status))
+        .route("/api/v3/providers/test", post(test_provider_status))
         .route("/api/v3/runs", get(list_runs).post(run_workflow))
         .route("/api/v3/runs/preview", post(preview_run))
         .route(
@@ -265,7 +273,14 @@ async fn capabilities() -> Json<CapabilitiesResponse> {
             "patch_apply",
         ],
         planner_chat: vec!["sessions", "turns", "discuss_no_execute", "work_preview"],
-        settings: vec!["provider_profiles_deferred"],
+        settings: vec![
+            "provider_settings",
+            "provider_status",
+            "provider_test_offline",
+            "openai_compatible_profiles",
+            "deepseek_compatible_profile",
+            "secret_refs_only",
+        ],
         extensions: vec![
             "plugins_list",
             "plugin_validate",
@@ -1015,6 +1030,48 @@ async fn list_harness_tools(Query(query): Query<ToolRegistryQuery>) -> Json<Tool
     Json(ToolRegistryResponse {
         tools: registry.list_tools(query.harness_id.as_deref()),
         harness_id: query.harness_id,
+    })
+}
+
+async fn get_provider_settings(State(state): State<ApiState>) -> Json<ProviderSettingsResponse> {
+    Json(ProviderSettingsResponse {
+        settings: state.provider_settings.lock().unwrap().clone(),
+    })
+}
+
+async fn save_provider_settings(
+    State(state): State<ApiState>,
+    Json(request): Json<ProviderSettingsPatch>,
+) -> Json<ProviderSettingsSaveResponse> {
+    let mut settings = state.provider_settings.lock().unwrap();
+    apply_provider_settings_patch(&mut settings, request);
+    let status = provider_status(&settings, None);
+    Json(ProviderSettingsSaveResponse {
+        settings: settings.clone(),
+        status,
+    })
+}
+
+async fn get_provider_status(State(state): State<ApiState>) -> Json<ProviderStatus> {
+    Json(provider_status(
+        &state.provider_settings.lock().unwrap(),
+        None,
+    ))
+}
+
+async fn test_provider_status(
+    State(state): State<ApiState>,
+    Json(request): Json<ProviderTestRequest>,
+) -> Json<ProviderTestResponse> {
+    let settings = state.provider_settings.lock().unwrap();
+    let provider = request
+        .provider
+        .as_deref()
+        .map(normalize_provider)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| settings.default_provider.clone());
+    Json(ProviderTestResponse {
+        status: provider_status(&settings, Some(vec![provider])),
     })
 }
 
@@ -1908,6 +1965,82 @@ struct InstalledSkillRecord {
     history: Vec<SkillSummary>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderKeyState {
+    pub configured: bool,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderSettings {
+    pub default_provider: String,
+    pub default_model: String,
+    pub base_urls: BTreeMap<String, String>,
+    pub api_keys: BTreeMap<String, ProviderKeyState>,
+    pub mock_mode: bool,
+}
+
+impl Default for ProviderSettings {
+    fn default() -> Self {
+        Self {
+            default_provider: "openai".to_owned(),
+            default_model: "gpt-4.1-mini".to_owned(),
+            base_urls: BTreeMap::new(),
+            api_keys: BTreeMap::new(),
+            mock_mode: true,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProviderSettingsPatch {
+    pub default_provider: Option<String>,
+    pub default_model: Option<String>,
+    pub base_urls: Option<BTreeMap<String, String>>,
+    pub api_keys: Option<BTreeMap<String, Value>>,
+    pub mock_mode: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderSettingsResponse {
+    pub settings: ProviderSettings,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderSettingsSaveResponse {
+    pub settings: ProviderSettings,
+    pub status: ProviderStatus,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProviderTestRequest {
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderTestResponse {
+    pub status: ProviderStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderStatusItem {
+    pub provider: String,
+    pub configured: bool,
+    pub credential_configured: bool,
+    pub credential_source: String,
+    pub base_url: Option<String>,
+    pub mode: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProviderStatus {
+    pub default_provider: String,
+    pub default_model: String,
+    pub mock_mode: bool,
+    pub default_status: ProviderStatusItem,
+    pub providers: Vec<ProviderStatusItem>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ToolRegistryQuery {
     pub harness_id: Option<String>,
@@ -2279,6 +2412,182 @@ fn set_skill_enabled(
         deleted: false,
         updated: Vec::new(),
     }))
+}
+
+fn apply_provider_settings_patch(settings: &mut ProviderSettings, patch: ProviderSettingsPatch) {
+    if let Some(provider) = patch.default_provider {
+        let provider = normalize_provider(&provider);
+        if !provider.is_empty() {
+            settings.default_provider = provider;
+        }
+    }
+    if let Some(model) = patch.default_model {
+        let model = model.trim();
+        if !model.is_empty() {
+            settings.default_model = model.to_owned();
+        }
+    }
+    if let Some(mock_mode) = patch.mock_mode {
+        settings.mock_mode = mock_mode;
+    }
+    if let Some(base_urls) = patch.base_urls {
+        settings.base_urls = clean_provider_string_map(base_urls);
+    }
+    if let Some(api_keys) = patch.api_keys {
+        for (provider, value) in api_keys {
+            let provider = normalize_provider(&provider);
+            if provider.is_empty() {
+                continue;
+            }
+            if value.is_null() {
+                settings.api_keys.remove(&provider);
+                continue;
+            }
+            let text = value.as_str().map(str::trim).unwrap_or_default();
+            if text.is_empty() || text.chars().all(|ch| ch == '*') {
+                continue;
+            }
+            settings.api_keys.insert(
+                provider,
+                ProviderKeyState {
+                    configured: true,
+                    source: "settings".to_owned(),
+                },
+            );
+        }
+    }
+}
+
+fn provider_status(settings: &ProviderSettings, providers: Option<Vec<String>>) -> ProviderStatus {
+    let selected = providers.unwrap_or_else(|| {
+        let mut names = provider_env_keys().keys().cloned().collect::<BTreeSet<_>>();
+        names.insert(settings.default_provider.clone());
+        names.extend(settings.api_keys.keys().cloned());
+        names.into_iter().collect()
+    });
+    let providers = selected
+        .into_iter()
+        .map(|provider| provider_status_item(settings, &normalize_provider(&provider)))
+        .collect::<Vec<_>>();
+    ProviderStatus {
+        default_provider: settings.default_provider.clone(),
+        default_model: settings.default_model.clone(),
+        mock_mode: settings.mock_mode,
+        default_status: provider_status_item(settings, &settings.default_provider),
+        providers,
+    }
+}
+
+fn provider_status_item(settings: &ProviderSettings, provider: &str) -> ProviderStatusItem {
+    let provider = if provider.trim().is_empty() {
+        "openai"
+    } else {
+        provider.trim()
+    };
+    let (credential_configured, credential_source) = provider_credential_state(settings, provider);
+    let configured = provider == "ollama" || credential_configured || settings.mock_mode;
+    ProviderStatusItem {
+        provider: provider.to_owned(),
+        configured,
+        credential_configured: provider == "ollama" || credential_configured,
+        credential_source: if provider == "ollama" {
+            "ollama".to_owned()
+        } else {
+            credential_source
+        },
+        base_url: provider_base_url(settings, provider),
+        mode: if settings.mock_mode && !credential_configured && provider != "ollama" {
+            "mock"
+        } else {
+            "live"
+        }
+        .to_owned(),
+    }
+}
+
+fn provider_credential_state(settings: &ProviderSettings, provider: &str) -> (bool, String) {
+    let env_keys = provider_env_keys();
+    let env_name = env_keys
+        .get(provider)
+        .map(String::as_str)
+        .unwrap_or("CODER_API_KEY");
+    if env::var_os(env_name).is_some() || env::var_os("CODER_API_KEY").is_some() {
+        return (true, "environment".to_owned());
+    }
+    if settings
+        .api_keys
+        .get(provider)
+        .map(|state| state.configured)
+        .unwrap_or(false)
+    {
+        return (true, "settings".to_owned());
+    }
+    (false, "missing".to_owned())
+}
+
+fn provider_base_url(settings: &ProviderSettings, provider: &str) -> Option<String> {
+    if let Some(value) = env::var_os("CODER_BASE_URL").and_then(|value| value.into_string().ok()) {
+        if !value.trim().is_empty() {
+            return Some(value);
+        }
+    }
+    settings
+        .base_urls
+        .get(provider)
+        .cloned()
+        .or_else(|| default_provider_base_url(provider).map(str::to_owned))
+}
+
+fn provider_env_keys() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("openai".to_owned(), "OPENAI_API_KEY".to_owned()),
+        ("openai-compatible".to_owned(), "CODER_API_KEY".to_owned()),
+        ("deepseek".to_owned(), "DEEPSEEK_API_KEY".to_owned()),
+        ("moonshot".to_owned(), "MOONSHOT_API_KEY".to_owned()),
+        ("kimi".to_owned(), "MOONSHOT_API_KEY".to_owned()),
+        ("qwen".to_owned(), "DASHSCOPE_API_KEY".to_owned()),
+        ("dashscope".to_owned(), "DASHSCOPE_API_KEY".to_owned()),
+        ("groq".to_owned(), "GROQ_API_KEY".to_owned()),
+        ("openrouter".to_owned(), "OPENROUTER_API_KEY".to_owned()),
+        ("together".to_owned(), "TOGETHER_API_KEY".to_owned()),
+        ("mistral".to_owned(), "MISTRAL_API_KEY".to_owned()),
+        ("perplexity".to_owned(), "PERPLEXITY_API_KEY".to_owned()),
+        ("xai".to_owned(), "XAI_API_KEY".to_owned()),
+        ("gemini".to_owned(), "GEMINI_API_KEY".to_owned()),
+        ("ollama".to_owned(), "OLLAMA_API_KEY".to_owned()),
+    ])
+}
+
+fn default_provider_base_url(provider: &str) -> Option<&'static str> {
+    match provider {
+        "deepseek" => Some("https://api.deepseek.com"),
+        "moonshot" | "kimi" => Some("https://api.moonshot.cn/v1"),
+        "qwen" | "dashscope" => Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+        "groq" => Some("https://api.groq.com/openai/v1"),
+        "openrouter" => Some("https://openrouter.ai/api/v1"),
+        "together" => Some("https://api.together.xyz/v1"),
+        "mistral" => Some("https://api.mistral.ai/v1"),
+        "perplexity" => Some("https://api.perplexity.ai"),
+        "xai" => Some("https://api.x.ai/v1"),
+        "gemini" => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+        "ollama" => Some("http://localhost:11434/v1"),
+        _ => None,
+    }
+}
+
+fn normalize_provider(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
+fn clean_provider_string_map(values: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    values
+        .into_iter()
+        .filter_map(|(provider, value)| {
+            let provider = normalize_provider(&provider);
+            let value = value.trim().to_owned();
+            (!provider.is_empty() && !value.is_empty()).then_some((provider, value))
+        })
+        .collect()
 }
 
 fn resolve_repo_relative_path(repo_root: &str, relative_path: &str) -> Result<PathBuf, ApiError> {
@@ -3494,6 +3803,77 @@ mod tests {
             .find(|tool| tool["capability"]["name"] == "apply_patch_sandbox")
             .unwrap();
         assert_eq!(patch_tool["requires_approval"], true);
+    }
+
+    #[tokio::test]
+    async fn provider_settings_endpoints_store_secret_refs_without_returning_keys() {
+        let app = test_router();
+        let initial = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/providers/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let initial_body = response_json(initial).await;
+        assert_eq!(initial_body["settings"]["default_provider"], "openai");
+
+        let save = post_json(
+            app.clone(),
+            "/api/v3/providers/settings",
+            json!({
+                "default_provider": "deepseek",
+                "default_model": "deepseek-chat",
+                "base_urls": {"deepseek": "https://api.deepseek.com"},
+                "api_keys": {"deepseek": "sk-secret-value"},
+                "mock_mode": false
+            }),
+        )
+        .await;
+        assert_eq!(save.status(), StatusCode::OK);
+        let save_body = response_json(save).await;
+        assert_eq!(save_body["settings"]["default_provider"], "deepseek");
+        assert_eq!(
+            save_body["settings"]["api_keys"]["deepseek"]["configured"],
+            true
+        );
+        assert_eq!(
+            save_body["settings"]["api_keys"]["deepseek"]["source"],
+            "settings"
+        );
+        assert!(!save_body.to_string().contains("sk-secret-value"));
+        assert_eq!(save_body["status"]["default_model"], "deepseek-chat");
+        assert_eq!(
+            save_body["status"]["default_status"]["base_url"],
+            "https://api.deepseek.com"
+        );
+
+        let test = post_json(
+            app.clone(),
+            "/api/v3/providers/test",
+            json!({"provider": "deepseek"}),
+        )
+        .await;
+        let test_body = response_json(test).await;
+        assert_eq!(test_body["status"]["providers"][0]["provider"], "deepseek");
+        assert_eq!(
+            test_body["status"]["providers"][0]["credential_configured"],
+            true
+        );
+
+        let remove = post_json(
+            app,
+            "/api/v3/providers/settings",
+            json!({
+                "api_keys": {"deepseek": null}
+            }),
+        )
+        .await;
+        let remove_body = response_json(remove).await;
+        assert!(remove_body["settings"]["api_keys"]["deepseek"].is_null());
     }
 
     #[tokio::test]

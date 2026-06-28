@@ -333,11 +333,18 @@ export function importDeveloperSkill(path: string): Promise<Record<string, unkno
 }
 
 export async function getProviderSettings(): Promise<ProviderSettings> {
+  if (shouldUseRustApiV3()) {
+    const payload = await requestJson<{ settings: ProviderSettings }>("/api/v3/providers/settings");
+    return payload.settings;
+  }
   const payload = await requestJson<{ settings: ProviderSettings }>("/api/v2/providers/settings");
   return payload.settings;
 }
 
 export function getProviderStatus(): Promise<ProviderStatus> {
+  if (shouldUseRustApiV3()) {
+    return requestJson<ProviderStatus>("/api/v3/providers/status");
+  }
   return requestJson<ProviderStatus>("/api/v2/providers/status");
 }
 
@@ -345,6 +352,13 @@ export async function saveProviderSettings(input: Record<string, unknown>): Prom
   settings: ProviderSettings;
   status: ProviderStatus;
 }> {
+  if (shouldUseRustApiV3()) {
+    return requestJson("/api/v3/providers/settings", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify(input)
+    });
+  }
   return requestJson("/api/v2/providers/settings", {
     method: "POST",
     headers: jsonHeaders,
@@ -353,6 +367,14 @@ export async function saveProviderSettings(input: Record<string, unknown>): Prom
 }
 
 export async function testProvider(provider: string): Promise<ProviderStatus> {
+  if (shouldUseRustApiV3()) {
+    const payload = await requestJson<{ status: ProviderStatus }>("/api/v3/providers/test", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ provider })
+    });
+    return payload.status;
+  }
   const payload = await requestJson<{ status: ProviderStatus }>("/api/v2/providers/test", {
     method: "POST",
     headers: jsonHeaders,
