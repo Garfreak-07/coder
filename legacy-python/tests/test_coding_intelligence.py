@@ -19,10 +19,13 @@ from coder_workbench.coding import (
 )
 from coder_workbench.coding.sandbox import sandbox_apply_and_check
 
+LEGACY_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class CodingIntelligenceTests(unittest.TestCase):
     def test_repo_index_detects_current_python_and_frontend_stack(self) -> None:
-        root = Path(__file__).resolve().parents[1]
+        root = REPO_ROOT
 
         repo_index = build_repo_index(root)
         commands = discover_commands(root)
@@ -32,17 +35,23 @@ class CodingIntelligenceTests(unittest.TestCase):
         self.assertIn("fastapi", repo_index.frameworks)
         self.assertIn("react", repo_index.frameworks)
         self.assertIn("vite", repo_index.frameworks)
-        self.assertIn("src", repo_index.source_dirs)
+        self.assertIn("legacy-python/src", repo_index.source_dirs)
         self.assertIn("frontend/src", repo_index.source_dirs)
-        self.assertIn("tests", repo_index.test_dirs)
-        self.assertIn("pyproject.toml", repo_index.important_files)
+        self.assertIn("legacy-python/tests", repo_index.test_dirs)
+        self.assertIn("legacy-python/pyproject.toml", repo_index.important_files)
         self.assertIn("frontend/package.json", repo_index.important_files)
         self.assertIn(".env", repo_index.risk_files)
-        self.assertTrue(any(command.command == "python -m unittest discover -s tests" for command in commands.test_commands))
+        self.assertTrue(
+            any(
+                command.command == "python -m unittest discover -s tests"
+                and command.cwd == "legacy-python"
+                for command in commands.test_commands
+            )
+        )
         self.assertTrue(any(command.command == "npm run build" and command.cwd == "frontend" for command in commands.build_commands))
 
     def test_symbol_index_extracts_python_classes_with_regex_fallback(self) -> None:
-        root = Path(__file__).resolve().parents[1]
+        root = LEGACY_ROOT
 
         symbol_index = build_symbol_index(root, paths=["src/coder_workbench/agent_graph/runner.py"])
 
@@ -51,7 +60,7 @@ class CodingIntelligenceTests(unittest.TestCase):
         self.assertTrue(any(symbol.name == "AgentGraphRunner" and symbol.kind == "class" for symbol in runner_file.symbols))
 
     def test_context_builder_selects_relevant_files_without_whole_repo(self) -> None:
-        root = Path(__file__).resolve().parents[1]
+        root = LEGACY_ROOT
         intelligence = build_repo_intelligence(root, max_symbol_files=80)
         envelope = AgentTaskEnvelope(
             round=1,
@@ -90,7 +99,7 @@ class CodingIntelligenceTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
 
     def test_eval_fixture_outputs_report(self) -> None:
-        root = Path(__file__).resolve().parents[1]
+        root = LEGACY_ROOT
         task = load_coding_task(root / "tests" / "fixtures" / "coding_tasks" / "python_bugfix_001.json")
 
         report = evaluate_fake_coding_task(task)

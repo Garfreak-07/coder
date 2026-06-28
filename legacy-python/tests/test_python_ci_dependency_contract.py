@@ -5,12 +5,13 @@ import unittest
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+LEGACY_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PythonCiDependencyContractTests(unittest.TestCase):
     def test_openhands_extra_declares_sdk_and_tool_packages(self) -> None:
-        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        pyproject = tomllib.loads((LEGACY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
         openhands_extra = pyproject["project"]["optional-dependencies"]["openhands"]
 
@@ -20,7 +21,8 @@ class PythonCiDependencyContractTests(unittest.TestCase):
     def test_python_ci_installs_openhands_extra_before_unittest_discovery(self) -> None:
         ci_workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-        install_index = ci_workflow.index('python -m pip install -e ".[openhands]"')
+        self.assertIn("working-directory: legacy-python", ci_workflow)
+        install_index = ci_workflow.index('python -m pip install -e ".[openhands,rag]"')
         test_index = ci_workflow.index("python -m unittest discover -s tests")
 
         self.assertLess(install_index, test_index)

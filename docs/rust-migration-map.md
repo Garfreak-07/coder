@@ -1,9 +1,9 @@
 # Rust Migration Map
 
-This document maps current Python/React subsystems to Rust-first equivalents.
+This document maps legacy Python/React subsystems to Rust-first equivalents.
 It complements `docs/current-feature-inventory.md` and defines deletion gates:
-no Python subsystem may be removed or moved to `legacy-python/` until its user
-behavior is covered by a Rust equivalent and tests listed here.
+no quarantined Python subsystem may be removed from `legacy-python/` until its
+user behavior is covered by a Rust equivalent and tests listed here.
 
 ## Migration Phases
 
@@ -19,32 +19,27 @@ behavior is covered by a Rust equivalent and tests listed here.
 | Phase 7 | Quarantine/delete legacy internals | Remove any user-visible behavior silently |
 | Separate | MIT license migration after ownership confirmation | Combine license churn with runtime rewrites |
 
-## Current Phase 12 Decision
+## Current Phase 13 Decision
 
 Rust v3 is the default product path. The React app resolves API calls to
 `/api/v3/*` unless the user explicitly requests the legacy v2 path with
 `VITE_CODER_API_VERSION=v2`, `CODER_USE_RUST_API=0`,
 `?coder_api_version=v2`, or local storage key `coder_api_version=v2`.
 
-Python is not physically moved to `legacy-python/` in this checkpoint. It is an
-explicit legacy compatibility path for v2 fallback, older API clients, and the
-remaining Python regression suite. Physical quarantine is allowed only after:
+Python is physically moved to `legacy-python/` in this checkpoint. It is an
+explicit legacy compatibility path for `/api/v2/*` fallback, older API clients,
+and the remaining Python regression suite. The root package no longer exposes a
+normal Python install path.
 
-- remaining v2-only inspection helpers have Rust/frontend replacements or are
-  retired,
-- Python compatibility tests have equivalent Rust/frontend coverage or are
-  moved to an explicit legacy CI job,
-- docs and packaging no longer expose Python as an ordinary product path,
-- CI is green with Python marked as legacy rather than default product runtime.
-
-Until then, Python is treated as legacy compatibility code: kept buildable,
-tested in CI, and excluded from new Rust control-plane ownership.
+The legacy package remains buildable and tested in CI from `legacy-python/`.
+Future deletion or retirement still requires equivalent Rust/frontend coverage
+or a documented compatibility removal decision.
 
 ## Subsystem Mapping
 
 | Current subsystem | Current files | Rust target | Migration action | Deletion gate |
 |---|---|---|---|---|
-| Planner Chat sessions | `server/planner_chat_sessions.py`, `server/app.py`, planner chat frontend | `coder-core` run/session types, `coder-server` API, `coder-agent` prompt rendering | Rust v3 session/turn endpoints and a gated frontend adapter cover baseline discuss/work readiness; v2 remains the compatibility fallback for richer live session behavior | Discuss/work behavior has parity tests and UI uses Rust API by default |
+| Planner Chat sessions | `legacy-python/src/coder_workbench/server/planner_chat_sessions.py`, `legacy-python/src/coder_workbench/server/app.py`, planner chat frontend | `coder-core` run/session types, `coder-server` API, `coder-agent` prompt rendering | Rust v3 session/turn endpoints and a gated frontend adapter cover baseline discuss/work readiness; v2 remains the compatibility fallback for richer live session behavior | Discuss/work behavior has parity tests and UI uses Rust API by default |
 | Legacy draft/confirm | `planner-chat/draft`, `planner-chat/confirm` | Rust run preview and confirmation gate | Frontend v3 adapter maps draft/confirm to `/api/v3/runs/preview` and `/api/v3/runs`; v2 remains fallback | Existing frontend no longer depends on legacy draft payloads |
 | Agent workflow model | `core/agent_workflow.py`, `frontend/src/types.ts` | `coder-config::AgentSpec`, `HarnessSpec`, `WorkflowSpec`, UI protocol DTOs | Add adapters between legacy JSON and specs | Roundtrip preserves layout, max rounds, agents, harness bindings |
 | Workflow canvas | `frontend/src/features/agent-workflow`, `workflowGraph.ts` | Frontend adapter plus Rust validation API | Validate spec through Rust when available, keep current UI simple | Browser/UI tests prove save/import/export parity |
@@ -53,7 +48,7 @@ tested in CI, and excluded from new Rust control-plane ownership.
 | Runtime provider selection | `HarnessRuntimeManager` | Backend registry | Keep manager until Rust registry dispatches mock/native/OpenHands | Rust dispatch covers OpenHands enabled/unavailable/fallback cases |
 | OpenHands provider | `openhands_provider.py`, `openhands_tools` | `coder-openhands` | Implement external Agent Server health, send, stream, normalize | Real or simulated OpenHands events stored as Coder JSONL |
 | Internal fallback | `fallback_provider.py` | Mock/native Rust backend | Implement mock workflow runner and later native tools | Python fallback unused by default and tests pass on Rust mock/native |
-| ActionGateway/tool execution | `actions/*` | `coder-tools`, `coder-sandbox`, Rust tool gateway | Ported command preview plus patch preview/apply API paths with side-effect eventing; Rust `coder-harness` and v3 API now mirror tool registry filtering, plugin operation approval policy, and MCP manifest validation | Patch/command/plugin/MCP policy tests pass in Rust |
+| ActionGateway/tool execution | `legacy-python/src/coder_workbench/actions/*` | `coder-tools`, `coder-sandbox`, Rust tool gateway | Ported command preview plus patch preview/apply API paths with side-effect eventing; Rust `coder-harness` and v3 API now mirror tool registry filtering, plugin operation approval policy, and MCP manifest validation | Patch/command/plugin/MCP policy tests pass in Rust |
 | Patch pipeline | `coding/patch_*` | Rust patch tool with artifact refs | Added path-safe patch preview plus approval-gated patch apply with check-before-apply and patch lifecycle events | Rollback and scope safety tests pass |
 | Command checks | `coding/command_*` | Rust command runner | Started with policy-gated argv runner, side-effect-free API approval preview, cwd scoping, timeout, bounded output, and CLI event recording; add richer report integration next | Command tests pass and approval events emitted |
 | Event model | `agent_graph/events.py`, run events stores | `coder-events` | Promote canonical JSONL event envelope with sequence IDs | Replay/listing tests cover current live/stored events |
@@ -69,7 +64,7 @@ tested in CI, and excluded from new Rust control-plane ownership.
 | Knowledge import/RAG | `memory/knowledge_import.py`, `hybrid_*` | `coder-memory`, `coder-rag` | Port lexical retrieval first, dense optional later | ACL and hint-only behavior covered |
 | Extensions/plugins | `extensions/*` | `coder-extensions` plugin registry | Rust plugin/harness-runtime manifest types, builtin plugin manifests, external-effect preview validation, extension search, installed list, and v3 list/validate API are in place; execution remains approval-gated/deferred | External-effect approval and manifest tests pass |
 | Skills | `skills/*` | Rust skill store/router | Rust v3 covers installed/discover/updates/install/update/auto-update/enable/disable/remove/pin/unpin/rollback/update-policy; unsafe developer import is denied in the baseline | Skill lifecycle tests pass |
-| MCP | `tools/mcp.py`, registries | Rust MCP registry/server/client | Rust `coder-harness` and v3 API now validate MCP manifests, force server/operation default enablement off, and keep operations approval-required; execution/client support remains later | Manifest validation and no-auto-enable tests pass |
+| MCP | `legacy-python/src/coder_workbench/tools/mcp.py`, registries | Rust MCP registry/server/client | Rust `coder-harness` and v3 API validate MCP manifests, force server/operation default enablement off, and provide the tested Rust execution baseline; richer remote-server compatibility remains a future enhancement | Manifest validation, no-auto-enable, and mock execution tests pass |
 | Provider settings | `server/settings.py`, frontend settings | `coder-model` profiles and Rust settings API | Keep secret refs only, redact values | Provider status/test behavior has Rust parity |
 | Python CLI | `cli.py` | `coder-cli` | Add Rust commands while keeping Python CLI | Rust CLI can run and inspect mock/OpenHands spike workflows |
 | FastAPI server | `server/app.py` | `coder-server` Axum API v3 | Added v3 health, validation, workflow/library, planner-chat baseline, run/event/report/store reads, tools, memory, extensions/skills/MCP, provider settings, command preview/run, and patch preview/apply endpoints; preserve v2 until frontend default migrates | Frontend can run against Rust server for main flow |
@@ -124,8 +119,8 @@ The workflow canvas can move to Rust-backed specs only when:
 ## Deletion Rules
 
 - Delete internal concepts only, not capabilities.
-- Do not delete Python code in the same change that introduces an unproven Rust
-  equivalent.
+- Do not delete quarantined Python code in the same change that introduces an
+  unproven Rust equivalent.
 - Do not remove OpenHands, canvas, custom agents/workflows/harnesses, memory,
   evidence, or run control.
 - If a subsystem is ambiguous, mark it `UNKNOWN_NEEDS_INVESTIGATION` and keep it.

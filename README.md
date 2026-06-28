@@ -31,8 +31,8 @@ kept for explicit legacy fallback and compatibility tests.
 
 ## Install
 
-Requires Rust, Node.js, and Python 3.12 or newer for legacy compatibility
-tests.
+Requires Rust and Node.js for the default Rust v3 product path. Python 3.12 or
+newer is required only for the quarantined legacy v2 compatibility suite.
 
 ```powershell
 git clone https://github.com/Garfreak-07/Coder.git
@@ -45,23 +45,14 @@ cd ..
 Legacy Python compatibility install:
 
 ```powershell
+cd legacy-python
 python -m venv .venv
 .\.venv\Scripts\activate
-pip install -e .
+python -m pip install -e ".[openhands,rag]"
 ```
 
-Optional RAG dependencies:
-
-```powershell
-pip install -e .[rag]
-```
-
-OpenHands SDK compatibility tools are optional for local runtime use but are
-installed for the full Python compatibility test suite:
-
-```powershell
-pip install -e .[openhands]
-```
+The legacy package lives under `legacy-python/` and is not installed from the
+repository root.
 
 ## Run Locally
 
@@ -82,10 +73,17 @@ Open `http://127.0.0.1:5173`. Vite proxies `/api/*` to
 `http://127.0.0.1:8876`. The frontend defaults to Rust API v3.
 
 To force the legacy Python/FastAPI v2 path for one session, start the Python
-server and set one explicit v2 override:
+server:
 
 ```powershell
+cd legacy-python
+.\.venv\Scripts\activate
 .\.venv\Scripts\coder-api.exe --host 127.0.0.1 --port 8876
+```
+
+In another terminal, set one explicit v2 override for the frontend:
+
+```powershell
 cd frontend
 $env:VITE_CODER_API_VERSION="v2"
 npm.cmd run dev
@@ -96,12 +94,13 @@ Equivalent v2 overrides are `CODER_USE_RUST_API=0`, query string
 
 ## Test
 
-Python:
+Legacy Python:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[openhands]"
-.\.venv\Scripts\python.exe -m unittest discover -s tests
-.\.venv\Scripts\python.exe -m compileall src tests
+cd legacy-python
+python -m pip install -e ".[openhands,rag]"
+python -m unittest discover -s tests
+python -m compileall src tests
 ```
 
 Rust:
@@ -123,8 +122,8 @@ npm.cmd run build
 ## Rust Track
 
 The Rust workspace owns the default Coder control plane. The Python tree is
-retained as a legacy compatibility path and is not part of the ordinary local
-product run path.
+physically quarantined under `legacy-python/` as an explicit compatibility path
+and is not part of the ordinary local product run path.
 
 Current Rust stabilization includes:
 
@@ -190,19 +189,18 @@ SDK-style OpenHands servers.
 - Product live Agent workflows must run through AgentGraph.
 - Current code facts must be grounded in repo evidence: native search/read,
   tests, logs, or diffs.
-- Rust v3 is the default product path; keep v2/Python available only as an
-  explicit compatibility fallback while replacement coverage is completed.
-- Do not physically quarantine or delete Python until compatibility tests are
-  replaced or retired and CI remains green.
-- Do not migrate the license to MIT without explicit ownership/contributor
-  approval in a separate license-only change.
+- Rust v3 is the default product path; keep v2/Python available only through
+  the explicit `legacy-python/` compatibility fallback until it is retired.
+- Legacy Python must remain buildable from `legacy-python/` while v2
+  compatibility is supported.
+- License changes are performed separately from runtime changes.
 
 More detailed design notes live under `docs/`.
 
 ## Secrets
 
-Do not commit API keys or local secrets. Copy `.env.example` to `.env` for
-local model configuration. `.env`, `.env.local`, and `.local-env.ps1` are
+Do not commit API keys or local secrets. Legacy Python provider samples live in
+`legacy-python/.env.example`. `.env`, `.env.local`, and `.local-env.ps1` are
 ignored by Git.
 
 ## License

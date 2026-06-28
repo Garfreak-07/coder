@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from coder_workbench.server.app import create_app
 
 
-ROOT = Path(__file__).resolve().parents[1]
+LEGACY_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 REMOVED_FILES = [
@@ -53,7 +54,7 @@ class NoLegacyWorkflowRuntimeTests(unittest.TestCase):
     def test_legacy_runtime_files_are_removed(self) -> None:
         for relative_path in REMOVED_FILES:
             with self.subTest(path=relative_path):
-                self.assertFalse((ROOT / relative_path).exists())
+                self.assertFalse((LEGACY_ROOT / relative_path).exists())
 
     def test_core_and_runtime_do_not_export_legacy_symbols(self) -> None:
         core = importlib.import_module("coder_workbench.core")
@@ -113,7 +114,8 @@ class NoLegacyWorkflowRuntimeTests(unittest.TestCase):
 
 
 def _source_files(relative_root: str) -> list[Path]:
-    root = ROOT / relative_root
+    base = ROOT if relative_root.startswith("frontend/") else LEGACY_ROOT
+    root = base / relative_root
     return [
         path
         for path in root.rglob("*")

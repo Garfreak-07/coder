@@ -34,9 +34,15 @@ def build_repo_index(repo_root: str | Path, *, max_files: int = 1000) -> RepoInd
     paths = {str(item.get("path") or "") for item in files}
     languages = _detect_languages(paths)
     frameworks = _detect_frameworks(root, paths)
-    source_dirs = _existing_dirs(root, ["src", "frontend/src", "app", "lib", "packages"])
-    test_dirs = _existing_dirs(root, ["tests", "test", "frontend/tests", "frontend/src/__tests__"])
-    important_files = _important_files(paths)
+    source_dirs = _existing_dirs(
+        root,
+        ["legacy-python/src", "src", "frontend/src", "app", "lib", "packages"],
+    )
+    test_dirs = _existing_dirs(
+        root,
+        ["legacy-python/tests", "tests", "test", "frontend/tests", "frontend/src/__tests__"],
+    )
+    important_files = sorted(set(_important_files(paths)) | set(_explicit_important_files(root)))
     package_managers = _package_managers(root)
     risk_map = build_risk_map(root)
     confidence = "high" if important_files or source_dirs else "medium"
@@ -74,10 +80,11 @@ def _detect_languages(paths: set[str]) -> list[str]:
 
 def _detect_frameworks(root: Path, paths: set[str]) -> list[str]:
     frameworks: set[str] = set()
-    pyproject = _read_pyproject(root / "pyproject.toml")
+    python_project = _python_project_file(root)
+    pyproject = _read_pyproject(python_project)
     dependencies = " ".join(str(item).lower() for item in pyproject.get("project", {}).get("dependencies", []))
-    if not dependencies and (root / "pyproject.toml").exists():
-        dependencies = _read_lower_text(root / "pyproject.toml")
+    if not dependencies and python_project.exists():
+        dependencies = _read_lower_text(python_project)
     if "fastapi" in dependencies:
         frameworks.add("fastapi")
     if "pydantic" in dependencies:
@@ -94,7 +101,7 @@ def _detect_frameworks(root: Path, paths: set[str]) -> list[str]:
             frameworks.add("vite")
         if "next" in deps:
             frameworks.add("nextjs")
-    if "pyproject.toml" in paths or "requirements.txt" in paths:
+    if any(path in paths for path in ["pyproject.toml", "legacy-python/pyproject.toml", "requirements.txt"]):
         frameworks.add("python")
     if any(path == "package.json" or path.endswith("/package.json") for path in paths):
         frameworks.add("node")
@@ -132,9 +139,18 @@ def _important_files(paths: set[str]) -> list[str]:
     return sorted(important)
 
 
+def _explicit_important_files(root: Path) -> list[str]:
+    candidates = ["legacy-python/pyproject.toml", "pyproject.toml"]
+    return [path for path in candidates if (root / path).exists()]
+
+
 def _package_managers(root: Path) -> list[str]:
     managers: set[str] = set()
-    if (root / "pyproject.toml").exists() or (root / "requirements.txt").exists():
+    if (
+        (root / "pyproject.toml").exists()
+        or (root / "legacy-python" / "pyproject.toml").exists()
+        or (root / "requirements.txt").exists()
+    ):
         managers.add("pip")
     if (root / "package-lock.json").exists() or any(root.glob("*/package-lock.json")):
         managers.add("npm")
@@ -153,6 +169,13 @@ def _read_pyproject(path: Path) -> dict[str, Any]:
             return tomllib.load(handle)
     except Exception:
         return {}
+
+
+def _python_project_file(root: Path) -> Path:
+    root_project = root / "pyproject.toml"
+    if root_project.exists():
+        return root_project
+    return root / "legacy-python" / "pyproject.toml"
 
 
 def _read_package_json(path: Path) -> dict[str, Any]:

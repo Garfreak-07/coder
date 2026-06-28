@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
-PRODUCT_PATHS = [ROOT / "src" / "coder_workbench", ROOT / "frontend" / "src"]
+LEGACY_ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
+PRODUCT_PATHS = [LEGACY_ROOT / "src" / "coder_workbench", ROOT / "frontend" / "src"]
 
 FORBIDDEN_GLOBAL_SYMBOLS = [
     "SynthesizerEngine",

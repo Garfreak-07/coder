@@ -26,6 +26,9 @@ from coder_workbench.server.storage import RunStore
 from coder_workbench.server.settings import ProviderSettings
 from coder_workbench.server.app import create_app
 
+LEGACY_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 class ArchitectureBoundaryTests(unittest.TestCase):
     def test_live_agent_runs_use_agentgraph_urls(self) -> None:
@@ -60,7 +63,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
     def test_resume_after_node_is_not_a_normal_runtime_api(self) -> None:
         runner_source = inspect.getsource(__import__("coder_workbench.agent_graph.runner", fromlist=["_"]))
         app_source = inspect.getsource(__import__("coder_workbench.server.app", fromlist=["_"]))
-        frontend_source = (Path(__file__).resolve().parents[1] / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+        frontend_source = (REPO_ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
 
         self.assertNotIn("resume_after_node", runner_source)
         self.assertNotIn("resume_after_node", app_source)
@@ -278,8 +281,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertEqual(result.data["budget_preflight"][0]["reason"], "round_model_call_budget_exceeded")
 
     def test_agent_run_no_longer_imports_obsolete_agent_engine_package(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        agent_engine_dir = root / "src" / "coder_workbench" / "agent_engine"
+        agent_engine_dir = LEGACY_ROOT / "src" / "coder_workbench" / "agent_engine"
         source = inspect.getsource(__import__("coder_workbench.agent_graph.agent_run", fromlist=["_"]))
 
         self.assertFalse(any(agent_engine_dir.glob("*.py")))
@@ -289,7 +291,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertIn("InternalFallbackProvider", source)
 
     def test_ordinary_ui_does_not_expose_legacy_runtime_json_editor(self) -> None:
-        app_source = (Path(__file__).parents[1] / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+        app_source = (REPO_ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
 
         self.assertNotIn("Legacy Runtime Preview JSON", app_source)
         self.assertNotIn("Apply Legacy Runtime JSON", app_source)
@@ -297,7 +299,7 @@ class ArchitectureBoundaryTests(unittest.TestCase):
         self.assertNotIn("jsonText", app_source)
         self.assertNotIn("Apply JSON", app_source)
 
-        frontend_root = Path(__file__).parents[1] / "frontend" / "src"
+        frontend_root = REPO_ROOT / "frontend" / "src"
         frontend_source = "\n".join(
             path.read_text(encoding="utf-8")
             for path in frontend_root.rglob("*")

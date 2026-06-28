@@ -17,6 +17,11 @@ def discover_commands(repo_root: str | Path) -> CommandDiscoveryArtifact:
         test_commands.append(CheckCommand(command="python -m unittest discover -s tests", cwd=".", confidence="high"))
     if _has_python_sources(root):
         build_commands.append(CheckCommand(command="python -m compileall src tests", cwd=".", confidence="medium"))
+    legacy_python = root / "legacy-python"
+    if (legacy_python / "tests").is_dir():
+        test_commands.append(CheckCommand(command="python -m unittest discover -s tests", cwd="legacy-python", confidence="high"))
+    if _has_python_sources(legacy_python):
+        build_commands.append(CheckCommand(command="python -m compileall src tests", cwd="legacy-python", confidence="medium"))
 
     for package_json in sorted(_package_json_files(root)):
         package = _read_package_json(package_json)

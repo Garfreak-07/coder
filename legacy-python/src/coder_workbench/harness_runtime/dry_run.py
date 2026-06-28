@@ -520,9 +520,11 @@ def _trace_readiness_check() -> HarnessDryRunCheck:
 
 def _license_metadata_check(request: HarnessRunRequest) -> HarnessDryRunCheck:
     root = _metadata_root(request)
-    license_text = _read_text(root / "LICENSE")
-    pyproject_text = _read_text(root / "pyproject.toml")
-    frontend_package = _read_json(root / "frontend" / "package.json")
+    repo_root = _repo_metadata_root(root)
+    legacy_root = _legacy_python_metadata_root(repo_root, root)
+    license_text = _read_text(repo_root / "LICENSE")
+    pyproject_text = _read_text(legacy_root / "pyproject.toml")
+    frontend_package = _read_json(repo_root / "frontend" / "package.json")
     checks = {
         "license_agpl": "gnu affero general public license" in license_text.lower(),
         "pyproject_agpl": 'license = "AGPL-3.0-or-later"' in pyproject_text,
@@ -584,6 +586,22 @@ def _metadata_root(request: HarnessRunRequest) -> Path:
     if request.context.repo_root and Path(request.context.repo_root).exists():
         return Path(request.context.repo_root)
     return Path.cwd()
+
+
+def _repo_metadata_root(root: Path) -> Path:
+    root = root.resolve()
+    if (root / "LICENSE").exists():
+        return root
+    if root.name == "legacy-python" and (root.parent / "LICENSE").exists():
+        return root.parent
+    return root
+
+
+def _legacy_python_metadata_root(repo_root: Path, original_root: Path) -> Path:
+    legacy_root = repo_root / "legacy-python"
+    if (legacy_root / "pyproject.toml").exists():
+        return legacy_root
+    return original_root
 
 
 def _read_text(path: Path) -> str:
