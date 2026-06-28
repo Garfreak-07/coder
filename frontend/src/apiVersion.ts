@@ -40,10 +40,20 @@ function readLocalStorageApiVersion(): string | null {
 
 function normalizeApiVersion(value: string | null | undefined): CoderApiVersion {
   const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === "v2" ||
+    normalized === "2" ||
+    normalized === "python" ||
+    normalized === "legacy" ||
+    normalized === "0" ||
+    normalized === "false"
+  ) {
+    return "v2";
+  }
   if (normalized === "v3" || normalized === "3" || normalized === "rust" || normalized === "1" || normalized === "true") {
     return "v3";
   }
-  return "v2";
+  return "v3";
 }
 
 function stringValue(value: unknown): string | null {

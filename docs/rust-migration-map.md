@@ -19,23 +19,23 @@ behavior is covered by a Rust equivalent and tests listed here.
 | Phase 7 | Quarantine/delete legacy internals | Remove any user-visible behavior silently |
 | Separate | MIT license migration after ownership confirmation | Combine license churn with runtime rewrites |
 
-## Current Phase 11 Decision
+## Current Phase 12 Decision
 
-Python is not physically moved to `legacy-python/` in this checkpoint. The v2
-Python/FastAPI tree remains the default compatibility path while the React app
-can opt into Rust API v3 with `VITE_CODER_API_VERSION=v3`,
-`CODER_USE_RUST_API=1`, `?coder_api_version=v3`, or local storage key
-`coder_api_version=v3`.
+Rust v3 is the default product path. The React app resolves API calls to
+`/api/v3/*` unless the user explicitly requests the legacy v2 path with
+`VITE_CODER_API_VERSION=v2`, `CODER_USE_RUST_API=0`,
+`?coder_api_version=v2`, or local storage key `coder_api_version=v2`.
 
-This is an intentional quarantine gate, not a deletion. Moving the Python tree
-now would break the current v2 fallback, Python compatibility tests, and local
-developer entrypoints before the frontend default has switched to v3. Physical
-quarantine is allowed only after:
+Python is not physically moved to `legacy-python/` in this checkpoint. It is an
+explicit legacy compatibility path for v2 fallback, older API clients, and the
+remaining Python regression suite. Physical quarantine is allowed only after:
 
-- the React default path is Rust v3,
-- Planner Chat and run execution no longer depend on v2 live-run streams,
-- Python compatibility tests have Rust/frontend replacements or are retired,
-- CI is green with the Python package no longer on the default product path.
+- remaining v2-only inspection helpers have Rust/frontend replacements or are
+  retired,
+- Python compatibility tests have equivalent Rust/frontend coverage or are
+  moved to an explicit legacy CI job,
+- docs and packaging no longer expose Python as an ordinary product path,
+- CI is green with Python marked as legacy rather than default product runtime.
 
 Until then, Python is treated as legacy compatibility code: kept buildable,
 tested in CI, and excluded from new Rust control-plane ownership.
@@ -73,7 +73,7 @@ tested in CI, and excluded from new Rust control-plane ownership.
 | Provider settings | `server/settings.py`, frontend settings | `coder-model` profiles and Rust settings API | Keep secret refs only, redact values | Provider status/test behavior has Rust parity |
 | Python CLI | `cli.py` | `coder-cli` | Add Rust commands while keeping Python CLI | Rust CLI can run and inspect mock/OpenHands spike workflows |
 | FastAPI server | `server/app.py` | `coder-server` Axum API v3 | Added v3 health, validation, workflow/library, planner-chat baseline, run/event/report/store reads, tools, memory, extensions/skills/MCP, provider settings, command preview/run, and patch preview/apply endpoints; preserve v2 until frontend default migrates | Frontend can run against Rust server for main flow |
-| React app | `frontend/src` | Same app with Rust API adapter | Gated v3 adapter covers workflow/library, run inspection, report/artifact/blob retrieval, provider settings, skills/extensions, Planner Chat baseline, and run preview/confirmation while preserving v2 fallback | Main pages validated through browser smoke |
+| React app | `frontend/src` | Same app with Rust API adapter | Default v3 adapter covers workflow/library, run inspection, report/artifact/blob retrieval, provider settings, skills/extensions, Planner Chat baseline, and run preview/confirmation while preserving explicit v2 fallback | Main pages validated through browser smoke |
 | Tests | `tests/`, frontend build, future Cargo tests | Multi-language CI gates | Keep Python tests until parity tests replace them | Equivalent Rust/frontend tests exist before deleting Python tests |
 
 ## Stable Public Protocol Targets
@@ -82,7 +82,7 @@ tested in CI, and excluded from new Rust control-plane ownership.
 |---|---|---|
 | Specs | YAML/JSON `AgentSpec`, `HarnessSpec`, `WorkflowSpec` | Human-editable, versioned |
 | Events | JSONL with event id, run id, sequence, timestamp, kind, payload, refs | Large payloads by artifact/blob ref |
-| API | `/api/v3/*` JSON and SSE/WebSocket event stream | Keep v2 until frontend migration |
+| API | `/api/v3/*` JSON and event retrieval/streaming | v2 remains explicit legacy fallback |
 | Debug export | JSON/JSONL/Markdown | No binary-only format |
 | Blobs | raw bytes by content hash | Used for logs, diffs, screenshots, long text |
 
@@ -108,7 +108,8 @@ paths such as `/api/conversations`, `/events/search`, `/run`,
 through explicit `openhands.api_paths` and `openhands.run_start_strategy`
 configuration.
 
-Until then, current Python OpenHands paths remain available.
+Python OpenHands paths remain available only through the explicit legacy v2
+fallback while Rust OpenHands support owns new control-plane work.
 
 ## Canvas Migration Gates
 

@@ -1,45 +1,53 @@
 # Coder
 
 Planner-led local coding workbench with a React frontend, a Rust v3 control
-plane track, and a Python/FastAPI v2 compatibility path.
+plane, and a Python/FastAPI v2 legacy compatibility path.
 
 ## Current Product Path
 
-The default local product path remains the Python/FastAPI v2 application while
-the Rust v3 path is validated behind an explicit frontend switch:
+The default local product path is Rust v3. Start the Rust server, run the React
+frontend, and the app uses `/api/v3/*` unless v2 is explicitly requested:
 
 ```text
 User request
 -> Planner Chat
--> AgentGraphRunner / RunController
--> HarnessRuntimeManager
--> OpenHandsRuntimeProvider or InternalFallbackProvider
--> final_report
+-> Rust API v3 run preview / confirmation
+-> WorkflowRunner
+-> native Rust or OpenHands harness backend
+-> stored events / evidence-backed final_report
 ```
 
 The frontend keeps chat, workflow editing, extensions, and settings separate.
-Planning Chat Discuss mode never starts execution. Work mode can start a live
-AgentGraph run only after the Planner has a ready task state.
+Planning Chat Discuss mode never starts execution. Work mode can start a Rust
+run only after readiness and confirmation gates pass.
 
-Rust v3 now covers the ordinary migration surface behind the same React UI:
+Rust v3 covers the ordinary product surface behind the same React UI:
 health/capabilities, role cards, workflow validation/import/export, library
-workflow storage, Planner Chat baseline sessions and run preview/confirmation,
-stored run inspection, evidence-backed reports, repo/command/patch tools,
+workflow storage, Planner Chat sessions and run preview/confirmation, stored
+run inspection, evidence-backed reports, repo/command/patch tools,
 memory/knowledge import and lexical retrieval, skills/extensions/MCP lifecycle
-baselines, and provider settings without secret leakage.
+baselines, and provider settings without secret leakage. Python/FastAPI v2 is
+kept for explicit legacy fallback and compatibility tests.
 
 ## Install
 
-Requires Python 3.12 or newer and Node.js.
+Requires Rust, Node.js, and Python 3.12 or newer for legacy compatibility
+tests.
 
 ```powershell
 git clone https://github.com/Garfreak-07/Coder.git
 cd Coder
+cd frontend
+npm install
+cd ..
+```
+
+Legacy Python compatibility install:
+
+```powershell
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -e .
-cd frontend
-npm install
 ```
 
 Optional RAG dependencies:
@@ -57,10 +65,10 @@ pip install -e .[openhands]
 
 ## Run Locally
 
-Start the API:
+Start the Rust API server on the Vite proxy port:
 
 ```powershell
-.\.venv\Scripts\coder-api.exe --host 127.0.0.1 --port 8876
+cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8876
 ```
 
 Start the frontend:
@@ -71,7 +79,20 @@ npm.cmd run dev
 ```
 
 Open `http://127.0.0.1:5173`. Vite proxies `/api/*` to
-`http://127.0.0.1:8876`.
+`http://127.0.0.1:8876`. The frontend defaults to Rust API v3.
+
+To force the legacy Python/FastAPI v2 path for one session, start the Python
+server and set one explicit v2 override:
+
+```powershell
+.\.venv\Scripts\coder-api.exe --host 127.0.0.1 --port 8876
+cd frontend
+$env:VITE_CODER_API_VERSION="v2"
+npm.cmd run dev
+```
+
+Equivalent v2 overrides are `CODER_USE_RUST_API=0`, query string
+`?coder_api_version=v2`, or browser local storage key `coder_api_version=v2`.
 
 ## Test
 
@@ -101,9 +122,9 @@ npm.cmd run build
 
 ## Rust Track
 
-The Rust workspace is the migration target for the Coder control plane. The
-Python tree is retained as a legacy compatibility path until the v3 frontend
-path is the default and CI proves parity.
+The Rust workspace owns the default Coder control plane. The Python tree is
+retained as a legacy compatibility path and is not part of the ordinary local
+product run path.
 
 Current Rust stabilization includes:
 
@@ -118,9 +139,9 @@ Current Rust stabilization includes:
   covered by tests.
 - The React workflow adapter has tests for legacy canvas export/import through
   Rust `WorkflowSpec` data.
-- The React API adapter can target Rust API v3 for workflow/library, run
+- The React API adapter targets Rust API v3 by default for workflow/library, run
   inspection, reports/artifacts/blobs, provider settings, skills/extensions,
-  Planner Chat baseline sessions, and run preview/confirmation while preserving
+  Planner Chat sessions, and run preview/confirmation while preserving explicit
   v2 fallback.
 
 Useful Rust commands:
@@ -136,20 +157,8 @@ cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8766
 The Rust CLI/distribution baseline is documented in
 [`docs/distribution.md`](docs/distribution.md).
 
-To run the React app against Rust v3, start the Rust server on the Vite proxy
-port and set one frontend API switch:
-
-```powershell
-cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8876
-cd frontend
-$env:VITE_CODER_API_VERSION="v3"
-npm.cmd run dev
-```
-
-Equivalent switches are `CODER_USE_RUST_API=1`, the query string
-`?coder_api_version=v3`, or browser local storage key `coder_api_version=v3`.
-Use `v2` in the query string to force the compatibility path for one browser
-session.
+Use `VITE_CODER_API_VERSION=v2`, `CODER_USE_RUST_API=0`, or
+`?coder_api_version=v2` only when testing the legacy Python compatibility path.
 
 ## OpenHands
 
@@ -181,11 +190,10 @@ SDK-style OpenHands servers.
 - Product live Agent workflows must run through AgentGraph.
 - Current code facts must be grounded in repo evidence: native search/read,
   tests, logs, or diffs.
-- Rust work should remain additive until the replacement path is explicitly
-  validated.
-- Do not move the frontend default product path to Rust by default.
-- Do not physically quarantine or delete Python until the v3 path is the
-  default, compatibility tests are replaced or retired, and CI is green.
+- Rust v3 is the default product path; keep v2/Python available only as an
+  explicit compatibility fallback while replacement coverage is completed.
+- Do not physically quarantine or delete Python until compatibility tests are
+  replaced or retired and CI remains green.
 - Do not migrate the license to MIT without explicit ownership/contributor
   approval in a separate license-only change.
 

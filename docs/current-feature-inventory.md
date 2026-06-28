@@ -137,11 +137,12 @@ The Rust-first track now has tests or frontend build coverage for:
 
 ## Remaining Legacy Gates
 
-- Python remains the v2 compatibility path until Rust v3 is the frontend
-  default and the Python entrypoints are no longer required by users or CI.
-- Rust Planner Chat v3 currently provides baseline session/readiness/run
-  preview behavior. Rich v2 live-run stream behavior stays in Python until the
-  v3 stored-run/event flow is the ordinary UI default.
+- Rust v3 is now the frontend default. Python remains the explicit v2 legacy
+  compatibility path until the remaining Python-only entrypoints are replaced,
+  quarantined, or retired with equivalent Rust/frontend coverage.
+- Rust Planner Chat v3 provides session/readiness/run preview and confirmation
+  behavior on the ordinary UI path. Any richer v2-only live-run stream behavior
+  must be ported or kept behind the explicit legacy fallback.
 - Dense RAG, full MCP execution/client support, package-manager installers,
   and license migration are deferred by the master plan. MIT migration requires
   explicit ownership/contributor approval in a separate license-only change.
