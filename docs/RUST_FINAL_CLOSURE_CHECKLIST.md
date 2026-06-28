@@ -6,8 +6,8 @@
 - [x] MCP approval/evidence tests added
 - [x] Dense RAG backend implemented behind feature/config gate
 - [x] Dense RAG mocked tests pass without live embeddings
-- [ ] Release workflow/artifact baseline implemented
-- [ ] Install scripts or packaging sources added
+- [x] Release workflow/artifact baseline implemented
+- [x] Install scripts or packaging sources added
 - [ ] MIT license-only commit completed
 - [ ] README reflects Rust default + legacy path
 - [ ] Full verification commands pass

@@ -63,3 +63,19 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Run tests
         run: cargo test --workspace
+
+  installer-dry-run:
+    name: Installer dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: PowerShell installer dry-run
+        shell: pwsh
+        run: ./scripts/install.ps1 -DryRun
+      - name: POSIX installer dry-run
+        run: bash ./scripts/install.sh --dry-run
+      - name: npm wrapper dry-run
+        run: node packaging/npm/bin/coder-rust.js --dry-run

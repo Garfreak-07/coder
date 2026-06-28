@@ -1,0 +1,17 @@
+{
+  "name": "coder-rust",
+  "version": "0.1.0",
+  "description": "Thin npm wrapper for the coder-rust CLI.",
+  "license": "AGPL-3.0-or-later",
+  "bin": {
+    "coder-rust": "bin/coder-rust.js"
+  },
+  "files": [
+    "bin",
+    "vendor",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
