@@ -426,6 +426,13 @@ pub fn validate_workflow(
         ));
     }
     for node in &workflow.nodes {
+        if node.id.trim().is_empty() {
+            issues.push(error(
+                "workflow_node_id_empty",
+                format!("workflow '{workflow_id}' contains a node with an empty id"),
+                format!("workflows.{workflow_id}.nodes"),
+            ));
+        }
         if !agents.contains_key(&node.agent) {
             issues.push(error(
                 "workflow_node_agent_not_found",
@@ -457,6 +464,15 @@ pub fn validate_workflow(
                 ),
                 format!("workflows.{workflow_id}.edges"),
             ));
+        } else if !is_known_transition_condition(&edge.on) {
+            issues.push(error(
+                "workflow_edge_condition_unknown",
+                format!(
+                    "workflow '{workflow_id}' edge from '{}' to '{}' uses unsupported transition condition '{}'",
+                    edge.from, edge.to, edge.on
+                ),
+                format!("workflows.{workflow_id}.edges"),
+            ));
         }
         if !node_ids.contains(edge.from.as_str()) {
             issues.push(error(
@@ -480,6 +496,13 @@ pub fn validate_workflow(
         }
     }
     issues
+}
+
+fn is_known_transition_condition(condition: &str) -> bool {
+    matches!(
+        condition,
+        "ready" | "completed" | "blocked" | "failed" | "cancelled" | "continue" | "finish"
+    )
 }
 
 fn is_known_stop_status(status: &str) -> bool {
@@ -570,5 +593,29 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "workflow_stop_status_unknown"));
+    }
+
+    #[test]
+    fn invalid_transition_condition_is_reported() {
+        let mut config: ProjectConfig =
+            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
+        config
+            .workflows
+            .get_mut("planner-led")
+            .unwrap()
+            .edges
+            .push(WorkflowEdgeSpec {
+                from: "planner".to_owned(),
+                to: "executor".to_owned(),
+                on: "maybe".to_owned(),
+            });
+
+        let report = validate_project_config(&config);
+
+        assert_eq!(report.status, "error");
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "workflow_edge_condition_unknown"));
     }
 }

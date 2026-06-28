@@ -1,10 +1,15 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use coder_config::{
     validate_project_config, OpenHandsApiPaths as ConfigOpenHandsApiPaths,
     OpenHandsAuthHeaderMode as ConfigOpenHandsAuthHeaderMode, OpenHandsHarnessConfig,
-    OpenHandsRunStartStrategy as ConfigOpenHandsRunStartStrategy, ProjectConfig, WorkflowSpec,
+    OpenHandsRunStartStrategy as ConfigOpenHandsRunStartStrategy, ProjectConfig, WorkflowEdgeSpec,
+    WorkflowNodeSpec, WorkflowSpec,
 };
 use coder_core::{FinalReport, ReportStatus, RunId, RunRequest, RunState, RunStatus, WorkflowId};
 use coder_events::CoderEvent;
@@ -339,165 +344,255 @@ impl WorkflowRunner {
             }),
         )?;
 
-        let requested_rounds = options
+        let graph = WorkflowGraph::new(workflow)?;
+        self.emit(
+            &run_id,
+            &mut sequence,
+            "workflow.started",
+            json!({
+                "workflow_id": &options.workflow_id,
+                "start_node_id": &graph.start_node_id,
+                "max_rounds": workflow.max_rounds
+            }),
+        )?;
+
+        let max_rounds_limit = options
             .max_rounds_override
             .unwrap_or(workflow.max_rounds)
-            .max(1);
-        let rounds_to_run = requested_rounds.min(workflow.max_rounds);
-        let max_rounds_reached = requested_rounds > workflow.max_rounds;
-        let mut terminal_status = RunStatus::Completed;
-        let mut terminal_reason = if max_rounds_reached {
-            Some("max_rounds reached before a terminal completed outcome".to_owned())
-        } else {
-            None
-        };
+            .max(1)
+            .min(workflow.max_rounds);
+        let mut max_rounds_reached = false;
+        let terminal_status;
+        let mut terminal_reason = None;
         let mut checks = Vec::new();
         let mut blockers = Vec::new();
         let mut evidence_refs = Vec::new();
+        let mut current_node_id = graph.start_node_id.clone();
+        let mut round = 1;
+        self.emit(
+            &run_id,
+            &mut sequence,
+            "round.started",
+            json!({"round": round, "start_node_id": &graph.start_node_id}),
+        )?;
 
-        for round in 1..=rounds_to_run {
-            let mut stop_after_round = false;
+        loop {
+            let node = graph.node(&current_node_id)?;
+            let harness = self.config.harnesses.get(&node.harness).ok_or_else(|| {
+                WorkflowError::InvalidConfig(format!(
+                    "missing harness '{}' for node '{}'",
+                    node.harness, node.id
+                ))
+            })?;
+            let backend = self
+                .backends
+                .backend_for(&harness.backend)
+                .ok_or_else(|| WorkflowError::BackendNotFound(harness.backend.clone()))?;
+
             self.emit(
                 &run_id,
                 &mut sequence,
-                "round.started",
-                json!({"round": round}),
+                "node.started",
+                json!({
+                    "round": round,
+                    "node_id": node.id,
+                    "agent": node.agent,
+                    "harness": node.harness,
+                    "backend": harness.backend
+                }),
             )?;
 
-            for node in &workflow.nodes {
-                let harness = self.config.harnesses.get(&node.harness).ok_or_else(|| {
-                    WorkflowError::InvalidConfig(format!(
-                        "missing harness '{}' for node '{}'",
-                        node.harness, node.id
-                    ))
-                })?;
-                let backend = self
-                    .backends
-                    .backend_for(&harness.backend)
-                    .ok_or_else(|| WorkflowError::BackendNotFound(harness.backend.clone()))?;
+            let backend_result = match backend
+                .run(HarnessRunRequest {
+                    run_id: run_id.clone(),
+                    workflow_id: options.workflow_id.clone(),
+                    node_id: node.id.clone(),
+                    agent_id: node.agent.clone(),
+                    harness_id: node.harness.clone(),
+                    task: options.task.clone(),
+                })
+                .await
+            {
+                Ok(result) => result,
+                Err(HarnessError::Unavailable(message)) => HarnessRunResult::blocked(format!(
+                    "backend '{}' unavailable: {message}",
+                    harness.backend
+                )),
+                Err(error) => HarnessRunResult {
+                    status: "failed".to_owned(),
+                    report: Some(FinalReport::failed(
+                        "Harness backend failed.",
+                        error.to_string(),
+                    )),
+                    events: vec![HarnessRunEvent::new(
+                        "backend.failed",
+                        json!({
+                            "backend": harness.backend,
+                            "error": error.to_string()
+                        }),
+                    )],
+                },
+            };
 
+            for backend_event in backend_result.events {
+                self.emit_harness_event(&run_id, &mut sequence, backend_event)?;
+            }
+
+            let raw_status = backend_result.status;
+            let signal = WorkflowSignal::from_status(&raw_status);
+            checks.push(format!(
+                "node {} via {}: {}",
+                node.id, harness.backend, raw_status
+            ));
+            if let Some(report) = backend_result.report {
+                evidence_refs.extend(report.evidence_refs);
+                blockers.extend(report.blockers);
+            }
+
+            let Some(signal) = signal else {
+                terminal_status = RunStatus::Failed;
+                let reason = format!(
+                    "node '{}' returned unsupported transition status '{}'",
+                    node.id, raw_status
+                );
+                terminal_reason = Some(reason.clone());
+                self.emit_node_outcome(
+                    &run_id,
+                    &mut sequence,
+                    NodeOutcomeEvent {
+                        round,
+                        node,
+                        kind: "node.failed",
+                        status: &raw_status,
+                        reason: Some(&reason),
+                    },
+                )?;
                 self.emit(
                     &run_id,
                     &mut sequence,
-                    "node.started",
+                    "round.completed",
+                    json!({"round": round, "status": run_status_str(terminal_status)}),
+                )?;
+                break;
+            };
+
+            self.emit_node_outcome(
+                &run_id,
+                &mut sequence,
+                NodeOutcomeEvent {
+                    round,
+                    node,
+                    kind: signal.node_event_kind(),
+                    status: signal.as_str(),
+                    reason: blockers.last().map(String::as_str),
+                },
+            )?;
+
+            if let Some(edge) = graph.select_edge(&node.id, signal) {
+                self.emit(
+                    &run_id,
+                    &mut sequence,
+                    "workflow.transition.selected",
                     json!({
                         "round": round,
-                        "node_id": node.id,
-                        "agent": node.agent,
-                        "harness": node.harness,
-                        "backend": harness.backend
+                        "from": &edge.from,
+                        "to": &edge.to,
+                        "on": &edge.on
                     }),
                 )?;
-
-                let backend_result = match backend
-                    .run(HarnessRunRequest {
-                        run_id: run_id.clone(),
-                        workflow_id: options.workflow_id.clone(),
-                        node_id: node.id.clone(),
-                        agent_id: node.agent.clone(),
-                        harness_id: node.harness.clone(),
-                        task: options.task.clone(),
-                    })
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(HarnessError::Unavailable(message)) => HarnessRunResult::blocked(format!(
-                        "backend '{}' unavailable: {message}",
-                        harness.backend
-                    )),
-                    Err(error) => HarnessRunResult {
-                        status: "failed".to_owned(),
-                        report: Some(FinalReport::failed(
-                            "Harness backend failed.",
-                            error.to_string(),
-                        )),
-                        events: vec![HarnessRunEvent::new(
-                            "backend.failed",
+                if edge.to.as_str() == graph.start_node_id.as_str() {
+                    if round >= max_rounds_limit {
+                        max_rounds_reached = true;
+                        terminal_status = RunStatus::Blocked;
+                        let reason =
+                            "max_rounds reached before a terminal completed outcome".to_owned();
+                        terminal_reason = Some(reason.clone());
+                        blockers.push(reason.clone());
+                        self.emit(
+                            &run_id,
+                            &mut sequence,
+                            "round.completed",
                             json!({
-                                "backend": harness.backend,
-                                "error": error.to_string()
+                                "round": round,
+                                "status": "blocked",
+                                "reason": reason
                             }),
-                        )],
-                    },
-                };
-
-                for backend_event in backend_result.events {
-                    self.emit_harness_event(&run_id, &mut sequence, backend_event)?;
-                }
-
-                let status = backend_result.status.as_str();
-                checks.push(format!(
-                    "node {} via {}: {}",
-                    node.id, harness.backend, status
-                ));
-                if let Some(report) = backend_result.report {
-                    evidence_refs.extend(report.evidence_refs);
-                    blockers.extend(report.blockers);
-                }
-
-                if status == "completed" {
+                        )?;
+                        self.emit(
+                            &run_id,
+                            &mut sequence,
+                            "workflow.max_rounds_reached",
+                            json!({
+                                "round": round,
+                                "max_rounds": max_rounds_limit,
+                                "next_node_id": &edge.to
+                            }),
+                        )?;
+                        break;
+                    }
                     self.emit(
                         &run_id,
                         &mut sequence,
-                        "node.completed",
-                        json!({
-                            "round": round,
-                            "node_id": node.id,
-                            "status": status
-                        }),
+                        "round.completed",
+                        json!({"round": round, "status": "completed"}),
                     )?;
-                } else {
-                    terminal_status = if status == "blocked" {
-                        RunStatus::Blocked
-                    } else {
-                        RunStatus::Failed
-                    };
-                    let reason = blockers.last().cloned().unwrap_or_else(|| {
-                        format!("node '{}' returned status '{}'", node.id, status)
-                    });
-                    terminal_reason = Some(reason.clone());
+                    round += 1;
                     self.emit(
                         &run_id,
                         &mut sequence,
-                        "node.failed",
-                        json!({
-                            "round": round,
-                            "node_id": node.id,
-                            "status": status,
-                            "reason": reason
-                        }),
+                        "round.started",
+                        json!({"round": round, "start_node_id": &graph.start_node_id}),
                     )?;
-                    stop_after_round = true;
-                    break;
                 }
+                current_node_id = edge.to.clone();
+                continue;
             }
 
-            let round_status = if stop_after_round {
-                run_status_str(terminal_status)
-            } else {
-                "completed"
-            };
+            if let Some(status) = signal.terminal_status() {
+                terminal_status = status;
+                self.emit(
+                    &run_id,
+                    &mut sequence,
+                    "round.completed",
+                    json!({"round": round, "status": run_status_str(terminal_status)}),
+                )?;
+                break;
+            }
+
+            terminal_status = RunStatus::Blocked;
+            let reason = format!(
+                "node '{}' returned '{}' but no matching workflow transition exists",
+                node.id,
+                signal.as_str()
+            );
+            terminal_reason = Some(reason.clone());
+            blockers.push(reason.clone());
+            self.emit(
+                &run_id,
+                &mut sequence,
+                "workflow.transition.missing",
+                json!({
+                    "round": round,
+                    "node_id": node.id,
+                    "on": signal.as_str(),
+                    "reason": reason
+                }),
+            )?;
             self.emit(
                 &run_id,
                 &mut sequence,
                 "round.completed",
-                json!({"round": round, "status": round_status}),
+                json!({"round": round, "status": "blocked"}),
             )?;
-            if stop_after_round {
-                break;
-            }
-        }
-
-        if max_rounds_reached && terminal_status == RunStatus::Completed {
-            terminal_status = RunStatus::Blocked;
+            break;
         }
 
         let report = workflow_run_report(WorkflowReportInput {
             run_id: &run_id,
             workflow_id: &options.workflow_id,
-            workflow,
             status: terminal_status,
             reason: terminal_reason.as_deref(),
+            dispatched_nodes: checks.len(),
             checks,
             evidence_refs,
             blockers,
@@ -570,6 +665,163 @@ impl WorkflowRunner {
         *sequence += 1;
         Ok(())
     }
+
+    fn emit_node_outcome(
+        &self,
+        run_id: &RunId,
+        sequence: &mut u64,
+        outcome: NodeOutcomeEvent<'_>,
+    ) -> Result<(), WorkflowError> {
+        let mut payload = json!({
+            "round": outcome.round,
+            "node_id": outcome.node.id,
+            "status": outcome.status
+        });
+        if let Some(reason) = outcome.reason {
+            payload["reason"] = json!(reason);
+        }
+        self.emit(run_id, sequence, outcome.kind, payload)
+    }
+}
+
+struct NodeOutcomeEvent<'a> {
+    round: u32,
+    node: &'a WorkflowNodeSpec,
+    kind: &'a str,
+    status: &'a str,
+    reason: Option<&'a str>,
+}
+
+#[derive(Debug)]
+struct WorkflowGraph<'a> {
+    start_node_id: String,
+    nodes: BTreeMap<&'a str, &'a WorkflowNodeSpec>,
+    edges: Vec<&'a WorkflowEdgeSpec>,
+}
+
+impl<'a> WorkflowGraph<'a> {
+    fn new(workflow: &'a WorkflowSpec) -> Result<Self, WorkflowError> {
+        let start_node_id = workflow
+            .nodes
+            .first()
+            .map(|node| node.id.clone())
+            .ok_or_else(|| {
+                WorkflowError::InvalidConfig("workflow_start_node_missing".to_owned())
+            })?;
+        let mut seen = BTreeSet::new();
+        let mut nodes = BTreeMap::new();
+        for node in &workflow.nodes {
+            if !seen.insert(node.id.as_str()) {
+                return Err(WorkflowError::InvalidConfig(format!(
+                    "duplicate workflow node '{}'",
+                    node.id
+                )));
+            }
+            nodes.insert(node.id.as_str(), node);
+        }
+        for edge in &workflow.edges {
+            if !nodes.contains_key(edge.from.as_str()) {
+                return Err(WorkflowError::InvalidConfig(format!(
+                    "workflow edge source '{}' does not exist",
+                    edge.from
+                )));
+            }
+            if !nodes.contains_key(edge.to.as_str()) {
+                return Err(WorkflowError::InvalidConfig(format!(
+                    "workflow edge target '{}' does not exist",
+                    edge.to
+                )));
+            }
+        }
+        Ok(Self {
+            start_node_id,
+            nodes,
+            edges: workflow.edges.iter().collect(),
+        })
+    }
+
+    fn node(&self, node_id: &str) -> Result<&'a WorkflowNodeSpec, WorkflowError> {
+        self.nodes.get(node_id).copied().ok_or_else(|| {
+            WorkflowError::InvalidConfig(format!("workflow node '{node_id}' does not exist"))
+        })
+    }
+
+    fn select_edge(&self, node_id: &str, signal: WorkflowSignal) -> Option<&'a WorkflowEdgeSpec> {
+        self.edges
+            .iter()
+            .copied()
+            .find(|edge| edge.from == node_id && edge.on == signal.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowSignal {
+    Ready,
+    Completed,
+    Blocked,
+    Failed,
+    Cancelled,
+    Continue,
+    Finish,
+}
+
+impl WorkflowSignal {
+    fn from_status(status: &str) -> Option<Self> {
+        match status {
+            "ready" => Some(Self::Ready),
+            "completed" => Some(Self::Completed),
+            "blocked" => Some(Self::Blocked),
+            "failed" => Some(Self::Failed),
+            "cancelled" => Some(Self::Cancelled),
+            "continue" => Some(Self::Continue),
+            "finish" => Some(Self::Finish),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Completed => "completed",
+            Self::Blocked => "blocked",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Continue => "continue",
+            Self::Finish => "finish",
+        }
+    }
+
+    fn node_event_kind(self) -> &'static str {
+        match self {
+            Self::Ready | Self::Completed | Self::Continue | Self::Finish => "node.completed",
+            Self::Blocked => "node.blocked",
+            Self::Failed => "node.failed",
+            Self::Cancelled => "node.cancelled",
+        }
+    }
+
+    fn terminal_status(self) -> Option<RunStatus> {
+        match self {
+            Self::Completed | Self::Finish => Some(RunStatus::Completed),
+            Self::Blocked => Some(RunStatus::Blocked),
+            Self::Failed => Some(RunStatus::Failed),
+            Self::Cancelled => Some(RunStatus::Cancelled),
+            Self::Ready | Self::Continue => None,
+        }
+    }
+}
+
+pub fn replay_run_status(events: &[CoderEvent]) -> Option<RunStatus> {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match event.kind.as_str() {
+            "run.completed" => Some(RunStatus::Completed),
+            "run.blocked" => Some(RunStatus::Blocked),
+            "run.failed" => Some(RunStatus::Failed),
+            "run.cancelled" => Some(RunStatus::Cancelled),
+            _ => None,
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -672,6 +924,7 @@ impl NativeMockBackend {
 impl HarnessBackend for NativeMockBackend {
     async fn run(&self, request: HarnessRunRequest) -> Result<HarnessRunResult, HarnessError> {
         let status = match self.outcome {
+            NativeMockOutcome::Completed if request.agent_id == "planner" => "ready",
             NativeMockOutcome::Completed => "completed",
             NativeMockOutcome::Blocked => "blocked",
             NativeMockOutcome::Failed => "failed",
@@ -799,9 +1052,9 @@ impl HarnessBackend for OpenHandsHarnessBackend {
 struct WorkflowReportInput<'a> {
     run_id: &'a RunId,
     workflow_id: &'a str,
-    workflow: &'a WorkflowSpec,
     status: RunStatus,
     reason: Option<&'a str>,
+    dispatched_nodes: usize,
     checks: Vec<String>,
     evidence_refs: Vec<coder_core::EvidenceRef>,
     blockers: Vec<String>,
@@ -819,7 +1072,7 @@ fn workflow_run_report(input: WorkflowReportInput<'_>) -> FinalReport {
         format!(
             "Workflow '{workflow_id}' finished with status '{}' after dispatching {} node(s).",
             run_status_str(input.status),
-            input.workflow.nodes.len(),
+            input.dispatched_nodes,
             workflow_id = input.workflow_id
         ),
     );
@@ -899,9 +1152,14 @@ fn openhands_run_strategy_from_config(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, sync::Arc};
+    use std::{
+        collections::VecDeque,
+        fs,
+        path::PathBuf,
+        sync::{Arc, Mutex},
+    };
 
-    use coder_config::ProjectConfig;
+    use coder_config::{ProjectConfig, WorkflowNodeSpec};
     use coder_core::ReportStatus;
 
     use super::*;
@@ -1009,6 +1267,7 @@ mod tests {
     #[tokio::test]
     async fn workflow_runner_native_mock_completed() {
         let (mut config, root, store) = fixture();
+        make_single_node_terminal_workflow(&mut config);
         make_workflow_native_only(&mut config);
         let runner = WorkflowRunner::new(config, store.clone());
 
@@ -1030,6 +1289,7 @@ mod tests {
     #[tokio::test]
     async fn workflow_runner_native_mock_blocked() {
         let (mut config, root, store) = fixture();
+        make_single_node_terminal_workflow(&mut config);
         make_workflow_native_only(&mut config);
         let registry = BackendRegistry::native_only()
             .with_native_backend(Arc::new(NativeMockBackend::new(NativeMockOutcome::Blocked)));
@@ -1047,6 +1307,156 @@ mod tests {
             event.kind == "round.completed" && event.payload["status"].as_str() == Some("blocked")
         }));
         assert_eq!(events.last().unwrap().kind, "run.blocked");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_follows_planner_executor_planner_loop() {
+        let (mut config, root, store) = fixture();
+        make_workflow_native_only(&mut config);
+        let registry =
+            BackendRegistry::native_only().with_native_backend(Arc::new(ScriptedBackend::new([
+                "ready",
+                "completed",
+                "finish",
+            ])));
+        let runner = WorkflowRunner::with_registry(config, store.clone(), registry);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "loop task"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+        let transitions = events
+            .iter()
+            .filter(|event| event.kind == "workflow.transition.selected")
+            .map(|event| {
+                (
+                    event.payload["from"].as_str().unwrap().to_owned(),
+                    event.payload["to"].as_str().unwrap().to_owned(),
+                    event.payload["on"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(output.report.status, ReportStatus::Completed);
+        assert_eq!(
+            transitions,
+            vec![
+                (
+                    "planner".to_owned(),
+                    "executor".to_owned(),
+                    "ready".to_owned()
+                ),
+                (
+                    "executor".to_owned(),
+                    "planner".to_owned(),
+                    "completed".to_owned()
+                )
+            ]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "round.started")
+                .count(),
+            2
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_completed_terminal_stop() {
+        let (mut config, root, store) = fixture();
+        make_single_node_terminal_workflow(&mut config);
+        let runner = workflow_runner_with_script(config, store.clone(), ["completed"]);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "terminal completed"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Completed);
+        assert_eq!(events.last().unwrap().kind, "run.completed");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_blocked_terminal_stop() {
+        let (mut config, root, store) = fixture();
+        make_single_node_terminal_workflow(&mut config);
+        let runner = workflow_runner_with_script(config, store.clone(), ["blocked"]);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "terminal blocked"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Blocked);
+        assert!(events.iter().any(|event| event.kind == "node.blocked"));
+        assert_eq!(events.last().unwrap().kind, "run.blocked");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_failed_terminal_stop() {
+        let (mut config, root, store) = fixture();
+        make_single_node_terminal_workflow(&mut config);
+        let runner = workflow_runner_with_script(config, store.clone(), ["failed"]);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "terminal failed"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Failed);
+        assert!(events.iter().any(|event| event.kind == "node.failed"));
+        assert_eq!(events.last().unwrap().kind, "run.failed");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_cancelled_terminal_stop() {
+        let (mut config, root, store) = fixture();
+        make_single_node_terminal_workflow(&mut config);
+        let runner = workflow_runner_with_script(config, store.clone(), ["cancelled"]);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "terminal cancelled"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Cancelled);
+        assert!(events.iter().any(|event| event.kind == "node.cancelled"));
+        assert_eq!(events.last().unwrap().kind, "run.cancelled");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_blocks_on_no_matching_transition() {
+        let (mut config, root, store) = fixture();
+        make_single_node_terminal_workflow(&mut config);
+        let runner = workflow_runner_with_script(config, store.clone(), ["ready"]);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "missing edge"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Blocked);
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "workflow.transition.missing"));
+        assert!(output
+            .report
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("no matching workflow transition")));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1110,6 +1520,9 @@ mod tests {
 
         assert_eq!(output.report.status, ReportStatus::Blocked);
         assert!(output.report.blockers[0].contains("max_rounds"));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "workflow.max_rounds_reached"));
         assert_eq!(events.last().unwrap().kind, "run.blocked");
         let _ = fs::remove_dir_all(root);
     }
@@ -1151,6 +1564,144 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn workflow_runner_replays_terminal_status_from_events() {
+        let (mut config, root, store) = fixture();
+        make_single_node_terminal_workflow(&mut config);
+        let runner = workflow_runner_with_script(config, store.clone(), ["failed"]);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "replay task"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(replay_run_status(&events), Some(RunStatus::Failed));
+        let metadata = store.read_metadata(&output.run_id).unwrap().unwrap();
+        assert_eq!(replay_run_status(&events), Some(metadata.status));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_rejects_invalid_edge_target_before_runtime() {
+        let (mut config, root, store) = fixture();
+        config
+            .workflows
+            .get_mut("planner-led")
+            .unwrap()
+            .edges
+            .push(WorkflowEdgeSpec {
+                from: "planner".to_owned(),
+                to: "missing".to_owned(),
+                on: "ready".to_owned(),
+            });
+        let runner = WorkflowRunner::new(config, store);
+
+        let error = runner
+            .run(WorkflowRunOptions::new("planner-led", "invalid edge"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, WorkflowError::InvalidConfig(_)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_rejects_duplicate_node_ids_before_runtime() {
+        let (mut config, root, store) = fixture();
+        let workflow = config.workflows.get_mut("planner-led").unwrap();
+        workflow.nodes.push(workflow.nodes[0].clone());
+        let runner = WorkflowRunner::new(config, store);
+
+        let error = runner
+            .run(WorkflowRunOptions::new("planner-led", "duplicate node"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, WorkflowError::InvalidConfig(_)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_rejects_missing_start_node_before_runtime() {
+        let (mut config, root, store) = fixture();
+        let workflow = config.workflows.get_mut("planner-led").unwrap();
+        workflow.nodes.clear();
+        workflow.edges.clear();
+        let runner = WorkflowRunner::new(config, store);
+
+        let error = runner
+            .run(WorkflowRunOptions::new("planner-led", "missing start"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, WorkflowError::InvalidConfig(_)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn workflow_runner_with_script<I, S>(
+        mut config: ProjectConfig,
+        store: RunStore,
+        statuses: I,
+    ) -> WorkflowRunner
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        make_workflow_native_only(&mut config);
+        let registry = BackendRegistry::native_only()
+            .with_native_backend(Arc::new(ScriptedBackend::new(statuses)));
+        WorkflowRunner::with_registry(config, store, registry)
+    }
+
+    struct ScriptedBackend {
+        statuses: Mutex<VecDeque<String>>,
+    }
+
+    impl ScriptedBackend {
+        fn new<I, S>(statuses: I) -> Self
+        where
+            I: IntoIterator<Item = S>,
+            S: Into<String>,
+        {
+            Self {
+                statuses: Mutex::new(statuses.into_iter().map(Into::into).collect()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl HarnessBackend for ScriptedBackend {
+        async fn run(&self, request: HarnessRunRequest) -> Result<HarnessRunResult, HarnessError> {
+            let status = self
+                .statuses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| "completed".to_owned());
+            let report = match status.as_str() {
+                "blocked" => FinalReport::blocked("Scripted backend blocked.", "scripted blocked"),
+                "failed" => FinalReport::failed("Scripted backend failed.", "scripted failed"),
+                "cancelled" => {
+                    FinalReport::with_status(ReportStatus::Cancelled, "Scripted backend cancelled.")
+                }
+                _ => FinalReport::completed("Scripted backend completed."),
+            };
+            Ok(HarnessRunResult {
+                status: status.clone(),
+                report: Some(report),
+                events: vec![HarnessRunEvent::new(
+                    format!("backend.scripted.{status}"),
+                    json!({
+                        "node_id": request.node_id,
+                        "agent_id": request.agent_id,
+                        "status": status
+                    }),
+                )],
+            })
+        }
+    }
+
     fn fixture() -> (ProjectConfig, PathBuf, RunStore) {
         let config: ProjectConfig =
             serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
@@ -1167,5 +1718,15 @@ mod tests {
             harness.backend = "native-rust".to_owned();
             harness.openhands = None;
         }
+    }
+
+    fn make_single_node_terminal_workflow(config: &mut ProjectConfig) {
+        let workflow = config.workflows.get_mut("planner-led").unwrap();
+        workflow.nodes = vec![WorkflowNodeSpec {
+            id: "review".to_owned(),
+            agent: "executor".to_owned(),
+            harness: "review-only".to_owned(),
+        }];
+        workflow.edges.clear();
     }
 }
