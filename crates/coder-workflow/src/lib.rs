@@ -2716,11 +2716,10 @@ diff --git a/tracked.txt b/tracked.txt
             .unwrap();
         openhands.server_url = "http://127.0.0.1:1".to_owned();
         let runner = WorkflowRunner::new(config, store.clone());
+        let mut options = WorkflowRunOptions::new("planner-led", "needs openhands");
+        options.repo_root = root.clone();
 
-        let output = runner
-            .run(WorkflowRunOptions::new("planner-led", "needs openhands"))
-            .await
-            .unwrap();
+        let output = runner.run(options).await.unwrap();
 
         assert_eq!(output.report.status, ReportStatus::Blocked);
         assert!(output
@@ -2740,11 +2739,10 @@ diff --git a/tracked.txt b/tracked.txt
             .unwrap()
             .backend = "mystery-backend".to_owned();
         let runner = WorkflowRunner::new(config, store);
+        let mut options = WorkflowRunOptions::new("planner-led", "unknown backend");
+        options.repo_root = root.clone();
 
-        let error = runner
-            .run(WorkflowRunOptions::new("planner-led", "unknown backend"))
-            .await
-            .unwrap_err();
+        let error = runner.run(options).await.unwrap_err();
 
         assert!(matches!(error, WorkflowError::BackendNotFound(_)));
         let _ = fs::remove_dir_all(root);
@@ -2757,6 +2755,7 @@ diff --git a/tracked.txt b/tracked.txt
         config.workflows.get_mut("planner-led").unwrap().max_rounds = 2;
         let runner = WorkflowRunner::new(config, store.clone());
         let mut options = WorkflowRunOptions::new("planner-led", "too many rounds");
+        options.repo_root = root.clone();
         options.max_rounds_override = Some(3);
 
         let output = runner.run(options).await.unwrap();

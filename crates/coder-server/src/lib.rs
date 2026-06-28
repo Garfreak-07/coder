@@ -24,8 +24,12 @@ use coder_harness::{
     validate_mcp_manifest, McpManifestValidation, ToolRegistry, ToolRegistryEntry,
 };
 use coder_memory::{
-    load_project_memory_file, memory_read_event, memory_write_proposed_event, MemoryError,
-    MemoryRecord, MemoryScope, ProjectMemoryFile,
+    append_project_memory_record, ensure_memory_write_allowed, import_text_knowledge_source,
+    load_project_memory_file, memory_read_event, memory_write_confirmed_event,
+    memory_write_proposed_event, retrieve_knowledge_hints, AgentMemoryRole, KnowledgeChunk,
+    KnowledgeRetrievalRequest, KnowledgeSource, KnowledgeStore, KnowledgeTextImportRequest,
+    MemoryAllowedContext, MemoryError, MemoryPurpose, MemoryRecord, MemoryScope, MemorySensitivity,
+    ProjectMemoryFile,
 };
 use coder_store::{
     RepoEvidenceKind, RepoEvidenceRef, RunCheckpointRef, RunStore, StoreError, StoredRunSummary,
@@ -68,6 +72,20 @@ pub fn router(state: ApiState) -> Router {
             "/api/v3/memory/project/propose-write",
             post(propose_project_memory_write),
         )
+        .route(
+            "/api/v3/memory/project/confirm-write",
+            post(confirm_project_memory_write),
+        )
+        .route(
+            "/api/v3/knowledge-sources/import-text",
+            post(import_knowledge_text),
+        )
+        .route("/api/v3/knowledge-sources", get(list_knowledge_sources))
+        .route(
+            "/api/v3/knowledge-sources/{source_id}/chunks",
+            get(list_knowledge_source_chunks),
+        )
+        .route("/api/v3/knowledge/retrieve", post(retrieve_knowledge))
         .route("/api/v3/config/validate", post(validate_config))
         .route("/api/v3/workflows/default", get(default_workflow))
         .route("/api/v3/workflows/validate", post(validate_workflow))
@@ -215,7 +233,15 @@ async fn capabilities() -> Json<CapabilitiesResponse> {
             "mcp_validate",
             "harness_tools",
         ],
-        memory: vec!["project_load", "project_write_proposal"],
+        memory: vec![
+            "project_load",
+            "project_write_proposal",
+            "project_write_confirmation",
+            "knowledge_import_text",
+            "knowledge_sources_list",
+            "knowledge_chunks_list",
+            "knowledge_lexical_retrieve",
+        ],
     })
 }
 
@@ -455,6 +481,122 @@ async fn propose_project_memory_write(
         event_count: sequence as usize,
         event,
     }))
+}
+
+async fn confirm_project_memory_write(
+    State(state): State<ApiState>,
+    Json(request): Json<ProjectMemoryWriteConfirmRequest>,
+) -> Result<Json<ProjectMemoryWriteConfirmResponse>, ApiError> {
+    if request.record.scope != MemoryScope::Project {
+        return Err(ApiError::bad_request(
+            "project memory write confirmation requires scope 'project'",
+        ));
+    }
+    ensure_memory_write_allowed(request.confirmed_by_role, &request.record)?;
+    let memory_path = resolve_repo_relative_write_path(&request.repo_root, &request.memory_path)?;
+    let run_id = request.run_id.map(RunId::from_string);
+    if let Some(run_id) = &run_id {
+        if !stored_run_exists(&state.store, run_id)? {
+            return Err(ApiError::not_found(format!(
+                "run '{}' was not found",
+                run_id.as_str()
+            )));
+        }
+    }
+    let memory = append_project_memory_record(&memory_path, request.record.clone())?;
+    let mut event = None;
+    let mut event_count = 0usize;
+    if let Some(run_id) = run_id {
+        let sequence = state.store.read_events(&run_id)?.len() as u64 + 1;
+        let confirmed_event = memory_write_confirmed_event(
+            run_id.clone(),
+            sequence,
+            &request.record,
+            request.confirmed_by_role,
+        );
+        state.store.append_event(&run_id, &confirmed_event)?;
+        event_count = sequence as usize;
+        event = Some(confirmed_event);
+    }
+    Ok(Json(ProjectMemoryWriteConfirmResponse {
+        record_count: memory.records.len(),
+        event_recorded: event.is_some(),
+        event_count,
+        event,
+        memory,
+    }))
+}
+
+async fn import_knowledge_text(
+    Json(request): Json<KnowledgeTextImportApiRequest>,
+) -> Result<Json<KnowledgeTextImportResponse>, ApiError> {
+    let store = knowledge_store_for_repo(&request.repo_root)?;
+    let result = import_text_knowledge_source(
+        &store,
+        KnowledgeTextImportRequest {
+            title: request.title,
+            text: request.text,
+            owner_scope: request.owner_scope.unwrap_or_else(|| "project".to_owned()),
+            tags: request.tags.unwrap_or_default(),
+            allowed_agents: request.allowed_agents,
+            purpose: request.purpose,
+            allowed_contexts: request.allowed_contexts.unwrap_or_default(),
+            sensitivity: request.sensitivity.unwrap_or(MemorySensitivity::Project),
+        },
+    )?;
+    Ok(Json(KnowledgeTextImportResponse {
+        source: result.source,
+        chunks: result.chunks,
+        index_dirty: true,
+    }))
+}
+
+async fn list_knowledge_sources(
+    Query(query): Query<RepoRootQuery>,
+) -> Result<Json<KnowledgeSourceListResponse>, ApiError> {
+    let store = knowledge_store_for_repo(&query.repo_root)?;
+    Ok(Json(KnowledgeSourceListResponse {
+        sources: store.list_sources()?,
+    }))
+}
+
+async fn list_knowledge_source_chunks(
+    Query(query): Query<RepoRootQuery>,
+    Path(source_id): Path<String>,
+) -> Result<Json<KnowledgeSourceChunksResponse>, ApiError> {
+    let store = knowledge_store_for_repo(&query.repo_root)?;
+    let chunks = store.list_chunks(Some(&source_id))?;
+    if chunks.is_empty()
+        && !store
+            .list_sources()?
+            .iter()
+            .any(|source| source.source_id == source_id)
+    {
+        return Err(ApiError::not_found(format!(
+            "knowledge source '{source_id}' was not found"
+        )));
+    }
+    Ok(Json(KnowledgeSourceChunksResponse { source_id, chunks }))
+}
+
+async fn retrieve_knowledge(
+    Json(request): Json<KnowledgeRetrieveApiRequest>,
+) -> Result<Json<KnowledgeRetrieveResponse>, ApiError> {
+    let store = knowledge_store_for_repo(&request.repo_root)?;
+    let chunks = store.list_chunks(None)?;
+    let results = retrieve_knowledge_hints(
+        &chunks,
+        &KnowledgeRetrievalRequest {
+            role: request.role,
+            query: request.query,
+            requested_context: request.requested_context,
+            tags: request.tags.unwrap_or_default(),
+            token_budget: request.token_budget,
+            max_results: request.max_results,
+            include_content: request.include_content.unwrap_or(false),
+        },
+    )?;
+    Ok(Json(KnowledgeRetrieveResponse { results }))
 }
 
 async fn validate_config(Json(request): Json<ConfigValidationRequest>) -> Json<ValidationReport> {
@@ -1225,6 +1367,77 @@ pub struct ProjectMemoryWriteProposalResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ProjectMemoryWriteConfirmRequest {
+    pub repo_root: String,
+    pub memory_path: String,
+    pub run_id: Option<String>,
+    pub record: MemoryRecord,
+    pub confirmed_by_role: AgentMemoryRole,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProjectMemoryWriteConfirmResponse {
+    pub record_count: usize,
+    pub event_recorded: bool,
+    pub event_count: usize,
+    pub event: Option<coder_events::CoderEvent>,
+    pub memory: ProjectMemoryFile,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KnowledgeTextImportApiRequest {
+    pub repo_root: String,
+    pub title: String,
+    pub text: String,
+    pub owner_scope: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub allowed_agents: Vec<AgentMemoryRole>,
+    pub purpose: Vec<MemoryPurpose>,
+    pub allowed_contexts: Option<Vec<MemoryAllowedContext>>,
+    pub sensitivity: Option<MemorySensitivity>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KnowledgeTextImportResponse {
+    pub source: KnowledgeSource,
+    pub chunks: Vec<KnowledgeChunk>,
+    pub index_dirty: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RepoRootQuery {
+    pub repo_root: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KnowledgeSourceListResponse {
+    pub sources: Vec<KnowledgeSource>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KnowledgeSourceChunksResponse {
+    pub source_id: String,
+    pub chunks: Vec<KnowledgeChunk>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KnowledgeRetrieveApiRequest {
+    pub repo_root: String,
+    pub role: AgentMemoryRole,
+    pub query: String,
+    pub requested_context: MemoryAllowedContext,
+    pub tags: Option<Vec<String>>,
+    pub token_budget: Option<usize>,
+    pub max_results: Option<usize>,
+    pub include_content: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct KnowledgeRetrieveResponse {
+    pub results: Vec<coder_memory::KnowledgeHint>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ConfigValidationRequest {
     pub config: ProjectConfig,
 }
@@ -1558,6 +1771,31 @@ fn resolve_repo_relative_path(repo_root: &str, relative_path: &str) -> Result<Pa
     Ok(resolved)
 }
 
+fn resolve_repo_relative_write_path(
+    repo_root: &str,
+    relative_path: &str,
+) -> Result<PathBuf, ApiError> {
+    let root = fs::canonicalize(repo_root)
+        .map_err(|error| ApiError::bad_request(format!("invalid repo_root: {error}")))?;
+    let requested = PathBuf::from(relative_path);
+    if requested.is_absolute() || relative_path.trim().is_empty() {
+        return Err(ApiError::bad_request("memory_path must be relative"));
+    }
+    if requested
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(ApiError::bad_request("memory_path escapes repo_root"));
+    }
+    Ok(root.join(requested))
+}
+
+fn knowledge_store_for_repo(repo_root: &str) -> Result<KnowledgeStore, ApiError> {
+    let root = fs::canonicalize(repo_root)
+        .map_err(|error| ApiError::bad_request(format!("invalid repo_root: {error}")))?;
+    Ok(KnowledgeStore::new(root.join(".coder").join("memory")))
+}
+
 fn control_run(
     state: ApiState,
     run_id: RunId,
@@ -1783,6 +2021,13 @@ impl ApiError {
         }
     }
 
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: message.into(),
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -1861,7 +2106,10 @@ impl From<RepoToolError> for ApiError {
 
 impl From<MemoryError> for ApiError {
     fn from(error: MemoryError) -> Self {
-        Self::bad_request(error.to_string())
+        match error {
+            MemoryError::PolicyViolation(_) => Self::forbidden(error.to_string()),
+            _ => Self::bad_request(error.to_string()),
+        }
     }
 }
 
@@ -2198,6 +2446,198 @@ mod tests {
         assert_eq!(events[0].kind, "memory.write.proposed");
         assert!(!events[0].payload.to_string().contains("tail-marker"));
         let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn project_memory_confirm_write_persists_and_records_summary_event() {
+        let repo = temp_root();
+        let store_root = temp_root();
+        fs::create_dir_all(&repo).unwrap();
+        let store = RunStore::new(&store_root);
+        let run_id = RunId::from_string("run-1");
+        let state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        store.write_metadata(&state).unwrap();
+        let app = router(ApiState::new(store.clone()));
+
+        let response = post_json(
+            app,
+            "/api/v3/memory/project/confirm-write",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "memory_path": "memory.json",
+                "run_id": "run-1",
+                "confirmed_by_role": "workflow_supervisor",
+                "record": {
+                    "id": "mem_3",
+                    "scope": "project",
+                    "key": "rust-api",
+                    "content": "Rust API v3 is the primary product path.",
+                    "tags": ["rust"],
+                    "evidence_refs": [{"kind": "doc", "reference": "docs/rust-migration-map.md"}],
+                    "source_ref": "memory://project/rust-api"
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["record_count"], 1);
+        assert_eq!(body["event_recorded"], true);
+        assert_eq!(body["event"]["kind"], "memory.write.confirmed");
+        let persisted = fs::read_to_string(repo.join("memory.json")).unwrap();
+        assert!(persisted.contains("Rust API v3 is the primary product path."));
+        let events = store.read_events(&run_id).unwrap();
+        assert_eq!(events[0].kind, "memory.write.confirmed");
+        assert!(!events[0]
+            .payload
+            .to_string()
+            .contains("primary product path"));
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn task_execution_cannot_confirm_project_memory_write() {
+        let repo = temp_root();
+        let store_root = temp_root();
+        fs::create_dir_all(&repo).unwrap();
+        let store = RunStore::new(&store_root);
+        let run_id = RunId::from_string("run-1");
+        let state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        store.write_metadata(&state).unwrap();
+        let app = router(ApiState::new(store));
+
+        let response = post_json(
+            app,
+            "/api/v3/memory/project/confirm-write",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "memory_path": "memory.json",
+                "run_id": "run-1",
+                "confirmed_by_role": "task_execution",
+                "record": {
+                    "id": "mem_4",
+                    "scope": "project",
+                    "key": "blocked",
+                    "content": "Executor should not directly persist this.",
+                    "tags": [],
+                    "source_ref": "memory://project/blocked"
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!repo.join("memory.json").exists());
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn knowledge_endpoints_import_list_chunks_and_retrieve_hints() {
+        let repo = temp_root();
+        fs::create_dir_all(&repo).unwrap();
+        let app = test_router();
+
+        let import_response = post_json(
+            app.clone(),
+            "/api/v3/knowledge-sources/import-text",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "title": "Rust migration notes",
+                "text": "# Workflow\n\nRust workflow evidence lives in crates/coder-server/src/lib.rs.",
+                "tags": ["rust"],
+                "allowed_agents": ["workflow_supervisor"],
+                "purpose": ["project_rules"],
+                "allowed_contexts": ["planner_order"],
+                "sensitivity": "project"
+            }),
+        )
+        .await;
+
+        assert_eq!(import_response.status(), StatusCode::OK);
+        let import_body = response_json(import_response).await;
+        assert_eq!(import_body["index_dirty"], true);
+        assert_eq!(import_body["chunks"].as_array().unwrap().len(), 1);
+        let source_id = import_body["source"]["source_id"].as_str().unwrap();
+        assert!(repo
+            .join(".coder")
+            .join("memory")
+            .join("knowledge_sources.jsonl")
+            .exists());
+
+        let repo_query = percent_encode(&repo.display().to_string());
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v3/knowledge-sources?repo_root={repo_query}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body = response_json(list_response).await;
+        assert_eq!(list_body["sources"][0]["source_id"], source_id);
+
+        let chunks_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v3/knowledge-sources/{source_id}/chunks?repo_root={repo_query}"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(chunks_response.status(), StatusCode::OK);
+        let chunks_body = response_json(chunks_response).await;
+        assert_eq!(chunks_body["chunks"][0]["title"], "Workflow");
+
+        let retrieve_response = post_json(
+            app.clone(),
+            "/api/v3/knowledge/retrieve",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "role": "workflow_supervisor",
+                "query": "workflow evidence",
+                "requested_context": "planner_order",
+                "tags": ["rust"],
+                "include_content": false
+            }),
+        )
+        .await;
+        assert_eq!(retrieve_response.status(), StatusCode::OK);
+        let retrieve_body = response_json(retrieve_response).await;
+        assert_eq!(
+            retrieve_body["results"][0]["evidence_kind"],
+            "knowledge_hint"
+        );
+        assert_eq!(
+            retrieve_body["results"][0]["requires_repo_verification"],
+            true
+        );
+        assert_eq!(retrieve_body["results"][0]["content_preview"], Value::Null);
+
+        let denied_response = post_json(
+            app,
+            "/api/v3/knowledge/retrieve",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "role": "task_execution",
+                "query": "workflow evidence",
+                "requested_context": "execution_prompt",
+                "include_content": true
+            }),
+        )
+        .await;
+        let denied_body = response_json(denied_response).await;
+        assert!(denied_body["results"].as_array().unwrap().is_empty());
+        let _ = fs::remove_dir_all(repo);
     }
 
     #[tokio::test]
@@ -3196,5 +3636,17 @@ diff --git a/tracked.txt b/tracked.txt
         } else {
             vec!["sh".to_owned(), "-c".to_owned(), format!("printf {text}")]
         }
+    }
+
+    fn percent_encode(value: &str) -> String {
+        value
+            .bytes()
+            .map(|byte| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    (byte as char).to_string()
+                }
+                _ => format!("%{byte:02X}"),
+            })
+            .collect()
     }
 }
