@@ -54,6 +54,13 @@ harnesses:
       server_url: "http://127.0.0.1:8000"
       session_api_key_env: SESSION_API_KEY
       workspace_mode: local
+      api_paths:
+        api_prefix: "/api"
+        events_search_path: "/conversations/{conversation_id}/events/search"
+        run_endpoint_path: "/conversations/{conversation_id}/run"
+        websocket_path_template: "/sockets/events/{conversation_id}"
+        auth_header: x_session_api_key
+      run_start_strategy: post_run_endpoint
     tools: [terminal, file_editor, task_tracker]
     permissions:
       read_files: allow

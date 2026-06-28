@@ -266,10 +266,24 @@ export interface RustPermissionPolicy {
   deploy: RustPermissionDecision;
 }
 
+export type RustOpenHandsAuthHeaderMode = "authorization_bearer" | "x_session_api_key";
+export type RustOpenHandsRunStartStrategy = "post_run_endpoint" | "post_user_event_with_run_true" | "none";
+
+export interface RustOpenHandsApiPaths {
+  api_prefix?: string;
+  conversations_path?: string;
+  events_search_path?: string | null;
+  run_endpoint_path?: string | null;
+  websocket_path_template?: string | null;
+  auth_header?: RustOpenHandsAuthHeaderMode;
+}
+
 export interface RustOpenHandsHarnessConfig {
   server_url: string;
   session_api_key_env?: string | null;
   workspace_mode?: string | null;
+  api_paths?: RustOpenHandsApiPaths;
+  run_start_strategy?: RustOpenHandsRunStartStrategy;
 }
 
 export interface RustVerificationPolicy {

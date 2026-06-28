@@ -74,6 +74,60 @@ pub struct OpenHandsHarnessConfig {
     pub server_url: String,
     pub session_api_key_env: Option<String>,
     pub workspace_mode: Option<String>,
+    #[serde(default)]
+    pub api_paths: OpenHandsApiPaths,
+    #[serde(default)]
+    pub run_start_strategy: OpenHandsRunStartStrategy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenHandsApiPaths {
+    #[serde(default)]
+    pub api_prefix: String,
+    #[serde(default = "default_conversations_path")]
+    pub conversations_path: String,
+    #[serde(default)]
+    pub events_search_path: Option<String>,
+    #[serde(default)]
+    pub run_endpoint_path: Option<String>,
+    #[serde(default)]
+    pub websocket_path_template: Option<String>,
+    #[serde(default)]
+    pub auth_header: OpenHandsAuthHeaderMode,
+}
+
+impl Default for OpenHandsApiPaths {
+    fn default() -> Self {
+        Self {
+            api_prefix: String::new(),
+            conversations_path: default_conversations_path(),
+            events_search_path: None,
+            run_endpoint_path: None,
+            websocket_path_template: None,
+            auth_header: OpenHandsAuthHeaderMode::default(),
+        }
+    }
+}
+
+fn default_conversations_path() -> String {
+    "/conversations".to_owned()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenHandsAuthHeaderMode {
+    #[default]
+    AuthorizationBearer,
+    XSessionApiKey,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenHandsRunStartStrategy {
+    PostRunEndpoint,
+    #[default]
+    PostUserEventWithRunTrue,
+    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

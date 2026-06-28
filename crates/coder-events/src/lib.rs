@@ -103,6 +103,11 @@ fn is_secret_key(key: &str) -> bool {
         || normalized.contains("token")
         || normalized.contains("secret")
         || normalized.contains("password")
+        || normalized.contains("private_key")
+        || normalized.contains("aws_access_key_id")
+        || normalized.contains("aws_secret_access_key")
+        || normalized.contains("authorization")
+        || normalized.contains("cookie")
 }
 
 #[cfg(test)]
@@ -134,6 +139,8 @@ mod tests {
                 "api_key": "sk-live",
                 "nested": {
                     "session_token": "token-value",
+                    "Authorization": "Bearer secret",
+                    "cookie": "sid=secret",
                     "safe": "visible"
                 }
             }),
@@ -141,6 +148,8 @@ mod tests {
 
         assert_eq!(event.payload["api_key"], "[REDACTED]");
         assert_eq!(event.payload["nested"]["session_token"], "[REDACTED]");
+        assert_eq!(event.payload["nested"]["Authorization"], "[REDACTED]");
+        assert_eq!(event.payload["nested"]["cookie"], "[REDACTED]");
         assert_eq!(event.payload["nested"]["safe"], "visible");
     }
 

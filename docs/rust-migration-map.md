@@ -78,6 +78,15 @@ OpenHands support is considered preserved only when Rust can:
 7. Preserve raw event refs for debug export.
 8. Keep secrets out of events and artifacts.
 
+`coder-openhands` defaults must follow the documented Agent Server contract:
+`/conversations`, `/conversations/{conversation_id}/events`, websocket
+`/conversations/{conversation_id}/events/socket`, and
+`Authorization: Bearer <session key>`. Compatibility with older SDK-style
+paths such as `/api/conversations`, `/events/search`, `/run`,
+`/sockets/events/{conversation_id}`, and `X-Session-API-Key` is allowed only
+through explicit `openhands.api_paths` and `openhands.run_start_strategy`
+configuration.
+
 Until then, current Python OpenHands paths remain available.
 
 ## Canvas Migration Gates

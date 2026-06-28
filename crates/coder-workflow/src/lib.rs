@@ -1,8 +1,22 @@
-use coder_config::{validate_project_config, ProjectConfig, WorkflowSpec};
-use coder_core::{FinalReport, RunId, RunRequest, RunState, RunStatus, WorkflowId};
+use std::{path::PathBuf, sync::Arc};
+
+use async_trait::async_trait;
+use coder_config::{
+    validate_project_config, OpenHandsApiPaths as ConfigOpenHandsApiPaths,
+    OpenHandsAuthHeaderMode as ConfigOpenHandsAuthHeaderMode, OpenHandsHarnessConfig,
+    OpenHandsRunStartStrategy as ConfigOpenHandsRunStartStrategy, ProjectConfig, WorkflowSpec,
+};
+use coder_core::{FinalReport, ReportStatus, RunId, RunRequest, RunState, RunStatus, WorkflowId};
 use coder_events::CoderEvent;
+use coder_harness::{
+    HarnessBackend, HarnessError, HarnessRunEvent, HarnessRunRequest, HarnessRunResult,
+};
+use coder_openhands::{
+    normalize_openhands_event, openhands_final_report, OpenHandsApiPaths, OpenHandsAuthHeaderMode,
+    OpenHandsClient, OpenHandsRunStartStrategy, OpenHandsServerConfig,
+};
 use coder_store::{RunStore, StoreError};
-use serde_json::json;
+use serde_json::{json, Value};
 use thiserror::Error;
 
 pub struct MockWorkflowRunner<'a> {
@@ -217,6 +231,8 @@ pub enum WorkflowError {
     InvalidConfig(String),
     #[error("workflow not found: {0}")]
     WorkflowNotFound(String),
+    #[error("backend not found: {0}")]
+    BackendNotFound(String),
     #[error("store error: {0}")]
     Store(#[from] StoreError),
 }
@@ -254,9 +270,636 @@ fn report_for_mock_run(
         )
 }
 
+pub struct WorkflowRunner {
+    config: ProjectConfig,
+    store: RunStore,
+    backends: BackendRegistry,
+}
+
+impl WorkflowRunner {
+    pub fn new(config: ProjectConfig, store: RunStore) -> Self {
+        let backends = BackendRegistry::from_project_config(&config, store.clone());
+        Self {
+            config,
+            store,
+            backends,
+        }
+    }
+
+    pub fn with_registry(
+        config: ProjectConfig,
+        store: RunStore,
+        backends: BackendRegistry,
+    ) -> Self {
+        Self {
+            config,
+            store,
+            backends,
+        }
+    }
+
+    pub async fn run(
+        &self,
+        options: WorkflowRunOptions,
+    ) -> Result<WorkflowRunOutput, WorkflowError> {
+        let validation = validate_project_config(&self.config);
+        if !validation.is_pass() {
+            return Err(WorkflowError::InvalidConfig(validation.status));
+        }
+        if options.task.trim().is_empty() {
+            return Err(WorkflowError::InvalidConfig("task_empty".to_owned()));
+        }
+        let workflow = self
+            .config
+            .workflows
+            .get(&options.workflow_id)
+            .ok_or_else(|| WorkflowError::WorkflowNotFound(options.workflow_id.clone()))?;
+
+        let run_id = RunId::new();
+        let request = RunRequest {
+            repo_root: options.repo_root.display().to_string(),
+            task: options.task.clone(),
+            workflow_id: WorkflowId::new(options.workflow_id.clone()),
+        };
+        let mut state = RunState::new(run_id.clone(), request.workflow_id.clone());
+        state.status = RunStatus::Running;
+        self.store.write_metadata(&state)?;
+
+        let mut sequence = 1;
+        self.emit(
+            &run_id,
+            &mut sequence,
+            "run.started",
+            json!({
+                "workflow_id": &options.workflow_id,
+                "task": &options.task,
+                "repo_root": request.repo_root,
+                "dry_run": options.dry_run,
+                "max_rounds": workflow.max_rounds
+            }),
+        )?;
+
+        let requested_rounds = options
+            .max_rounds_override
+            .unwrap_or(workflow.max_rounds)
+            .max(1);
+        let rounds_to_run = requested_rounds.min(workflow.max_rounds);
+        let max_rounds_reached = requested_rounds > workflow.max_rounds;
+        let mut terminal_status = RunStatus::Completed;
+        let mut terminal_reason = if max_rounds_reached {
+            Some("max_rounds reached before a terminal completed outcome".to_owned())
+        } else {
+            None
+        };
+        let mut checks = Vec::new();
+        let mut blockers = Vec::new();
+        let mut evidence_refs = Vec::new();
+
+        for round in 1..=rounds_to_run {
+            let mut stop_after_round = false;
+            self.emit(
+                &run_id,
+                &mut sequence,
+                "round.started",
+                json!({"round": round}),
+            )?;
+
+            for node in &workflow.nodes {
+                let harness = self.config.harnesses.get(&node.harness).ok_or_else(|| {
+                    WorkflowError::InvalidConfig(format!(
+                        "missing harness '{}' for node '{}'",
+                        node.harness, node.id
+                    ))
+                })?;
+                let backend = self
+                    .backends
+                    .backend_for(&harness.backend)
+                    .ok_or_else(|| WorkflowError::BackendNotFound(harness.backend.clone()))?;
+
+                self.emit(
+                    &run_id,
+                    &mut sequence,
+                    "node.started",
+                    json!({
+                        "round": round,
+                        "node_id": node.id,
+                        "agent": node.agent,
+                        "harness": node.harness,
+                        "backend": harness.backend
+                    }),
+                )?;
+
+                let backend_result = match backend
+                    .run(HarnessRunRequest {
+                        run_id: run_id.clone(),
+                        workflow_id: options.workflow_id.clone(),
+                        node_id: node.id.clone(),
+                        agent_id: node.agent.clone(),
+                        harness_id: node.harness.clone(),
+                        task: options.task.clone(),
+                    })
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(HarnessError::Unavailable(message)) => HarnessRunResult::blocked(format!(
+                        "backend '{}' unavailable: {message}",
+                        harness.backend
+                    )),
+                    Err(error) => HarnessRunResult {
+                        status: "failed".to_owned(),
+                        report: Some(FinalReport::failed(
+                            "Harness backend failed.",
+                            error.to_string(),
+                        )),
+                        events: vec![HarnessRunEvent::new(
+                            "backend.failed",
+                            json!({
+                                "backend": harness.backend,
+                                "error": error.to_string()
+                            }),
+                        )],
+                    },
+                };
+
+                for backend_event in backend_result.events {
+                    self.emit_harness_event(&run_id, &mut sequence, backend_event)?;
+                }
+
+                let status = backend_result.status.as_str();
+                checks.push(format!(
+                    "node {} via {}: {}",
+                    node.id, harness.backend, status
+                ));
+                if let Some(report) = backend_result.report {
+                    evidence_refs.extend(report.evidence_refs);
+                    blockers.extend(report.blockers);
+                }
+
+                if status == "completed" {
+                    self.emit(
+                        &run_id,
+                        &mut sequence,
+                        "node.completed",
+                        json!({
+                            "round": round,
+                            "node_id": node.id,
+                            "status": status
+                        }),
+                    )?;
+                } else {
+                    terminal_status = if status == "blocked" {
+                        RunStatus::Blocked
+                    } else {
+                        RunStatus::Failed
+                    };
+                    let reason = blockers.last().cloned().unwrap_or_else(|| {
+                        format!("node '{}' returned status '{}'", node.id, status)
+                    });
+                    terminal_reason = Some(reason.clone());
+                    self.emit(
+                        &run_id,
+                        &mut sequence,
+                        "node.failed",
+                        json!({
+                            "round": round,
+                            "node_id": node.id,
+                            "status": status,
+                            "reason": reason
+                        }),
+                    )?;
+                    stop_after_round = true;
+                    break;
+                }
+            }
+
+            let round_status = if stop_after_round {
+                run_status_str(terminal_status)
+            } else {
+                "completed"
+            };
+            self.emit(
+                &run_id,
+                &mut sequence,
+                "round.completed",
+                json!({"round": round, "status": round_status}),
+            )?;
+            if stop_after_round {
+                break;
+            }
+        }
+
+        if max_rounds_reached && terminal_status == RunStatus::Completed {
+            terminal_status = RunStatus::Blocked;
+        }
+
+        let report = workflow_run_report(WorkflowReportInput {
+            run_id: &run_id,
+            workflow_id: &options.workflow_id,
+            workflow,
+            status: terminal_status,
+            reason: terminal_reason.as_deref(),
+            checks,
+            evidence_refs,
+            blockers,
+        });
+        let report_ref = self.store.write_report(&run_id, &report)?;
+        self.emit(
+            &run_id,
+            &mut sequence,
+            "report.created",
+            json!({"report_ref": report_ref.clone()}),
+        )?;
+        let terminal_event = match terminal_status {
+            RunStatus::Completed => "run.completed",
+            RunStatus::Blocked => "run.blocked",
+            RunStatus::Failed => "run.failed",
+            RunStatus::Cancelled => "run.cancelled",
+            RunStatus::Queued | RunStatus::Running => "run.failed",
+        };
+        self.emit(
+            &run_id,
+            &mut sequence,
+            terminal_event,
+            json!({
+                "status": run_status_str(terminal_status),
+                "report_ref": report_ref.clone(),
+                "max_rounds_reached": max_rounds_reached
+            }),
+        )?;
+
+        state.status = terminal_status;
+        state.updated_at = time::OffsetDateTime::now_utc();
+        self.store.write_metadata(&state)?;
+
+        Ok(WorkflowRunOutput {
+            run_id,
+            report,
+            report_ref,
+        })
+    }
+
+    fn emit(
+        &self,
+        run_id: &RunId,
+        sequence: &mut u64,
+        kind: &str,
+        payload: Value,
+    ) -> Result<(), WorkflowError> {
+        let event = CoderEvent::new(run_id.clone(), *sequence, kind, payload);
+        self.store.append_event(run_id, &event)?;
+        *sequence += 1;
+        Ok(())
+    }
+
+    fn emit_harness_event(
+        &self,
+        run_id: &RunId,
+        sequence: &mut u64,
+        backend_event: HarnessRunEvent,
+    ) -> Result<(), WorkflowError> {
+        let mut event = CoderEvent::new(
+            run_id.clone(),
+            *sequence,
+            backend_event.kind,
+            backend_event.payload,
+        );
+        for reference in backend_event.refs {
+            event = event.with_ref(reference.label, reference.uri);
+        }
+        self.store.append_event(run_id, &event)?;
+        *sequence += 1;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkflowRunOptions {
+    pub workflow_id: String,
+    pub task: String,
+    pub repo_root: PathBuf,
+    pub dry_run: bool,
+    pub max_rounds_override: Option<u32>,
+}
+
+impl WorkflowRunOptions {
+    pub fn new(workflow_id: impl Into<String>, task: impl Into<String>) -> Self {
+        Self {
+            workflow_id: workflow_id.into(),
+            task: task.into(),
+            repo_root: PathBuf::from("."),
+            dry_run: false,
+            max_rounds_override: None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct WorkflowRunOutput {
+    pub run_id: RunId,
+    pub report: FinalReport,
+    pub report_ref: String,
+}
+
+#[derive(Clone)]
+pub struct BackendRegistry {
+    native_mock: Arc<dyn HarnessBackend>,
+    openhands: Option<Arc<dyn HarnessBackend>>,
+}
+
+impl BackendRegistry {
+    pub fn native_only() -> Self {
+        Self {
+            native_mock: Arc::new(NativeMockBackend::default()),
+            openhands: None,
+        }
+    }
+
+    pub fn from_project_config(config: &ProjectConfig, store: RunStore) -> Self {
+        let openhands = config
+            .harnesses
+            .values()
+            .find(|harness| harness.backend == "openhands")
+            .and_then(|harness| harness.openhands.as_ref())
+            .map(|config| {
+                Arc::new(OpenHandsHarnessBackend::new(config.clone(), store))
+                    as Arc<dyn HarnessBackend>
+            });
+        Self {
+            native_mock: Arc::new(NativeMockBackend::default()),
+            openhands,
+        }
+    }
+
+    pub fn with_native_backend(mut self, backend: Arc<dyn HarnessBackend>) -> Self {
+        self.native_mock = backend;
+        self
+    }
+
+    pub fn with_openhands_backend(mut self, backend: Arc<dyn HarnessBackend>) -> Self {
+        self.openhands = Some(backend);
+        self
+    }
+
+    pub fn backend_for(&self, backend: &str) -> Option<Arc<dyn HarnessBackend>> {
+        match backend {
+            "native-rust" | "native_mock" | "mock" => Some(Arc::clone(&self.native_mock)),
+            "openhands" => self.openhands.as_ref().map(Arc::clone),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub enum NativeMockOutcome {
+    #[default]
+    Completed,
+    Blocked,
+    Failed,
+}
+
+#[derive(Debug, Default)]
+pub struct NativeMockBackend {
+    outcome: NativeMockOutcome,
+}
+
+impl NativeMockBackend {
+    pub fn new(outcome: NativeMockOutcome) -> Self {
+        Self { outcome }
+    }
+}
+
+#[async_trait]
+impl HarnessBackend for NativeMockBackend {
+    async fn run(&self, request: HarnessRunRequest) -> Result<HarnessRunResult, HarnessError> {
+        let status = match self.outcome {
+            NativeMockOutcome::Completed => "completed",
+            NativeMockOutcome::Blocked => "blocked",
+            NativeMockOutcome::Failed => "failed",
+        };
+        let summary = format!(
+            "Native mock backend processed node '{}' for task '{}'.",
+            request.node_id, request.task
+        );
+        let report = match self.outcome {
+            NativeMockOutcome::Completed => FinalReport::completed(summary),
+            NativeMockOutcome::Blocked => {
+                FinalReport::blocked(summary, "native mock backend requested blocked outcome")
+            }
+            NativeMockOutcome::Failed => {
+                FinalReport::failed(summary, "native mock backend requested failed outcome")
+            }
+        };
+        Ok(HarnessRunResult {
+            status: status.to_owned(),
+            report: Some(report),
+            events: vec![HarnessRunEvent::new(
+                format!("backend.native_mock.{status}"),
+                json!({
+                    "backend": "native-rust",
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
+                    "status": status
+                }),
+            )],
+        })
+    }
+}
+
+pub struct OpenHandsHarnessBackend {
+    config: OpenHandsHarnessConfig,
+    store: RunStore,
+}
+
+impl OpenHandsHarnessBackend {
+    pub fn new(config: OpenHandsHarnessConfig, store: RunStore) -> Self {
+        Self { config, store }
+    }
+}
+
+#[async_trait]
+impl HarnessBackend for OpenHandsHarnessBackend {
+    async fn run(&self, request: HarnessRunRequest) -> Result<HarnessRunResult, HarnessError> {
+        let client = OpenHandsClient::new(openhands_server_config_from_harness(&self.config));
+        let health = client
+            .health()
+            .await
+            .map_err(|error| HarnessError::Unavailable(error.to_string()))?;
+        if !health.available {
+            return Err(HarnessError::Unavailable(health.detail));
+        }
+
+        let conversation = client
+            .create_conversation(json!({
+                "agent": {"kind": "CodeActAgent"},
+                "metadata": {
+                    "source": "coder-workflow",
+                    "workflow_id": &request.workflow_id,
+                    "node_id": &request.node_id
+                }
+            }))
+            .await
+            .map_err(|error| HarnessError::Failed(error.to_string()))?;
+        client
+            .send_user_message(&conversation.id, &request.task, Some("coder-workflow"))
+            .await
+            .map_err(|error| HarnessError::Failed(error.to_string()))?;
+        let trigger = client
+            .trigger_run(&conversation.id)
+            .await
+            .map_err(|error| HarnessError::Failed(error.to_string()))?;
+        let raw_events = client
+            .fetch_events(&conversation.id, 100)
+            .await
+            .map_err(|error| HarnessError::Failed(error.to_string()))?;
+
+        let mut events = Vec::new();
+        for raw in raw_events.iter().cloned() {
+            let raw_text = serde_json::to_string(&raw)
+                .map_err(|error| HarnessError::Failed(error.to_string()))?;
+            let raw_ref = self
+                .store
+                .write_large_text_ref(&raw_text)
+                .map_err(|error| HarnessError::Failed(error.to_string()))?
+                .blob_ref;
+            let normalized =
+                normalize_openhands_event(request.run_id.clone(), 0, raw, Some(raw_ref));
+            let mut event = HarnessRunEvent::new(normalized.kind, normalized.payload);
+            for reference in normalized.refs {
+                event = event.with_ref(reference.label, reference.uri);
+            }
+            events.push(event);
+        }
+        let websocket_url = client
+            .events_websocket_url(&conversation.id)
+            .map_err(|error| HarnessError::Failed(error.to_string()))?;
+        let raw_refs = events
+            .iter()
+            .flat_map(|event| event.refs.iter())
+            .filter(|reference| reference.label == "openhands.raw_event")
+            .map(|reference| reference.uri.clone())
+            .collect::<Vec<_>>();
+        let report = openhands_final_report(
+            &request.run_id,
+            &conversation.id,
+            &trigger,
+            raw_events.len(),
+            &websocket_url,
+            &raw_refs,
+        );
+
+        Ok(HarnessRunResult {
+            status: "completed".to_owned(),
+            report: Some(report),
+            events,
+        })
+    }
+}
+
+struct WorkflowReportInput<'a> {
+    run_id: &'a RunId,
+    workflow_id: &'a str,
+    workflow: &'a WorkflowSpec,
+    status: RunStatus,
+    reason: Option<&'a str>,
+    checks: Vec<String>,
+    evidence_refs: Vec<coder_core::EvidenceRef>,
+    blockers: Vec<String>,
+}
+
+fn workflow_run_report(input: WorkflowReportInput<'_>) -> FinalReport {
+    let report_status = match input.status {
+        RunStatus::Completed => ReportStatus::Completed,
+        RunStatus::Blocked => ReportStatus::Blocked,
+        RunStatus::Failed | RunStatus::Queued | RunStatus::Running => ReportStatus::Failed,
+        RunStatus::Cancelled => ReportStatus::Cancelled,
+    };
+    let mut report = FinalReport::with_status(
+        report_status,
+        format!(
+            "Workflow '{workflow_id}' finished with status '{}' after dispatching {} node(s).",
+            run_status_str(input.status),
+            input.workflow.nodes.len(),
+            workflow_id = input.workflow_id
+        ),
+    );
+    report.checks = input.checks;
+    report.blockers = input.blockers;
+    if report.blockers.is_empty() {
+        if let Some(reason) = input.reason {
+            report.blockers.push(reason.to_owned());
+        }
+    }
+    let mut evidence_refs = input.evidence_refs;
+    evidence_refs.push(coder_core::EvidenceRef {
+        kind: "event_log".to_owned(),
+        reference: format!("eventlog://runs/{}/events.jsonl", input.run_id.as_str()),
+    });
+    evidence_refs.sort_by(|left, right| {
+        (left.kind.as_str(), left.reference.as_str())
+            .cmp(&(right.kind.as_str(), right.reference.as_str()))
+    });
+    evidence_refs
+        .dedup_by(|left, right| left.kind == right.kind && left.reference == right.reference);
+    report.evidence_refs = evidence_refs;
+    report
+}
+
+fn run_status_str(status: RunStatus) -> &'static str {
+    match status {
+        RunStatus::Queued => "queued",
+        RunStatus::Running => "running",
+        RunStatus::Completed => "completed",
+        RunStatus::Blocked => "blocked",
+        RunStatus::Failed => "failed",
+        RunStatus::Cancelled => "cancelled",
+    }
+}
+
+fn openhands_server_config_from_harness(config: &OpenHandsHarnessConfig) -> OpenHandsServerConfig {
+    OpenHandsServerConfig {
+        server_url: config.server_url.clone(),
+        session_api_key_env: config.session_api_key_env.clone(),
+        api_paths: openhands_api_paths_from_config(&config.api_paths),
+        run_start_strategy: openhands_run_strategy_from_config(config.run_start_strategy),
+    }
+}
+
+fn openhands_api_paths_from_config(paths: &ConfigOpenHandsApiPaths) -> OpenHandsApiPaths {
+    OpenHandsApiPaths {
+        api_prefix: paths.api_prefix.clone(),
+        conversations_path: paths.conversations_path.clone(),
+        events_search_path: paths.events_search_path.clone(),
+        run_endpoint_path: paths.run_endpoint_path.clone(),
+        websocket_path_template: paths.websocket_path_template.clone(),
+        auth_header: match paths.auth_header {
+            ConfigOpenHandsAuthHeaderMode::AuthorizationBearer => {
+                OpenHandsAuthHeaderMode::AuthorizationBearer
+            }
+            ConfigOpenHandsAuthHeaderMode::XSessionApiKey => {
+                OpenHandsAuthHeaderMode::XSessionApiKey
+            }
+        },
+    }
+}
+
+fn openhands_run_strategy_from_config(
+    strategy: ConfigOpenHandsRunStartStrategy,
+) -> OpenHandsRunStartStrategy {
+    match strategy {
+        ConfigOpenHandsRunStartStrategy::PostRunEndpoint => {
+            OpenHandsRunStartStrategy::PostRunEndpoint
+        }
+        ConfigOpenHandsRunStartStrategy::PostUserEventWithRunTrue => {
+            OpenHandsRunStartStrategy::PostUserEventWithRunTrue
+        }
+        ConfigOpenHandsRunStartStrategy::None => OpenHandsRunStartStrategy::None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, sync::Arc};
 
     use coder_config::ProjectConfig;
     use coder_core::ReportStatus;
@@ -363,6 +1006,151 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn workflow_runner_native_mock_completed() {
+        let (mut config, root, store) = fixture();
+        make_workflow_native_only(&mut config);
+        let runner = WorkflowRunner::new(config, store.clone());
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "complete task"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Completed);
+        assert_eq!(events.first().unwrap().kind, "run.started");
+        assert_eq!(events.last().unwrap().kind, "run.completed");
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "backend.native_mock.completed"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_native_mock_blocked() {
+        let (mut config, root, store) = fixture();
+        make_workflow_native_only(&mut config);
+        let registry = BackendRegistry::native_only()
+            .with_native_backend(Arc::new(NativeMockBackend::new(NativeMockOutcome::Blocked)));
+        let runner = WorkflowRunner::with_registry(config, store.clone(), registry);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "blocked task"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Blocked);
+        assert!(output.report.blockers[0].contains("blocked outcome"));
+        assert!(events.iter().any(|event| {
+            event.kind == "round.completed" && event.payload["status"].as_str() == Some("blocked")
+        }));
+        assert_eq!(events.last().unwrap().kind, "run.blocked");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_blocks_when_openhands_unavailable() {
+        let (mut config, root, store) = fixture();
+        let openhands = config
+            .harnesses
+            .get_mut("openhands-code-edit")
+            .unwrap()
+            .openhands
+            .as_mut()
+            .unwrap();
+        openhands.server_url = "http://127.0.0.1:1".to_owned();
+        let runner = WorkflowRunner::new(config, store.clone());
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "needs openhands"))
+            .await
+            .unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Blocked);
+        assert!(output
+            .report
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("backend 'openhands' unavailable")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_reports_unknown_backend() {
+        let (mut config, root, store) = fixture();
+        config
+            .harnesses
+            .get_mut("openhands-code-edit")
+            .unwrap()
+            .backend = "mystery-backend".to_owned();
+        let runner = WorkflowRunner::new(config, store);
+
+        let error = runner
+            .run(WorkflowRunOptions::new("planner-led", "unknown backend"))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, WorkflowError::BackendNotFound(_)));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_blocks_when_max_rounds_override_exceeds_spec() {
+        let (mut config, root, store) = fixture();
+        make_workflow_native_only(&mut config);
+        config.workflows.get_mut("planner-led").unwrap().max_rounds = 2;
+        let runner = WorkflowRunner::new(config, store.clone());
+        let mut options = WorkflowRunOptions::new("planner-led", "too many rounds");
+        options.max_rounds_override = Some(3);
+
+        let output = runner.run(options).await.unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Blocked);
+        assert!(output.report.blockers[0].contains("max_rounds"));
+        assert_eq!(events.last().unwrap().kind, "run.blocked");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_event_sequence_is_monotonic() {
+        let (mut config, root, store) = fixture();
+        make_workflow_native_only(&mut config);
+        let runner = WorkflowRunner::new(config, store.clone());
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "sequence task"))
+            .await
+            .unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event.sequence, index as u64 + 1);
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_final_report_has_event_log_evidence() {
+        let (mut config, root, store) = fixture();
+        make_workflow_native_only(&mut config);
+        let runner = WorkflowRunner::new(config, store);
+
+        let output = runner
+            .run(WorkflowRunOptions::new("planner-led", "evidence task"))
+            .await
+            .unwrap();
+
+        assert!(output
+            .report
+            .evidence_refs
+            .iter()
+            .any(|reference| reference.kind == "event_log"));
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn fixture() -> (ProjectConfig, PathBuf, RunStore) {
         let config: ProjectConfig =
             serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
@@ -372,5 +1160,12 @@ mod tests {
             std::env::temp_dir().join(format!("coder-workflow-{}-{}", std::process::id(), id));
         let store = RunStore::new(&root);
         (config, root, store)
+    }
+
+    fn make_workflow_native_only(config: &mut ProjectConfig) {
+        for harness in config.harnesses.values_mut() {
+            harness.backend = "native-rust".to_owned();
+            harness.openhands = None;
+        }
     }
 }

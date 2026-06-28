@@ -7,12 +7,97 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
 
-const CONVERSATIONS_PATH: &str = "/api/conversations";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OpenHandsServerConfig {
     pub server_url: String,
     pub session_api_key_env: Option<String>,
+    #[serde(default)]
+    pub api_paths: OpenHandsApiPaths,
+    #[serde(default)]
+    pub run_start_strategy: OpenHandsRunStartStrategy,
+}
+
+impl OpenHandsServerConfig {
+    pub fn new(server_url: impl Into<String>, session_api_key_env: Option<String>) -> Self {
+        Self {
+            server_url: server_url.into(),
+            session_api_key_env,
+            api_paths: OpenHandsApiPaths::default(),
+            run_start_strategy: OpenHandsRunStartStrategy::default(),
+        }
+    }
+
+    pub fn legacy_sdk(server_url: impl Into<String>, session_api_key_env: Option<String>) -> Self {
+        Self {
+            server_url: server_url.into(),
+            session_api_key_env,
+            api_paths: OpenHandsApiPaths::legacy_sdk(),
+            run_start_strategy: OpenHandsRunStartStrategy::PostRunEndpoint,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenHandsApiPaths {
+    #[serde(default)]
+    pub api_prefix: String,
+    #[serde(default = "default_conversations_path")]
+    pub conversations_path: String,
+    #[serde(default)]
+    pub events_search_path: Option<String>,
+    #[serde(default)]
+    pub run_endpoint_path: Option<String>,
+    #[serde(default)]
+    pub websocket_path_template: Option<String>,
+    #[serde(default)]
+    pub auth_header: OpenHandsAuthHeaderMode,
+}
+
+impl Default for OpenHandsApiPaths {
+    fn default() -> Self {
+        Self {
+            api_prefix: String::new(),
+            conversations_path: default_conversations_path(),
+            events_search_path: None,
+            run_endpoint_path: None,
+            websocket_path_template: None,
+            auth_header: OpenHandsAuthHeaderMode::default(),
+        }
+    }
+}
+
+impl OpenHandsApiPaths {
+    pub fn legacy_sdk() -> Self {
+        Self {
+            api_prefix: "/api".to_owned(),
+            conversations_path: default_conversations_path(),
+            events_search_path: Some("/conversations/{conversation_id}/events/search".to_owned()),
+            run_endpoint_path: Some("/conversations/{conversation_id}/run".to_owned()),
+            websocket_path_template: Some("/sockets/events/{conversation_id}".to_owned()),
+            auth_header: OpenHandsAuthHeaderMode::XSessionApiKey,
+        }
+    }
+}
+
+fn default_conversations_path() -> String {
+    "/conversations".to_owned()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenHandsAuthHeaderMode {
+    #[default]
+    AuthorizationBearer,
+    XSessionApiKey,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenHandsRunStartStrategy {
+    PostRunEndpoint,
+    #[default]
+    PostUserEventWithRunTrue,
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,6 +117,7 @@ pub struct OpenHandsConversation {
 pub struct OpenHandsRunTrigger {
     pub already_running: bool,
     pub status: u16,
+    pub strategy: OpenHandsRunStartStrategy,
 }
 
 pub struct OpenHandsClient {
@@ -73,10 +159,11 @@ impl OpenHandsClient {
         &self,
         payload: Value,
     ) -> Result<OpenHandsConversation, OpenHandsError> {
+        let path = self.conversations_path();
         let response = self
             .send_json(
                 "POST",
-                CONVERSATIONS_PATH,
+                &path,
                 payload,
                 &[StatusCode::OK, StatusCode::CREATED],
             )
@@ -88,7 +175,7 @@ impl OpenHandsClient {
         &self,
         conversation_id: &str,
     ) -> Result<OpenHandsConversation, OpenHandsError> {
-        let path = format!("{CONVERSATIONS_PATH}/{conversation_id}");
+        let path = self.conversation_path(conversation_id);
         let response = self.send_empty("GET", &path, &[StatusCode::OK]).await?;
         Ok(OpenHandsConversation {
             id: conversation_id.to_owned(),
@@ -102,53 +189,50 @@ impl OpenHandsClient {
         message: &str,
         sender: Option<&str>,
     ) -> Result<Value, OpenHandsError> {
-        let mut payload = json!({
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": message,
-                    "cache_prompt": false
-                }
-            ],
-            "run": false
-        });
-        if let Some(sender) = sender {
-            payload["sender"] = Value::String(sender.to_owned());
-        }
-
-        let path = format!("{CONVERSATIONS_PATH}/{conversation_id}/events");
-        self.send_json(
-            "POST",
-            &path,
-            payload,
-            &[StatusCode::OK, StatusCode::CREATED],
-        )
-        .await
+        let start_run =
+            self.config.run_start_strategy == OpenHandsRunStartStrategy::PostUserEventWithRunTrue;
+        self.send_user_event(conversation_id, message, sender, start_run)
+            .await
     }
 
     pub async fn trigger_run(
         &self,
         conversation_id: &str,
     ) -> Result<OpenHandsRunTrigger, OpenHandsError> {
-        let path = format!("{CONVERSATIONS_PATH}/{conversation_id}/run");
-        let response = self
-            .send_raw(
-                "POST",
-                &path,
-                None,
-                &[
-                    StatusCode::OK,
-                    StatusCode::CREATED,
-                    StatusCode::NO_CONTENT,
-                    StatusCode::CONFLICT,
-                ],
-            )
-            .await?;
-        Ok(OpenHandsRunTrigger {
-            already_running: response.status == StatusCode::CONFLICT.as_u16(),
-            status: response.status,
-        })
+        match self.config.run_start_strategy {
+            OpenHandsRunStartStrategy::PostRunEndpoint => {
+                let path = self.run_endpoint_path(conversation_id);
+                let response = self
+                    .send_raw(
+                        "POST",
+                        &path,
+                        None,
+                        &[
+                            StatusCode::OK,
+                            StatusCode::CREATED,
+                            StatusCode::ACCEPTED,
+                            StatusCode::NO_CONTENT,
+                            StatusCode::CONFLICT,
+                        ],
+                    )
+                    .await?;
+                Ok(OpenHandsRunTrigger {
+                    already_running: response.status == StatusCode::CONFLICT.as_u16(),
+                    status: response.status,
+                    strategy: OpenHandsRunStartStrategy::PostRunEndpoint,
+                })
+            }
+            OpenHandsRunStartStrategy::PostUserEventWithRunTrue => Ok(OpenHandsRunTrigger {
+                already_running: false,
+                status: StatusCode::ACCEPTED.as_u16(),
+                strategy: OpenHandsRunStartStrategy::PostUserEventWithRunTrue,
+            }),
+            OpenHandsRunStartStrategy::None => Ok(OpenHandsRunTrigger {
+                already_running: false,
+                status: 0,
+                strategy: OpenHandsRunStartStrategy::None,
+            }),
+        }
     }
 
     pub async fn fetch_events(
@@ -159,28 +243,21 @@ impl OpenHandsClient {
         let mut events = Vec::new();
         let mut page_id: Option<String> = None;
         loop {
-            let path = format!("{CONVERSATIONS_PATH}/{conversation_id}/events/search");
-            let mut request = self
-                .with_auth(self.client.get(self.url(&path)))
-                .query(&[("limit", limit.to_string())]);
-            if let Some(page_id) = &page_id {
-                request = request.query(&[("page_id", page_id)]);
+            let path = self.events_fetch_path(conversation_id);
+            let mut request = self.with_auth(self.client.get(self.url(&path)));
+            let paged_search = self.config.api_paths.events_search_path.is_some();
+            if paged_search {
+                request = request.query(&[("limit", limit.to_string())]);
+                if let Some(page_id) = &page_id {
+                    request = request.query(&[("page_id", page_id)]);
+                }
             }
             let response = request.send().await?;
             let response = checked_response("GET", &path, response, &[StatusCode::OK]).await?;
-            let value = response.json;
-            let items = value
-                .get("items")
-                .and_then(Value::as_array)
-                .ok_or_else(|| OpenHandsError::InvalidResponse {
-                    detail: "events search response missing items array".to_owned(),
-                })?;
-            events.extend(items.iter().cloned());
-            page_id = value
-                .get("next_page_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            if page_id.is_none() {
+            let page = parse_openhands_events_response(response.json)?;
+            events.extend(page.items);
+            page_id = page.next_page_id;
+            if !paged_search || page_id.is_none() {
                 break;
             }
         }
@@ -189,23 +266,120 @@ impl OpenHandsClient {
 
     pub fn events_websocket_url(&self, conversation_id: &str) -> Result<String, OpenHandsError> {
         let base = self.config.server_url.trim_end_matches('/');
-        let url = if let Some(rest) = base.strip_prefix("https://") {
-            format!("wss://{rest}/sockets/events/{conversation_id}")
+        let websocket_base = if let Some(rest) = base.strip_prefix("https://") {
+            format!("wss://{rest}")
         } else if let Some(rest) = base.strip_prefix("http://") {
-            format!("ws://{rest}/sockets/events/{conversation_id}")
+            format!("ws://{rest}")
         } else {
             return Err(OpenHandsError::InvalidConfig(
                 "server_url must start with http:// or https://".to_owned(),
             ));
         };
-        if let Some(api_key) = self.session_api_key() {
-            Ok(format!(
-                "{url}?session_api_key={}",
-                percent_encode_query_value(&api_key)
-            ))
-        } else {
-            Ok(url)
+        Ok(format!(
+            "{}{}",
+            websocket_base.trim_end_matches('/'),
+            self.websocket_path(conversation_id)
+        ))
+    }
+
+    async fn send_user_event<'a>(
+        &'a self,
+        conversation_id: &'a str,
+        message: &'a str,
+        sender: Option<&'a str>,
+        run: bool,
+    ) -> Result<Value, OpenHandsError> {
+        let mut payload = json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": message,
+                    "cache_prompt": false
+                }
+            ],
+            "run": run
+        });
+        if let Some(sender) = sender {
+            payload["sender"] = Value::String(sender.to_owned());
         }
+
+        let path = self.events_post_path(conversation_id);
+        self.send_json(
+            "POST",
+            &path,
+            payload,
+            &[
+                StatusCode::OK,
+                StatusCode::CREATED,
+                StatusCode::ACCEPTED,
+                StatusCode::NO_CONTENT,
+            ],
+        )
+        .await
+    }
+
+    fn conversations_path(&self) -> String {
+        prefixed_path(
+            &self.config.api_paths.api_prefix,
+            &self.config.api_paths.conversations_path,
+        )
+    }
+
+    fn conversation_path(&self, conversation_id: &str) -> String {
+        format!(
+            "{}/{}",
+            self.conversations_path().trim_end_matches('/'),
+            percent_encode_path_segment(conversation_id)
+        )
+    }
+
+    fn events_post_path(&self, conversation_id: &str) -> String {
+        format!(
+            "{}/events",
+            self.conversation_path(conversation_id)
+                .trim_end_matches('/')
+        )
+    }
+
+    fn events_fetch_path(&self, conversation_id: &str) -> String {
+        if let Some(template) = &self.config.api_paths.events_search_path {
+            return self.template_path(template, conversation_id);
+        }
+        self.events_post_path(conversation_id)
+    }
+
+    fn run_endpoint_path(&self, conversation_id: &str) -> String {
+        if let Some(template) = &self.config.api_paths.run_endpoint_path {
+            return self.template_path(template, conversation_id);
+        }
+        format!(
+            "{}/run",
+            self.conversation_path(conversation_id)
+                .trim_end_matches('/')
+        )
+    }
+
+    fn websocket_path(&self, conversation_id: &str) -> String {
+        if let Some(template) = &self.config.api_paths.websocket_path_template {
+            let path = template.replace(
+                "{conversation_id}",
+                &percent_encode_path_segment(conversation_id),
+            );
+            return normalize_path(&path);
+        }
+        self.template_path(
+            "/conversations/{conversation_id}/events/socket",
+            conversation_id,
+        )
+    }
+
+    fn template_path(&self, template: &str, conversation_id: &str) -> String {
+        let path = template.replace(
+            "{conversation_id}",
+            &percent_encode_path_segment(conversation_id),
+        );
+        prefixed_path(&self.config.api_paths.api_prefix, &path)
     }
 
     fn url(&self, path: &str) -> String {
@@ -214,7 +388,12 @@ impl OpenHandsClient {
 
     fn with_auth(&self, request: RequestBuilder) -> RequestBuilder {
         if let Some(api_key) = self.session_api_key() {
-            request.header("X-Session-API-Key", api_key)
+            match self.config.api_paths.auth_header {
+                OpenHandsAuthHeaderMode::AuthorizationBearer => request.bearer_auth(api_key),
+                OpenHandsAuthHeaderMode::XSessionApiKey => {
+                    request.header("X-Session-API-Key", api_key)
+                }
+            }
         } else {
             request
         }
@@ -274,6 +453,43 @@ impl OpenHandsClient {
     }
 }
 
+pub fn parse_openhands_events_response(
+    value: Value,
+) -> Result<OpenHandsEventsPage, OpenHandsError> {
+    if let Some(items) = value.as_array() {
+        return Ok(OpenHandsEventsPage {
+            items: items.clone(),
+            next_page_id: None,
+        });
+    }
+    let Some(object) = value.as_object() else {
+        return Err(OpenHandsError::InvalidResponse {
+            detail: "events response must be an array or object".to_owned(),
+        });
+    };
+    if let Some(events) = object.get("events").and_then(Value::as_array) {
+        return Ok(OpenHandsEventsPage {
+            items: events.clone(),
+            next_page_id: next_page_id(&value),
+        });
+    }
+    if let Some(items) = object.get("items").and_then(Value::as_array) {
+        return Ok(OpenHandsEventsPage {
+            items: items.clone(),
+            next_page_id: next_page_id(&value),
+        });
+    }
+    Err(OpenHandsError::InvalidResponse {
+        detail: "events response missing array, events array, or items array".to_owned(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpenHandsEventsPage {
+    pub items: Vec<Value>,
+    pub next_page_id: Option<String>,
+}
+
 pub fn normalize_openhands_event(
     run_id: RunId,
     sequence: u64,
@@ -320,7 +536,10 @@ pub fn openhands_final_report(
     let mut report = FinalReport::completed(format!(
         "OpenHands conversation '{conversation_id}' was triggered by the Rust adapter and {captured_events} event(s) were captured."
     ))
-    .with_check(format!("openhands trigger HTTP {}", trigger.status))
+    .with_check(format!(
+        "openhands trigger {:?} status {}",
+        trigger.strategy, trigger.status
+    ))
     .with_evidence(
         "event_log",
         format!("eventlog://runs/{}/events.jsonl", run_id.as_str()),
@@ -415,6 +634,15 @@ fn conversation_from_response(value: Value) -> Result<OpenHandsConversation, Ope
     Ok(OpenHandsConversation { id, raw: value })
 }
 
+fn next_page_id(value: &Value) -> Option<String> {
+    value
+        .get("next_page_id")
+        .or_else(|| value.get("next"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
 fn raw_event_kind(raw: &Value) -> String {
     for key in ["kind", "type", "event_type", "action", "observation"] {
         if let Some(value) = raw.get(key).and_then(Value::as_str) {
@@ -439,7 +667,35 @@ fn sanitize_event_kind(value: &str) -> String {
         .collect()
 }
 
-fn percent_encode_query_value(value: &str) -> String {
+fn prefixed_path(api_prefix: &str, path: &str) -> String {
+    let prefix = normalize_path(api_prefix);
+    let path = normalize_path(path);
+    if prefix.is_empty() {
+        return path;
+    }
+    if path == prefix || path.starts_with(&format!("{prefix}/")) {
+        path
+    } else {
+        format!(
+            "{}/{}",
+            prefix.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        )
+    }
+}
+
+fn normalize_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else if trimmed.starts_with('/') {
+        trimmed.trim_end_matches('/').to_owned()
+    } else {
+        format!("/{}", trimmed.trim_end_matches('/'))
+    }
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
@@ -497,6 +753,8 @@ mod tests {
         time::Duration,
     };
 
+    use coder_core::{RunState, RunStatus, WorkflowId};
+    use coder_store::RunStore;
     use serde_json::json;
 
     use super::*;
@@ -504,10 +762,7 @@ mod tests {
     #[tokio::test]
     async fn health_checks_health_endpoint() {
         let (server_url, requests) = spawn_server(vec![json_response(r#"{"status":"ok"}"#)]);
-        let client = OpenHandsClient::new(OpenHandsServerConfig {
-            server_url,
-            session_api_key_env: None,
-        });
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new(server_url, None));
 
         let health = client.health().await.unwrap();
 
@@ -516,19 +771,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_send_run_and_fetch_events_use_agent_server_paths() {
+    async fn default_paths_follow_agent_server_contract() {
+        let (server_url, requests) = spawn_server(vec![
+            json_response(r#"{"id":"conv-1"}"#),
+            json_response(r#"{"id":"conv-1","status":"ready"}"#),
+            json_response(r#"{"accepted":true}"#),
+            json_response(r#"[{"id":"raw-1","type":"MessageEvent","api_key":"secret"}]"#),
+        ]);
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new(server_url, None));
+
+        let conversation = client
+            .create_conversation(json!({"agent": {"kind": "test"}}))
+            .await
+            .unwrap();
+        client.attach_conversation(&conversation.id).await.unwrap();
+        client
+            .send_user_message(&conversation.id, "hello", Some("coder"))
+            .await
+            .unwrap();
+        let trigger = client.trigger_run(&conversation.id).await.unwrap();
+        let events = client.fetch_events(&conversation.id, 100).await.unwrap();
+
+        assert_eq!(conversation.id, "conv-1");
+        assert_eq!(
+            trigger.strategy,
+            OpenHandsRunStartStrategy::PostUserEventWithRunTrue
+        );
+        assert_eq!(events.len(), 1);
+        let request_log = requests.lock().unwrap().join("\n---\n");
+        assert!(request_log.contains("POST /conversations "));
+        assert!(request_log.contains("GET /conversations/conv-1 "));
+        assert!(request_log.contains("POST /conversations/conv-1/events "));
+        assert!(request_log.contains("\"run\":true"));
+        assert!(request_log.contains("GET /conversations/conv-1/events "));
+        assert!(!request_log.contains("/api/conversations"));
+        assert!(!request_log.contains("/events/search"));
+        assert!(!request_log.contains("/run "));
+    }
+
+    #[tokio::test]
+    async fn legacy_path_config_keeps_sdk_compatibility() {
         let (server_url, requests) = spawn_server(vec![
             json_response(r#"{"id":"conv-1"}"#),
             json_response(r#"{"accepted":true}"#),
             empty_response(204),
             json_response(
-                r#"{"items":[{"id":"raw-1","type":"MessageEvent","api_key":"secret"}],"next_page_id":null}"#,
+                r#"{"items":[{"id":"raw-1","type":"MessageEvent"}],"next_page_id":null}"#,
             ),
         ]);
-        let client = OpenHandsClient::new(OpenHandsServerConfig {
-            server_url,
-            session_api_key_env: None,
-        });
+        let client = OpenHandsClient::new(OpenHandsServerConfig::legacy_sdk(server_url, None));
 
         let conversation = client
             .create_conversation(json!({"agent": {"kind": "test"}}))
@@ -542,17 +833,18 @@ mod tests {
         let events = client.fetch_events(&conversation.id, 100).await.unwrap();
 
         assert_eq!(conversation.id, "conv-1");
-        assert!(!trigger.already_running);
+        assert_eq!(trigger.strategy, OpenHandsRunStartStrategy::PostRunEndpoint);
         assert_eq!(events.len(), 1);
         let request_log = requests.lock().unwrap().join("\n---\n");
         assert!(request_log.contains("POST /api/conversations "));
         assert!(request_log.contains("POST /api/conversations/conv-1/events "));
+        assert!(request_log.contains("\"run\":false"));
         assert!(request_log.contains("POST /api/conversations/conv-1/run "));
         assert!(request_log.contains("GET /api/conversations/conv-1/events/search?limit=100 "));
     }
 
     #[tokio::test]
-    async fn auth_failures_are_classified_and_send_session_header() {
+    async fn auth_failures_are_classified_and_default_auth_uses_bearer_header() {
         let env_name = format!("CODER_TEST_SESSION_KEY_{}", unique_suffix());
         std::env::set_var(&env_name, "session-key");
         let (server_url, requests) = spawn_server(vec![response(
@@ -560,10 +852,10 @@ mod tests {
             "Unauthorized",
             r#"{"detail":"invalid session"}"#,
         )]);
-        let client = OpenHandsClient::new(OpenHandsServerConfig {
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new(
             server_url,
-            session_api_key_env: Some(env_name.clone()),
-        });
+            Some(env_name.clone()),
+        ));
 
         let error = client.create_conversation(json!({})).await.unwrap_err();
 
@@ -573,8 +865,43 @@ mod tests {
         ));
         assert!(requests.lock().unwrap()[0]
             .to_ascii_lowercase()
+            .contains("authorization: bearer session-key"));
+        std::env::remove_var(env_name);
+    }
+
+    #[tokio::test]
+    async fn legacy_auth_config_uses_session_api_key_header() {
+        let env_name = format!("CODER_TEST_SESSION_KEY_{}", unique_suffix());
+        std::env::set_var(&env_name, "session-key");
+        let (server_url, requests) = spawn_server(vec![json_response(r#"{"id":"conv-1"}"#)]);
+        let client = OpenHandsClient::new(OpenHandsServerConfig::legacy_sdk(
+            server_url,
+            Some(env_name.clone()),
+        ));
+
+        client.create_conversation(json!({})).await.unwrap();
+
+        assert!(requests.lock().unwrap()[0]
+            .to_ascii_lowercase()
             .contains("x-session-api-key: session-key"));
         std::env::remove_var(env_name);
+    }
+
+    #[test]
+    fn response_parser_accepts_common_event_shapes() {
+        let array = parse_openhands_events_response(json!([{"kind": "a"}])).unwrap();
+        let events = parse_openhands_events_response(json!({"events": [{"kind": "b"}]})).unwrap();
+        let items = parse_openhands_events_response(
+            json!({"items": [{"kind": "c"}], "next_page_id": "p2"}),
+        )
+        .unwrap();
+        let malformed = parse_openhands_events_response(json!({"unexpected": []})).unwrap_err();
+
+        assert_eq!(array.items[0]["kind"], "a");
+        assert_eq!(events.items[0]["kind"], "b");
+        assert_eq!(items.items[0]["kind"], "c");
+        assert_eq!(items.next_page_id.as_deref(), Some("p2"));
+        assert!(matches!(malformed, OpenHandsError::InvalidResponse { .. }));
     }
 
     #[tokio::test]
@@ -584,10 +911,7 @@ mod tests {
             "Internal Server Error",
             r#"{"detail":"workspace is unavailable"}"#,
         )]);
-        let client = OpenHandsClient::new(OpenHandsServerConfig {
-            server_url,
-            session_api_key_env: None,
-        });
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new(server_url, None));
 
         let error = client.attach_conversation("conv-1").await.unwrap_err();
 
@@ -597,16 +921,59 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn invalid_json_is_classified() {
+        let (server_url, _) = spawn_server(vec![response(200, "OK", "{not json")]);
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new(server_url, None));
+
+        let error = client.create_conversation(json!({})).await.unwrap_err();
+
+        assert!(matches!(error, OpenHandsError::Json(_)));
+    }
+
+    #[tokio::test]
+    async fn health_reports_unavailable_server_without_failing() {
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new("http://127.0.0.1:1", None));
+
+        let health = client.health().await.unwrap();
+
+        assert!(!health.available);
+    }
+
     #[test]
-    fn websocket_url_uses_agent_server_socket_path() {
-        let client = OpenHandsClient::new(OpenHandsServerConfig {
-            server_url: "https://agent.example.test/root".to_owned(),
-            session_api_key_env: None,
-        });
+    fn websocket_url_uses_default_agent_server_socket_path_and_base_path() {
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new(
+            "https://agent.example.test/root",
+            None,
+        ));
 
         let url = client.events_websocket_url("conv-1").unwrap();
 
-        assert_eq!(url, "wss://agent.example.test/root/sockets/events/conv-1");
+        assert_eq!(
+            url,
+            "wss://agent.example.test/root/conversations/conv-1/events/socket"
+        );
+    }
+
+    #[test]
+    fn websocket_url_uses_legacy_template_when_configured() {
+        let client = OpenHandsClient::new(OpenHandsServerConfig::legacy_sdk(
+            "http://127.0.0.1:8000/root",
+            None,
+        ));
+
+        let url = client.events_websocket_url("conv-1").unwrap();
+
+        assert_eq!(url, "ws://127.0.0.1:8000/root/sockets/events/conv-1");
+    }
+
+    #[test]
+    fn websocket_url_rejects_invalid_server_url() {
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new("127.0.0.1:8000", None));
+
+        let error = client.events_websocket_url("conv-1").unwrap_err();
+
+        assert!(matches!(error, OpenHandsError::InvalidConfig(_)));
     }
 
     #[test]
@@ -629,6 +996,7 @@ mod tests {
         let trigger = OpenHandsRunTrigger {
             already_running: true,
             status: 409,
+            strategy: OpenHandsRunStartStrategy::PostRunEndpoint,
         };
 
         let report = openhands_final_report(
@@ -636,7 +1004,7 @@ mod tests {
             "conv-1",
             &trigger,
             2,
-            "ws://127.0.0.1:8000/sockets/events/conv-1",
+            "ws://127.0.0.1:8000/conversations/conv-1/events/socket",
             &[
                 "blob://sha256/raw1".to_owned(),
                 "blob://sha256/raw2".to_owned(),
@@ -644,7 +1012,7 @@ mod tests {
         );
 
         assert!(report.summary.contains("conv-1"));
-        assert!(report.checks.iter().any(|check| check.contains("HTTP 409")));
+        assert!(report.checks.iter().any(|check| check.contains("409")));
         assert!(report
             .evidence_refs
             .iter()
@@ -657,6 +1025,69 @@ mod tests {
             .checks
             .iter()
             .any(|check| check.contains("already active")));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn openhands_real_server_contract_smoke() {
+        let server_url = env::var("OPENHANDS_AGENT_SERVER_URL")
+            .expect("OPENHANDS_AGENT_SERVER_URL must point at an OpenHands Agent Server");
+        let _session_key = env::var("OPENHANDS_SESSION_API_KEY")
+            .expect("OPENHANDS_SESSION_API_KEY must contain a session API key");
+        let create_payload = env::var("OPENHANDS_TEST_CREATE_PAYLOAD")
+            .unwrap_or_else(|_| r#"{"agent":{"kind":"CodeActAgent"}}"#.to_owned());
+        let payload = if create_payload.trim_start().starts_with('{') {
+            serde_json::from_str(&create_payload).unwrap()
+        } else {
+            let text = std::fs::read_to_string(create_payload).unwrap();
+            serde_json::from_str(&text).unwrap()
+        };
+        let client = OpenHandsClient::new(OpenHandsServerConfig::new(
+            server_url,
+            Some("OPENHANDS_SESSION_API_KEY".to_owned()),
+        ));
+        let health = client.health().await.unwrap();
+        assert!(health.available, "server health failed: {}", health.detail);
+
+        let conversation = client.create_conversation(payload).await.unwrap();
+        client
+            .send_user_message(
+                &conversation.id,
+                "Summarize the current workspace in one sentence.",
+                Some("coder-rust-test"),
+            )
+            .await
+            .unwrap();
+        let trigger = client.trigger_run(&conversation.id).await.unwrap();
+        let raw_events = client.fetch_events(&conversation.id, 100).await.unwrap();
+
+        let root =
+            std::env::temp_dir().join(format!("coder-openhands-smoke-{}", std::process::id()));
+        let store = RunStore::new(&root);
+        let run_id = RunId::new();
+        let mut state = RunState::new(run_id.clone(), WorkflowId::new("openhands-smoke"));
+        state.status = RunStatus::Running;
+        store.write_metadata(&state).unwrap();
+        for (index, raw) in raw_events.iter().cloned().enumerate() {
+            let raw_ref = store
+                .write_large_text_ref(&serde_json::to_string(&raw).unwrap())
+                .unwrap()
+                .blob_ref;
+            let event =
+                normalize_openhands_event(run_id.clone(), index as u64 + 1, raw, Some(raw_ref));
+            store.append_event(&run_id, &event).unwrap();
+        }
+        let websocket_url = client.events_websocket_url(&conversation.id).unwrap();
+        let report = openhands_final_report(
+            &run_id,
+            &conversation.id,
+            &trigger,
+            raw_events.len(),
+            &websocket_url,
+            &[],
+        );
+        store.write_report(&run_id, &report).unwrap();
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn spawn_server(responses: Vec<String>) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -706,8 +1137,12 @@ mod tests {
         let headers = String::from_utf8_lossy(&buffer[..header_end]);
         let content_length = headers
             .lines()
-            .find_map(|line| line.strip_prefix("content-length: "))
-            .and_then(|value| value.trim().parse::<usize>().ok())
+            .find_map(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower
+                    .strip_prefix("content-length: ")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+            })
             .unwrap_or(0);
         buffer.len() >= header_end + 4 + content_length
     }

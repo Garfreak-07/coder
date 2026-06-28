@@ -303,6 +303,7 @@ version = "0.1.0"
 dependencies = [
  "coder-core",
  "coder-events",
+ "coder-store",
  "reqwest",
  "serde",
  "serde_json",
@@ -358,14 +359,18 @@ dependencies = [
 name = "coder-workflow"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "coder-config",
  "coder-core",
  "coder-events",
+ "coder-harness",
+ "coder-openhands",
  "coder-store",
  "serde_json",
  "serde_yaml",
  "thiserror",
  "time",
+ "tokio",
 ]
 
 [[package]]

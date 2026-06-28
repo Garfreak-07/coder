@@ -2,12 +2,16 @@ use std::{collections::BTreeSet, fs, net::SocketAddr, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use coder_config::{
-    load_project_config, validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel,
+    load_project_config, validate_project_config, OpenHandsApiPaths as ConfigOpenHandsApiPaths,
+    OpenHandsAuthHeaderMode as ConfigOpenHandsAuthHeaderMode,
+    OpenHandsRunStartStrategy as ConfigOpenHandsRunStartStrategy, ProjectConfig, ValidationIssue,
+    ValidationLevel,
 };
 use coder_core::{RunId, RunState, RunStatus, WorkflowId};
 use coder_events::CoderEvent;
 use coder_openhands::{
-    normalize_openhands_event, openhands_final_report, OpenHandsClient, OpenHandsServerConfig,
+    normalize_openhands_event, openhands_final_report, OpenHandsApiPaths, OpenHandsAuthHeaderMode,
+    OpenHandsClient, OpenHandsRunStartStrategy, OpenHandsServerConfig,
 };
 use coder_server::{serve, ApiState};
 use coder_store::{RepoEvidenceKind, RepoEvidenceRef, RunStore};
@@ -261,6 +265,8 @@ struct OpenHandsWorkflowTarget {
     harness_id: String,
     server_url: String,
     session_api_key_env: Option<String>,
+    api_paths: OpenHandsApiPaths,
+    run_start_strategy: OpenHandsRunStartStrategy,
 }
 
 #[derive(Debug)]
@@ -270,6 +276,8 @@ struct OpenHandsRecordedRun {
     harness_id: Option<String>,
     server_url: String,
     session_api_key_env: Option<String>,
+    api_paths: OpenHandsApiPaths,
+    run_start_strategy: OpenHandsRunStartStrategy,
     conversation_id: Option<String>,
     create_payload: Option<PathBuf>,
     store: PathBuf,
@@ -364,6 +372,38 @@ fn validation_issue(
     }
 }
 
+fn openhands_api_paths_from_config(paths: &ConfigOpenHandsApiPaths) -> OpenHandsApiPaths {
+    OpenHandsApiPaths {
+        api_prefix: paths.api_prefix.clone(),
+        conversations_path: paths.conversations_path.clone(),
+        events_search_path: paths.events_search_path.clone(),
+        run_endpoint_path: paths.run_endpoint_path.clone(),
+        websocket_path_template: paths.websocket_path_template.clone(),
+        auth_header: match paths.auth_header {
+            ConfigOpenHandsAuthHeaderMode::AuthorizationBearer => {
+                OpenHandsAuthHeaderMode::AuthorizationBearer
+            }
+            ConfigOpenHandsAuthHeaderMode::XSessionApiKey => {
+                OpenHandsAuthHeaderMode::XSessionApiKey
+            }
+        },
+    }
+}
+
+fn openhands_run_strategy_from_config(
+    strategy: ConfigOpenHandsRunStartStrategy,
+) -> OpenHandsRunStartStrategy {
+    match strategy {
+        ConfigOpenHandsRunStartStrategy::PostRunEndpoint => {
+            OpenHandsRunStartStrategy::PostRunEndpoint
+        }
+        ConfigOpenHandsRunStartStrategy::PostUserEventWithRunTrue => {
+            OpenHandsRunStartStrategy::PostUserEventWithRunTrue
+        }
+        ConfigOpenHandsRunStartStrategy::None => OpenHandsRunStartStrategy::None,
+    }
+}
+
 fn select_openhands_workflow_target(
     config: &ProjectConfig,
     workflow_id: &str,
@@ -392,6 +432,10 @@ fn select_openhands_workflow_target(
                 harness_id: node.harness.clone(),
                 server_url: openhands.server_url.clone(),
                 session_api_key_env: openhands.session_api_key_env.clone(),
+                api_paths: openhands_api_paths_from_config(&openhands.api_paths),
+                run_start_strategy: openhands_run_strategy_from_config(
+                    openhands.run_start_strategy,
+                ),
             });
         }
     }
@@ -404,6 +448,8 @@ async fn run_openhands_recorded(
     let client = OpenHandsClient::new(OpenHandsServerConfig {
         server_url: input.server_url,
         session_api_key_env: input.session_api_key_env,
+        api_paths: input.api_paths,
+        run_start_strategy: input.run_start_strategy,
     });
     let conversation = match (input.conversation_id, input.create_payload) {
         (Some(conversation_id), None) => client.attach_conversation(&conversation_id).await?,
@@ -852,6 +898,8 @@ async fn main() -> anyhow::Result<()> {
                     harness_id: Some(target.harness_id),
                     server_url: target.server_url,
                     session_api_key_env: target.session_api_key_env,
+                    api_paths: target.api_paths,
+                    run_start_strategy: target.run_start_strategy,
                     conversation_id,
                     create_payload,
                     store,
@@ -868,10 +916,8 @@ async fn main() -> anyhow::Result<()> {
                     session_api_key_env,
                 },
         } => {
-            let client = OpenHandsClient::new(OpenHandsServerConfig {
-                server_url: server,
-                session_api_key_env,
-            });
+            let client =
+                OpenHandsClient::new(OpenHandsServerConfig::new(server, session_api_key_env));
             let health = client.health().await?;
             println!("{}", serde_json::to_string_pretty(&health)?);
             if !health.available {
@@ -895,6 +941,8 @@ async fn main() -> anyhow::Result<()> {
                 harness_id: None,
                 server_url: server,
                 session_api_key_env,
+                api_paths: OpenHandsApiPaths::default(),
+                run_start_strategy: OpenHandsRunStartStrategy::default(),
                 conversation_id,
                 create_payload,
                 store,

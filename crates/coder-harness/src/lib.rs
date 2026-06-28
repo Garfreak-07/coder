@@ -18,6 +18,60 @@ pub struct HarnessRunRequest {
 pub struct HarnessRunResult {
     pub status: String,
     pub report: Option<FinalReport>,
+    #[serde(default)]
+    pub events: Vec<HarnessRunEvent>,
+}
+
+impl HarnessRunResult {
+    pub fn completed() -> Self {
+        Self {
+            status: "completed".to_owned(),
+            report: None,
+            events: Vec::new(),
+        }
+    }
+
+    pub fn blocked(blocker: impl Into<String>) -> Self {
+        let blocker = blocker.into();
+        Self {
+            status: "blocked".to_owned(),
+            report: Some(FinalReport::blocked("Harness backend blocked.", blocker)),
+            events: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessRunEvent {
+    pub kind: String,
+    #[serde(default)]
+    pub payload: Value,
+    #[serde(default)]
+    pub refs: Vec<HarnessRunEventRef>,
+}
+
+impl HarnessRunEvent {
+    pub fn new(kind: impl Into<String>, payload: Value) -> Self {
+        Self {
+            kind: kind.into(),
+            payload,
+            refs: Vec::new(),
+        }
+    }
+
+    pub fn with_ref(mut self, label: impl Into<String>, uri: impl Into<String>) -> Self {
+        self.refs.push(HarnessRunEventRef {
+            label: label.into(),
+            uri: uri.into(),
+        });
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HarnessRunEventRef {
+    pub label: String,
+    pub uri: String,
 }
 
 #[async_trait]

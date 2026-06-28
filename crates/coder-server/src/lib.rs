@@ -994,7 +994,9 @@ impl From<StoreError> for ApiError {
 impl From<WorkflowError> for ApiError {
     fn from(error: WorkflowError) -> Self {
         match error {
-            WorkflowError::InvalidConfig(_) | WorkflowError::WorkflowNotFound(_) => Self {
+            WorkflowError::InvalidConfig(_)
+            | WorkflowError::WorkflowNotFound(_)
+            | WorkflowError::BackendNotFound(_) => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: error.to_string(),
             },

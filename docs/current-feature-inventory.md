@@ -110,8 +110,9 @@ Classification values:
   blob hash stability and retrieval, large payload preview/ref behavior, and
   sanitized repo evidence refs under `runs/{run_id}/repo_evidence/`.
 - `coder-workflow`: mock runner completed/blocked/failed/max-rounds cases.
-- `coder-openhands`: unavailable server, classified auth/workspace failure, raw
-  event normalization, redacted secrets.
+- `coder-openhands`: default Agent Server paths, legacy path compatibility,
+  bearer and legacy auth headers, response-shape parsing, unavailable server,
+  classified auth/workspace failure, raw event normalization, redacted secrets.
 - `coder-server`: `/api/v3` health, config validation, workflow validation,
   mock run, run listing, event listing, stored artifact/blob retrieval, and
   stored repo evidence payload retrieval by ref.
