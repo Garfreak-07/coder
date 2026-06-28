@@ -33,6 +33,10 @@ import type {
   RustPatchPreviewRequest,
   RustMcpManifestValidation,
   RustMcpManifestValidationRequest,
+  RustMcpServerListResponse,
+  RustMcpToolCallRequest,
+  RustMcpToolCallResult,
+  RustMcpToolListResponse,
   RustProjectMemoryLoadRequest,
   RustProjectMemoryLoadResponse,
   RustProjectMemoryWriteProposalRequest,
@@ -607,6 +611,34 @@ export function validateRustMcpManifest(
   request: RustMcpManifestValidationRequest
 ): Promise<RustMcpManifestValidation> {
   return requestJson<RustMcpManifestValidation>("/api/v3/mcp/manifests/validate", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(request)
+  });
+}
+
+export function validateRustMcpServerManifest(
+  request: RustMcpManifestValidationRequest
+): Promise<RustMcpManifestValidation> {
+  return requestJson<RustMcpManifestValidation>("/api/v3/mcp/servers/validate", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(request)
+  });
+}
+
+export function getRustMcpServers(): Promise<RustMcpServerListResponse> {
+  return requestJson<RustMcpServerListResponse>("/api/v3/mcp/servers");
+}
+
+export function getRustMcpTools(): Promise<RustMcpToolListResponse> {
+  return requestJson<RustMcpToolListResponse>("/api/v3/mcp/tools");
+}
+
+export function invokeRustMcpTool(
+  request: RustMcpToolCallRequest
+): Promise<RustMcpToolCallResult> {
+  return requestJson<RustMcpToolCallResult>("/api/v3/mcp/tools/invoke", {
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify(request)

@@ -186,6 +186,48 @@ export interface RustMcpManifestValidation {
   manifest?: RustMcpServerManifest | null;
 }
 
+export interface RustMcpServerSummary {
+  server_id: string;
+  name: string;
+  enabled: boolean;
+  requires_approval: boolean;
+  operations: RustMcpManifestOperation[];
+}
+
+export interface RustMcpServerListResponse {
+  servers: RustMcpServerSummary[];
+}
+
+export interface RustMcpToolSummary {
+  server_id: string;
+  name: string;
+  description: string;
+  risk: RustMcpRiskLevel;
+  side_effect: RustMcpSideEffectLevel;
+  enabled: boolean;
+  requires_approval: boolean;
+}
+
+export interface RustMcpToolListResponse {
+  tools: RustMcpToolSummary[];
+}
+
+export interface RustMcpToolCallRequest {
+  server_id: string;
+  tool_name: string;
+  args?: unknown;
+  run_id?: string | null;
+  approved?: boolean;
+}
+
+export interface RustMcpToolCallResult {
+  status: "completed" | "blocked" | "failed" | string;
+  requires_approval: boolean;
+  approval_key: string;
+  output: unknown;
+  evidence_ref?: string | null;
+}
+
 export interface RustToolCapability {
   name: string;
   toolset: string;

@@ -2,8 +2,8 @@
 
 - [x] Legacy Python physically quarantined or explicitly separated
 - [x] Python legacy CI passes
-- [ ] MCP mock execution/client path implemented
-- [ ] MCP approval/evidence tests added
+- [x] MCP mock execution/client path implemented
+- [x] MCP approval/evidence tests added
 - [ ] Dense RAG backend implemented behind feature/config gate
 - [ ] Dense RAG mocked tests pass without live embeddings
 - [ ] Release workflow/artifact baseline implemented

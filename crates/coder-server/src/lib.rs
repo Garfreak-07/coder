@@ -25,7 +25,9 @@ use coder_extensions::{
     SkillManifestValidation, SkillSummary, SkillUpdateInfo,
 };
 use coder_harness::{
-    validate_mcp_manifest, McpManifestValidation, ToolRegistry, ToolRegistryEntry,
+    find_mock_mcp_tool, invoke_mock_mcp_tool, mock_mcp_servers, mock_mcp_tools,
+    validate_mcp_manifest, McpManifestValidation, McpServerSummary, McpToolCallRequest,
+    McpToolCallResult, McpToolSummary, ToolRegistry, ToolRegistryEntry,
 };
 use coder_memory::{
     append_project_memory_record, ensure_memory_write_allowed, import_text_knowledge_source,
@@ -48,6 +50,8 @@ use coder_tools::{
 use coder_workflow::{MockWorkflowRunner, WorkflowError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+const MCP_OUTPUT_INLINE_LIMIT: usize = 1024;
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -117,6 +121,10 @@ pub fn router(state: ApiState) -> Router {
             "/api/v3/planner-chat/sessions/{session_id}/turn",
             post(planner_chat_turn),
         )
+        .route("/api/v3/mcp/servers", get(list_mcp_servers))
+        .route("/api/v3/mcp/servers/validate", post(validate_mcp))
+        .route("/api/v3/mcp/tools", get(list_mcp_tools))
+        .route("/api/v3/mcp/tools/invoke", post(invoke_mcp_tool))
         .route("/api/v3/mcp/manifests/validate", post(validate_mcp))
         .route("/api/v3/extensions/plugins", get(list_extension_plugins))
         .route(
@@ -294,6 +302,9 @@ async fn capabilities() -> Json<CapabilitiesResponse> {
             "skill_pin_unpin",
             "skill_rollback_baseline",
             "mcp_validate",
+            "mcp_servers",
+            "mcp_tools",
+            "mcp_mock_invoke",
             "harness_tools",
         ],
         memory: vec![
@@ -683,6 +694,121 @@ async fn validate_mcp(
     Json(request): Json<McpManifestValidationRequest>,
 ) -> Json<McpManifestValidation> {
     Json(validate_mcp_manifest(&request.manifest))
+}
+
+async fn list_mcp_servers() -> Json<McpServerListResponse> {
+    Json(McpServerListResponse {
+        servers: mock_mcp_servers(),
+    })
+}
+
+async fn list_mcp_tools() -> Json<McpToolListResponse> {
+    Json(McpToolListResponse {
+        tools: mock_mcp_tools(),
+    })
+}
+
+async fn invoke_mcp_tool(
+    State(state): State<ApiState>,
+    Json(request): Json<McpToolCallRequest>,
+) -> Result<Json<McpToolCallResult>, ApiError> {
+    if let Some(run_id) = &request.run_id {
+        if !stored_run_exists(&state.store, run_id)? {
+            return Err(ApiError::not_found(format!(
+                "run '{}' was not found",
+                run_id.as_str()
+            )));
+        }
+        append_mcp_event(
+            &state.store,
+            run_id,
+            "mcp.server.registered",
+            json!({
+                "server_id": request.server_id.as_str(),
+                "enabled": false,
+                "requires_approval": true
+            }),
+            None,
+        )?;
+        let discovered = find_mock_mcp_tool(&request.server_id, &request.tool_name);
+        append_mcp_event(
+            &state.store,
+            run_id,
+            "mcp.tool.discovered",
+            json!({
+                "server_id": request.server_id.as_str(),
+                "tool_name": request.tool_name.as_str(),
+                "discovered": discovered.is_some(),
+                "enabled": false,
+                "requires_approval": true,
+                "risk": discovered.as_ref().map(|tool| tool.risk),
+                "side_effect": discovered.as_ref().map(|tool| tool.side_effect)
+            }),
+            None,
+        )?;
+        append_mcp_event(
+            &state.store,
+            run_id,
+            "mcp.approval.requested",
+            json!({
+                "server_id": request.server_id.as_str(),
+                "tool_name": request.tool_name.as_str(),
+                "approved": request.approved,
+                "args_keys": json_object_keys(&request.args)
+            }),
+            None,
+        )?;
+    }
+
+    let approved = request.approved;
+    let mut result = if approved {
+        if let Some(run_id) = &request.run_id {
+            append_mcp_event(
+                &state.store,
+                run_id,
+                "mcp.tool.started",
+                json!({
+                    "server_id": request.server_id.as_str(),
+                    "tool_name": request.tool_name.as_str()
+                }),
+                None,
+            )?;
+        }
+        invoke_mock_mcp_tool(&request)
+    } else {
+        invoke_mock_mcp_tool(&request)
+    };
+
+    if result.status == "failed" {
+        attach_mcp_evidence(&state.store, &mut result)?;
+    }
+    externalize_large_mcp_output(&state.store, &mut result)?;
+
+    if let Some(run_id) = &request.run_id {
+        let event_kind = match result.status.as_str() {
+            "completed" => "mcp.tool.completed",
+            "failed" => "mcp.tool.failed",
+            "blocked" => "mcp.tool.blocked",
+            _ => "mcp.tool.failed",
+        };
+        append_mcp_event(
+            &state.store,
+            run_id,
+            event_kind,
+            json!({
+                "server_id": request.server_id.as_str(),
+                "tool_name": request.tool_name.as_str(),
+                "status": result.status.as_str(),
+                "requires_approval": result.requires_approval,
+                "approval_key": result.approval_key.as_str(),
+                "evidence_ref": result.evidence_ref.as_deref(),
+                "output": &result.output
+            }),
+            result.evidence_ref.as_deref(),
+        )?;
+    }
+
+    Ok(Json(result))
 }
 
 async fn list_extension_plugins() -> Json<ExtensionPluginListResponse> {
@@ -1886,6 +2012,16 @@ pub struct McpManifestValidationRequest {
     pub manifest: serde_json::Value,
 }
 
+#[derive(Debug, Serialize)]
+pub struct McpServerListResponse {
+    pub servers: Vec<McpServerSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct McpToolListResponse {
+    pub tools: Vec<McpToolSummary>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ExtensionPluginValidationRequest {
     pub manifest: serde_json::Value,
@@ -2332,6 +2468,56 @@ fn stored_run_exists(store: &RunStore, run_id: &RunId) -> Result<bool, StoreErro
         || store.read_report(run_id)?.is_some()
         || store.repo_evidence_count(run_id)? > 0
         || !store.list_checkpoints(run_id)?.is_empty())
+}
+
+fn append_mcp_event(
+    store: &RunStore,
+    run_id: &RunId,
+    kind: &str,
+    payload: Value,
+    evidence_ref: Option<&str>,
+) -> Result<(), StoreError> {
+    let sequence = store.read_events(run_id)?.len() as u64 + 1;
+    let mut event = coder_events::CoderEvent::new(run_id.clone(), sequence, kind, payload);
+    if let Some(reference) = evidence_ref {
+        event = event.with_ref("mcp_evidence", reference);
+    }
+    store.append_event(run_id, &event)
+}
+
+fn attach_mcp_evidence(store: &RunStore, result: &mut McpToolCallResult) -> Result<(), StoreError> {
+    if result.evidence_ref.is_some() {
+        return Ok(());
+    }
+    let output = serde_json::to_string(&result.output).unwrap_or_else(|_| "{}".to_owned());
+    let evidence_ref = store.write_blob(output.as_bytes())?;
+    result.evidence_ref = Some(evidence_ref);
+    Ok(())
+}
+
+fn externalize_large_mcp_output(
+    store: &RunStore,
+    result: &mut McpToolCallResult,
+) -> Result<(), StoreError> {
+    let output = serde_json::to_string(&result.output).unwrap_or_else(|_| "{}".to_owned());
+    if output.len() <= MCP_OUTPUT_INLINE_LIMIT {
+        return Ok(());
+    }
+    let large_ref = store.write_large_text_ref_with_limit(&output, MCP_OUTPUT_INLINE_LIMIT)?;
+    result.evidence_ref = Some(large_ref.blob_ref.clone());
+    result.output = json!({
+        "preview": large_ref.preview,
+        "truncated": large_ref.truncated,
+        "blob_ref": large_ref.blob_ref
+    });
+    Ok(())
+}
+
+fn json_object_keys(value: &Value) -> Vec<String> {
+    match value {
+        Value::Object(object) => object.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
 }
 
 impl InstalledSkillRecord {
@@ -3522,6 +3708,224 @@ mod tests {
             false
         );
         assert!(body["warnings"].as_array().unwrap().len() >= 2);
+    }
+
+    #[tokio::test]
+    async fn mcp_server_and_tool_endpoints_show_disabled_mock_baseline() {
+        let app = test_router();
+        let servers_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/mcp/servers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let tools_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/mcp/tools")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(servers_response.status(), StatusCode::OK);
+        assert_eq!(tools_response.status(), StatusCode::OK);
+        let servers = response_json(servers_response).await;
+        let tools = response_json(tools_response).await;
+        assert_eq!(servers["servers"][0]["server_id"], "local-mock");
+        assert_eq!(servers["servers"][0]["enabled"], false);
+        assert_eq!(tools["tools"][0]["enabled"], false);
+        assert_eq!(tools["tools"][0]["requires_approval"], true);
+        assert!(tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "mock.echo"));
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_invoke_blocks_unapproved_and_records_approval_events() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        store.write_metadata(&state).unwrap();
+        let app = router(ApiState::new(store.clone()));
+
+        let response = post_json(
+            app,
+            "/api/v3/mcp/tools/invoke",
+            json!({
+                "server_id": "local-mock",
+                "tool_name": "mock.echo",
+                "args": {"message": "hello"},
+                "run_id": "run-1",
+                "approved": false
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "blocked");
+        assert_eq!(body["requires_approval"], true);
+        assert_eq!(body["approval_key"], "mcp:local-mock:mock.echo");
+        let events = store.read_events(&run_id).unwrap();
+        let kinds = events
+            .iter()
+            .map(|event| event.kind.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                "mcp.server.registered",
+                "mcp.tool.discovered",
+                "mcp.approval.requested",
+                "mcp.tool.blocked"
+            ]
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_invoke_completes_echo_redacts_secrets_and_records_events() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        store.write_metadata(&state).unwrap();
+        let app = router(ApiState::new(store.clone()));
+
+        let response = post_json(
+            app,
+            "/api/v3/mcp/tools/invoke",
+            json!({
+                "server_id": "local-mock",
+                "tool_name": "mock.echo",
+                "args": {"message": "hello", "api_key": "sk-secret-value"},
+                "run_id": "run-1",
+                "approved": true
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "completed");
+        assert_eq!(body["output"]["echo"]["message"], "hello");
+        assert_eq!(body["output"]["echo"]["api_key"], "[REDACTED]");
+        assert!(!body.to_string().contains("sk-secret-value"));
+        let events = store.read_events(&run_id).unwrap();
+        assert!(events.iter().any(|event| event.kind == "mcp.tool.started"));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "mcp.tool.completed"));
+        assert!(!serde_json::to_string(&events)
+            .unwrap()
+            .contains("sk-secret-value"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_invoke_failure_large_output_unknown_and_external_effect_are_safe() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        store.write_metadata(&state).unwrap();
+        let app = router(ApiState::new(store.clone()));
+
+        let failure = post_json(
+            app.clone(),
+            "/api/v3/mcp/tools/invoke",
+            json!({
+                "server_id": "local-mock",
+                "tool_name": "mock.fail",
+                "args": {},
+                "run_id": "run-1",
+                "approved": true
+            }),
+        )
+        .await;
+        let large = post_json(
+            app.clone(),
+            "/api/v3/mcp/tools/invoke",
+            json!({
+                "server_id": "local-mock",
+                "tool_name": "mock.large_output",
+                "args": {},
+                "run_id": "run-1",
+                "approved": true
+            }),
+        )
+        .await;
+        let unknown = post_json(
+            app.clone(),
+            "/api/v3/mcp/tools/invoke",
+            json!({
+                "server_id": "local-mock",
+                "tool_name": "mock.unknown",
+                "args": {},
+                "run_id": "run-1",
+                "approved": true
+            }),
+        )
+        .await;
+        let external_unapproved = post_json(
+            app,
+            "/api/v3/mcp/tools/invoke",
+            json!({
+                "server_id": "local-mock",
+                "tool_name": "mock.external_effect",
+                "args": {},
+                "run_id": "run-1",
+                "approved": false
+            }),
+        )
+        .await;
+
+        let failure_body = response_json(failure).await;
+        let large_body = response_json(large).await;
+        let unknown_body = response_json(unknown).await;
+        let external_body = response_json(external_unapproved).await;
+        assert_eq!(failure_body["status"], "failed");
+        assert!(failure_body["evidence_ref"]
+            .as_str()
+            .unwrap()
+            .starts_with("blob://sha256/"));
+        assert_eq!(large_body["status"], "completed");
+        assert!(large_body["evidence_ref"]
+            .as_str()
+            .unwrap()
+            .starts_with("blob://sha256/"));
+        assert_eq!(large_body["output"]["truncated"], true);
+        assert!(!large_body.to_string().contains(&"x".repeat(2048)));
+        assert_eq!(unknown_body["status"], "failed");
+        assert_eq!(external_body["status"], "blocked");
+        assert_eq!(external_body["requires_approval"], true);
+
+        let events = store.read_events(&run_id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "mcp.tool.failed" && !event.refs.is_empty()));
+        let large_event = events
+            .iter()
+            .find(|event| {
+                event.kind == "mcp.tool.completed"
+                    && event.payload["tool_name"] == "mock.large_output"
+            })
+            .unwrap();
+        assert!(large_event.payload["evidence_ref"]
+            .as_str()
+            .unwrap()
+            .starts_with("blob://sha256/"));
+        assert!(!large_event.payload.to_string().contains(&"x".repeat(2048)));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]

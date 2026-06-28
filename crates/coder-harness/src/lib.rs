@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use coder_core::{FinalReport, RunId};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +164,54 @@ pub struct McpManifestValidation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerSummary {
+    pub server_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub requires_approval: bool,
+    #[serde(default)]
+    pub operations: Vec<McpManifestOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpToolSummary {
+    pub server_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub risk: RiskLevel,
+    pub side_effect: SideEffectLevel,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub requires_approval: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpToolCallRequest {
+    pub server_id: String,
+    pub tool_name: String,
+    #[serde(default)]
+    pub args: Value,
+    pub run_id: Option<RunId>,
+    #[serde(default)]
+    pub approved: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpToolCallResult {
+    pub status: String,
+    #[serde(default)]
+    pub requires_approval: bool,
+    pub approval_key: String,
+    #[serde(default)]
+    pub output: Value,
+    pub evidence_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionCapabilityPolicy {
     #[serde(default)]
     pub risk_level: RiskLevel,
@@ -251,6 +299,139 @@ impl Default for ToolRegistry {
 impl McpManifestOperation {
     pub fn requires_approval(&self) -> bool {
         true
+    }
+}
+
+pub fn mcp_approval_key(server_id: &str, tool_name: &str) -> String {
+    format!("mcp:{server_id}:{tool_name}")
+}
+
+pub fn mock_mcp_server_manifest() -> McpServerManifest {
+    McpServerManifest {
+        server_id: "local-mock".to_owned(),
+        name: "Local Mock MCP".to_owned(),
+        enabled_by_default: false,
+        operations: vec![
+            mock_mcp_operation(
+                "mock.echo",
+                "Returns the supplied arguments after secret-key redaction.",
+                RiskLevel::Low,
+                SideEffectLevel::None,
+            ),
+            mock_mcp_operation(
+                "mock.sum",
+                "Sums numeric arguments deterministically.",
+                RiskLevel::Low,
+                SideEffectLevel::None,
+            ),
+            mock_mcp_operation(
+                "mock.fail",
+                "Returns a deterministic failure response.",
+                RiskLevel::Medium,
+                SideEffectLevel::None,
+            ),
+            mock_mcp_operation(
+                "mock.large_output",
+                "Returns output large enough for blob-backed evidence.",
+                RiskLevel::Medium,
+                SideEffectLevel::Read,
+            ),
+            mock_mcp_operation(
+                "mock.external_effect",
+                "Simulates an external side effect without performing it.",
+                RiskLevel::High,
+                SideEffectLevel::External,
+            ),
+        ],
+    }
+}
+
+pub fn mock_mcp_servers() -> Vec<McpServerSummary> {
+    let manifest = mock_mcp_server_manifest();
+    vec![McpServerSummary {
+        server_id: manifest.server_id,
+        name: manifest.name,
+        enabled: false,
+        requires_approval: true,
+        operations: manifest.operations,
+    }]
+}
+
+pub fn mock_mcp_tools() -> Vec<McpToolSummary> {
+    mock_mcp_server_manifest()
+        .operations
+        .into_iter()
+        .map(|operation| McpToolSummary {
+            server_id: "local-mock".to_owned(),
+            name: operation.name,
+            description: operation.description,
+            risk: operation.risk,
+            side_effect: operation.side_effect,
+            enabled: false,
+            requires_approval: true,
+        })
+        .collect()
+}
+
+pub fn find_mock_mcp_tool(server_id: &str, tool_name: &str) -> Option<McpToolSummary> {
+    mock_mcp_tools()
+        .into_iter()
+        .find(|tool| tool.server_id == server_id && tool.name == tool_name)
+}
+
+pub fn invoke_mock_mcp_tool(request: &McpToolCallRequest) -> McpToolCallResult {
+    let approval_key = mcp_approval_key(&request.server_id, &request.tool_name);
+    let Some(_tool) = find_mock_mcp_tool(&request.server_id, &request.tool_name) else {
+        if !request.approved {
+            return blocked_mcp_result(
+                approval_key,
+                "Unknown MCP tools require explicit approval before rejection.",
+            );
+        }
+        return failed_mcp_result(
+            approval_key,
+            json!({"error": "unknown MCP tool", "tool_name": request.tool_name}),
+        );
+    };
+
+    if !request.approved {
+        return blocked_mcp_result(approval_key, "MCP tool calls require explicit approval.");
+    }
+
+    match request.tool_name.as_str() {
+        "mock.echo" => completed_mcp_result(
+            approval_key,
+            json!({"echo": redact_mcp_value(request.args.clone())}),
+        ),
+        "mock.sum" => completed_mcp_result(
+            approval_key,
+            json!({"sum": sum_numeric_args(&request.args)}),
+        ),
+        "mock.fail" => failed_mcp_result(
+            approval_key,
+            json!({"error": "mock MCP failure", "tool_name": "mock.fail"}),
+        ),
+        "mock.large_output" => {
+            let payload = format!("mcp-large-output:{}", "x".repeat(8192));
+            completed_mcp_result(
+                approval_key,
+                json!({
+                    "text": payload,
+                    "byte_count": payload.len()
+                }),
+            )
+        }
+        "mock.external_effect" => completed_mcp_result(
+            approval_key,
+            json!({
+                "effect": "simulated_external_effect",
+                "committed": false
+            }),
+        ),
+        _ => failed_mcp_result(
+            approval_key,
+            json!({"error": "unsupported MCP tool", "tool_name": request.tool_name}),
+        ),
     }
 }
 
@@ -419,6 +600,91 @@ fn bool_field(value: Option<&Value>) -> bool {
 
 fn default_true() -> bool {
     true
+}
+
+fn mock_mcp_operation(
+    name: &str,
+    description: &str,
+    risk: RiskLevel,
+    side_effect: SideEffectLevel,
+) -> McpManifestOperation {
+    McpManifestOperation {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        risk,
+        side_effect,
+        enabled_by_default: false,
+    }
+}
+
+fn completed_mcp_result(approval_key: String, output: Value) -> McpToolCallResult {
+    McpToolCallResult {
+        status: "completed".to_owned(),
+        requires_approval: false,
+        approval_key,
+        output,
+        evidence_ref: None,
+    }
+}
+
+fn blocked_mcp_result(approval_key: String, reason: &str) -> McpToolCallResult {
+    McpToolCallResult {
+        status: "blocked".to_owned(),
+        requires_approval: true,
+        approval_key,
+        output: json!({"reason": reason}),
+        evidence_ref: None,
+    }
+}
+
+fn failed_mcp_result(approval_key: String, output: Value) -> McpToolCallResult {
+    McpToolCallResult {
+        status: "failed".to_owned(),
+        requires_approval: false,
+        approval_key,
+        output,
+        evidence_ref: None,
+    }
+}
+
+fn sum_numeric_args(value: &Value) -> f64 {
+    match value {
+        Value::Array(items) => items.iter().filter_map(Value::as_f64).sum(),
+        Value::Object(object) => object.values().filter_map(Value::as_f64).sum(),
+        other => other.as_f64().unwrap_or(0.0),
+    }
+}
+
+fn redact_mcp_value(value: Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .into_iter()
+                .map(|(key, value)| {
+                    let value = if is_secret_like_key(&key) {
+                        Value::String("[REDACTED]".to_owned())
+                    } else {
+                        redact_mcp_value(value)
+                    };
+                    (key, value)
+                })
+                .collect::<Map<String, Value>>(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(redact_mcp_value).collect()),
+        other => other,
+    }
+}
+
+fn is_secret_like_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    normalized.contains("api_key")
+        || normalized.contains("apikey")
+        || normalized.contains("token")
+        || normalized.contains("secret")
+        || normalized.contains("password")
+        || normalized.contains("authorization")
+        || normalized.contains("cookie")
+        || normalized.contains("private_key")
 }
 
 fn max_risk(left: RiskLevel, right: RiskLevel) -> RiskLevel {
@@ -729,6 +995,111 @@ mod tests {
         assert!(risk.errors[0].contains("unsupported MCP risk level"));
         assert!(!side_effect.ok);
         assert!(side_effect.errors[0].contains("unsupported MCP side effect"));
+    }
+
+    #[test]
+    fn mock_mcp_server_is_disabled_and_discovers_required_tools() {
+        let servers = mock_mcp_servers();
+        let tools = mock_mcp_tools();
+        let tool_names = tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].server_id, "local-mock");
+        assert!(!servers[0].enabled);
+        assert!(servers[0].requires_approval);
+        assert!(tool_names.contains("mock.echo"));
+        assert!(tool_names.contains("mock.sum"));
+        assert!(tool_names.contains("mock.fail"));
+        assert!(tool_names.contains("mock.large_output"));
+        assert!(tool_names.contains("mock.external_effect"));
+        assert!(tools.iter().all(|tool| tool.requires_approval));
+    }
+
+    #[test]
+    fn mock_mcp_unapproved_call_blocks_with_approval_key() {
+        let result = invoke_mock_mcp_tool(&McpToolCallRequest {
+            server_id: "local-mock".to_owned(),
+            tool_name: "mock.echo".to_owned(),
+            args: json!({"message": "hello"}),
+            run_id: None,
+            approved: false,
+        });
+
+        assert_eq!(result.status, "blocked");
+        assert!(result.requires_approval);
+        assert_eq!(result.approval_key, "mcp:local-mock:mock.echo");
+    }
+
+    #[test]
+    fn mock_mcp_approved_echo_redacts_secret_keys() {
+        let result = invoke_mock_mcp_tool(&McpToolCallRequest {
+            server_id: "local-mock".to_owned(),
+            tool_name: "mock.echo".to_owned(),
+            args: json!({
+                "message": "hello",
+                "api_key": "sk-test",
+                "nested": {"session_token": "token-value"}
+            }),
+            run_id: None,
+            approved: true,
+        });
+
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.output["echo"]["message"], "hello");
+        assert_eq!(result.output["echo"]["api_key"], "[REDACTED]");
+        assert_eq!(
+            result.output["echo"]["nested"]["session_token"],
+            "[REDACTED]"
+        );
+        assert!(!result.output.to_string().contains("sk-test"));
+    }
+
+    #[test]
+    fn mock_mcp_sum_and_failure_are_deterministic() {
+        let sum = invoke_mock_mcp_tool(&McpToolCallRequest {
+            server_id: "local-mock".to_owned(),
+            tool_name: "mock.sum".to_owned(),
+            args: json!({"a": 2, "b": 3.5, "ignored": "x"}),
+            run_id: None,
+            approved: true,
+        });
+        let failure = invoke_mock_mcp_tool(&McpToolCallRequest {
+            server_id: "local-mock".to_owned(),
+            tool_name: "mock.fail".to_owned(),
+            args: json!({}),
+            run_id: None,
+            approved: true,
+        });
+
+        assert_eq!(sum.status, "completed");
+        assert_eq!(sum.output["sum"], 5.5);
+        assert_eq!(failure.status, "failed");
+        assert_eq!(failure.output["tool_name"], "mock.fail");
+    }
+
+    #[test]
+    fn mock_mcp_unknown_tool_is_safe() {
+        let blocked = invoke_mock_mcp_tool(&McpToolCallRequest {
+            server_id: "local-mock".to_owned(),
+            tool_name: "mock.unknown".to_owned(),
+            args: json!({}),
+            run_id: None,
+            approved: false,
+        });
+        let failed = invoke_mock_mcp_tool(&McpToolCallRequest {
+            server_id: "local-mock".to_owned(),
+            tool_name: "mock.unknown".to_owned(),
+            args: json!({}),
+            run_id: None,
+            approved: true,
+        });
+
+        assert_eq!(blocked.status, "blocked");
+        assert!(blocked.requires_approval);
+        assert_eq!(failed.status, "failed");
     }
 
     #[test]
