@@ -12,6 +12,8 @@ pub struct HarnessRunRequest {
     pub agent_id: String,
     pub harness_id: String,
     pub task: String,
+    #[serde(default)]
+    pub backend_context: Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

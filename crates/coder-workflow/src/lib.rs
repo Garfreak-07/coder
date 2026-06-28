@@ -6,7 +6,8 @@ use std::{
 
 use async_trait::async_trait;
 use coder_config::{
-    validate_project_config, OpenHandsApiPaths as ConfigOpenHandsApiPaths,
+    validate_project_config, AgentSpec, HarnessSpec, ModelSpec,
+    OpenHandsApiPaths as ConfigOpenHandsApiPaths,
     OpenHandsAuthHeaderMode as ConfigOpenHandsAuthHeaderMode, OpenHandsHarnessConfig,
     OpenHandsRunStartStrategy as ConfigOpenHandsRunStartStrategy, ProjectConfig, WorkflowEdgeSpec,
     WorkflowNodeSpec, WorkflowSpec,
@@ -384,6 +385,18 @@ impl WorkflowRunner {
                     node.harness, node.id
                 ))
             })?;
+            let agent = self.config.agents.get(&node.agent).ok_or_else(|| {
+                WorkflowError::InvalidConfig(format!(
+                    "missing agent '{}' for node '{}'",
+                    node.agent, node.id
+                ))
+            })?;
+            let model = self.config.models.get(&agent.model).ok_or_else(|| {
+                WorkflowError::InvalidConfig(format!(
+                    "missing model '{}' for agent '{}'",
+                    agent.model, node.agent
+                ))
+            })?;
             let backend = self
                 .backends
                 .backend_for(&harness.backend)
@@ -410,6 +423,17 @@ impl WorkflowRunner {
                     agent_id: node.agent.clone(),
                     harness_id: node.harness.clone(),
                     task: options.task.clone(),
+                    backend_context: harness_backend_context(OpenHandsConversationPayloadInput {
+                        run_id: &run_id,
+                        workflow_id: &options.workflow_id,
+                        workflow,
+                        node,
+                        agent_id: &node.agent,
+                        agent,
+                        harness_id: &node.harness,
+                        harness,
+                        model,
+                    }),
                 })
                 .await
             {
@@ -824,6 +848,133 @@ pub fn replay_run_status(events: &[CoderEvent]) -> Option<RunStatus> {
         })
 }
 
+pub struct OpenHandsConversationPayloadInput<'a> {
+    pub run_id: &'a RunId,
+    pub workflow_id: &'a str,
+    pub workflow: &'a WorkflowSpec,
+    pub node: &'a WorkflowNodeSpec,
+    pub agent_id: &'a str,
+    pub agent: &'a AgentSpec,
+    pub harness_id: &'a str,
+    pub harness: &'a HarnessSpec,
+    pub model: &'a ModelSpec,
+}
+
+pub fn build_openhands_conversation_payload(input: OpenHandsConversationPayloadInput<'_>) -> Value {
+    let model = model_reference(input.agent, input.model);
+    let memory = memory_scope_summary(input.agent, input.harness);
+    let permissions = permission_summary(input.harness);
+    let verification = serde_json::to_value(&input.harness.verification).unwrap_or(Value::Null);
+    let coder_metadata = json!({
+        "contract": "coder.openhands.conversation.v1",
+        "source": "coder-workflow",
+        "agent_kind_source": "default_fallback",
+        "run_id": input.run_id.as_str(),
+        "workflow_id": input.workflow_id,
+        "workflow_name": &input.workflow.name,
+        "node_id": &input.node.id,
+        "agent_id": input.agent_id,
+        "harness_id": input.harness_id,
+        "selected_tools": &input.harness.tools,
+        "model": model,
+        "memory": memory,
+        "permissions": permissions,
+        "verification": verification,
+        "output_contract": &input.agent.output_contract
+    });
+
+    json!({
+        "agent": {
+            "kind": "CodeActAgent"
+        },
+        "metadata": {
+            "source": "coder-workflow",
+            "coder": coder_metadata
+        },
+        "coder_context": {
+            "contract": "coder.openhands.context.v1",
+            "run": {
+                "run_id": input.run_id.as_str()
+            },
+            "workflow": {
+                "workflow_id": input.workflow_id,
+                "name": &input.workflow.name,
+                "max_rounds": input.workflow.max_rounds,
+                "stop": &input.workflow.stop,
+                "node_id": &input.node.id
+            },
+            "agent": {
+                "agent_id": input.agent_id,
+                "role": &input.agent.role,
+                "model_ref": &input.agent.model,
+                "output_contract": &input.agent.output_contract,
+                "system_instructions": &input.agent.system
+            },
+            "harness": {
+                "harness_id": input.harness_id,
+                "backend": &input.harness.backend,
+                "selected_tools": &input.harness.tools,
+                "permissions": serde_json::to_value(&input.harness.permissions).unwrap_or(Value::Null),
+                "memory": serde_json::to_value(&input.harness.memory).unwrap_or(Value::Null),
+                "verification": serde_json::to_value(&input.harness.verification).unwrap_or(Value::Null)
+            },
+            "model": model_reference(input.agent, input.model),
+            "memory": memory_scope_summary(input.agent, input.harness),
+            "output_contract": {
+                "name": &input.agent.output_contract,
+                "require_evidence": input.harness.verification.require_evidence
+            }
+        }
+    })
+}
+
+fn harness_backend_context(input: OpenHandsConversationPayloadInput<'_>) -> Value {
+    if input.harness.backend == "openhands" {
+        json!({
+            "openhands": {
+                "create_conversation_payload": build_openhands_conversation_payload(input)
+            }
+        })
+    } else {
+        Value::Null
+    }
+}
+
+fn model_reference(agent: &AgentSpec, model: &ModelSpec) -> Value {
+    json!({
+        "profile_ref": &agent.model,
+        "provider": &model.provider,
+        "model": &model.model,
+        "base_url_env": &model.base_url_env,
+        "api_key_env": &model.api_key_env
+    })
+}
+
+fn memory_scope_summary(agent: &AgentSpec, harness: &HarnessSpec) -> Value {
+    json!({
+        "agent": &agent.memory,
+        "harness": &harness.memory,
+        "note": "scope names only; memory contents are not embedded"
+    })
+}
+
+fn permission_summary(harness: &HarnessSpec) -> Value {
+    json!({
+        "policy": &harness.permissions,
+        "summary": {
+            "read_files": &harness.permissions.read_files,
+            "write_files": &harness.permissions.write_files,
+            "run_commands": &harness.permissions.run_commands,
+            "network": &harness.permissions.network,
+            "secrets": &harness.permissions.secrets,
+            "publish_external": &harness.permissions.publish_external,
+            "git_commit": &harness.permissions.git_commit,
+            "git_push": &harness.permissions.git_push,
+            "deploy": &harness.permissions.deploy
+        }
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkflowRunOptions {
     pub workflow_id: String,
@@ -983,14 +1134,7 @@ impl HarnessBackend for OpenHandsHarnessBackend {
         }
 
         let conversation = client
-            .create_conversation(json!({
-                "agent": {"kind": "CodeActAgent"},
-                "metadata": {
-                    "source": "coder-workflow",
-                    "workflow_id": &request.workflow_id,
-                    "node_id": &request.node_id
-                }
-            }))
+            .create_conversation(openhands_create_conversation_payload(&request))
             .await
             .map_err(|error| HarnessError::Failed(error.to_string()))?;
         client
@@ -1047,6 +1191,30 @@ impl HarnessBackend for OpenHandsHarnessBackend {
             events,
         })
     }
+}
+
+fn openhands_create_conversation_payload(request: &HarnessRunRequest) -> Value {
+    request
+        .backend_context
+        .pointer("/openhands/create_conversation_payload")
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "agent": {"kind": "CodeActAgent"},
+                "metadata": {
+                    "source": "coder-workflow",
+                    "coder": {
+                        "contract": "coder.openhands.conversation.v1",
+                        "agent_kind_source": "default_fallback",
+                        "run_id": request.run_id.as_str(),
+                        "workflow_id": &request.workflow_id,
+                        "node_id": &request.node_id,
+                        "agent_id": &request.agent_id,
+                        "harness_id": &request.harness_id
+                    }
+                }
+            })
+        })
 }
 
 struct WorkflowReportInput<'a> {
@@ -1637,6 +1805,110 @@ mod tests {
 
         assert!(matches!(error, WorkflowError::InvalidConfig(_)));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn openhands_payload_projects_coder_specs_without_secret_values() {
+        let (config, root, _) = fixture();
+        let secret_value = "actual-secret-value";
+        let workflow = config.workflows.get("planner-led").unwrap();
+        let node = workflow
+            .nodes
+            .iter()
+            .find(|node| node.id == "executor")
+            .unwrap();
+        let agent = config.agents.get(&node.agent).unwrap();
+        let harness = config.harnesses.get(&node.harness).unwrap();
+        let model = config.models.get(&agent.model).unwrap();
+        let run_id = RunId::from_string("run-phase2");
+
+        let payload = build_openhands_conversation_payload(OpenHandsConversationPayloadInput {
+            run_id: &run_id,
+            workflow_id: "planner-led",
+            workflow,
+            node,
+            agent_id: &node.agent,
+            agent,
+            harness_id: &node.harness,
+            harness,
+            model,
+        });
+        let payload_text = serde_json::to_string(&payload).unwrap();
+
+        assert_eq!(payload["agent"]["kind"], "CodeActAgent");
+        assert_eq!(
+            payload["metadata"]["coder"]["agent_kind_source"],
+            "default_fallback"
+        );
+        assert_eq!(payload["metadata"]["coder"]["run_id"], "run-phase2");
+        assert_eq!(payload["metadata"]["coder"]["workflow_id"], "planner-led");
+        assert_eq!(payload["metadata"]["coder"]["node_id"], "executor");
+        assert!(payload["metadata"]["coder"]["selected_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool.as_str() == Some("terminal")));
+        assert_eq!(
+            payload["metadata"]["coder"]["model"]["profile_ref"],
+            "default"
+        );
+        assert_eq!(
+            payload["metadata"]["coder"]["model"]["api_key_env"],
+            "LLM_API_KEY"
+        );
+        assert_eq!(
+            payload["metadata"]["coder"]["permissions"]["summary"]["write_files"],
+            "ask"
+        );
+        assert_eq!(
+            payload["coder_context"]["agent"]["output_contract"],
+            "execution_result"
+        );
+        assert!(payload["coder_context"]["agent"]["system_instructions"]
+            .as_str()
+            .unwrap()
+            .contains("coding executor"));
+        assert_eq!(
+            payload["coder_context"]["memory"]["note"],
+            "scope names only; memory contents are not embedded"
+        );
+        assert!(!payload_text.contains(secret_value));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn openhands_backend_prefers_context_payload_and_has_minimal_fallback() {
+        let request = HarnessRunRequest {
+            run_id: RunId::from_string("run-context"),
+            workflow_id: "workflow".to_owned(),
+            node_id: "node".to_owned(),
+            agent_id: "agent".to_owned(),
+            harness_id: "harness".to_owned(),
+            task: "task".to_owned(),
+            backend_context: json!({
+                "openhands": {
+                    "create_conversation_payload": {
+                        "agent": {"kind": "CustomAgent"},
+                        "metadata": {"coder": {"marker": "from-context"}}
+                    }
+                }
+            }),
+        };
+        let fallback_request = HarnessRunRequest {
+            backend_context: Value::Null,
+            ..request.clone()
+        };
+
+        let payload = openhands_create_conversation_payload(&request);
+        let fallback = openhands_create_conversation_payload(&fallback_request);
+
+        assert_eq!(payload["metadata"]["coder"]["marker"], "from-context");
+        assert_eq!(fallback["agent"]["kind"], "CodeActAgent");
+        assert_eq!(fallback["metadata"]["coder"]["run_id"], "run-context");
+        assert_eq!(
+            fallback["metadata"]["coder"]["agent_kind_source"],
+            "default_fallback"
+        );
     }
 
     fn workflow_runner_with_script<I, S>(
