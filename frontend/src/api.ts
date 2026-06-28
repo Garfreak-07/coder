@@ -58,6 +58,29 @@ import type {
   StoredRunDetail,
   ToolResultDetail
 } from "./types";
+import { shouldUseRustApiV3 } from "./apiVersion";
+import {
+  agentWorkflowToRustLibrarySaveRequest,
+  rustArtifactPayloadToArtifactDetail,
+  rustBlobToBlobDetail,
+  rustCapabilitiesToCapabilitySpecs,
+  rustDefaultWorkflowToAgentWorkflow,
+  rustHealthToHealthStatus,
+  rustLibraryToLibraryIndex,
+  rustLibraryWorkflowToAgentWorkflow,
+  rustRoleCardsToRoleCards,
+  rustRunDetailToStoredRunDetail,
+  rustRunEventsToRunEventsPage,
+  rustRunReportToArtifactDetail,
+  rustRunSummaryToRunSummaryItem,
+  rustValidationReportToAgentWorkflowValidationResult,
+  type RustCapabilitiesResponse,
+  type RustDefaultWorkflowResponse,
+  type RustHealthResponse,
+  type RustLibraryResponse,
+  type RustLibraryWorkflowGetResponse
+} from "./rustApiAdapter";
+import { legacyCanvasToWorkflowSpec } from "./workflowSpecAdapter";
 
 const jsonHeaders = {
   "Content-Type": "application/json"
@@ -81,20 +104,36 @@ async function requestBlob(url: string, init?: RequestInit): Promise<Blob> {
   return response.blob();
 }
 
-export function getLibrary(): Promise<LibraryIndex> {
+export async function getLibrary(): Promise<LibraryIndex> {
+  if (shouldUseRustApiV3()) {
+    const payload = await requestJson<RustLibraryResponse>("/api/v3/library");
+    return rustLibraryToLibraryIndex(payload);
+  }
   return requestJson<LibraryIndex>("/api/v2/library");
 }
 
-export function getHealth(): Promise<HealthStatus> {
+export async function getHealth(): Promise<HealthStatus> {
+  if (shouldUseRustApiV3()) {
+    const payload = await requestJson<RustHealthResponse>("/api/v3/health");
+    return rustHealthToHealthStatus(payload);
+  }
   return requestJson<HealthStatus>("/api/v2/health");
 }
 
 export async function getCapabilities(): Promise<CapabilitySpec[]> {
+  if (shouldUseRustApiV3()) {
+    const payload = await requestJson<RustCapabilitiesResponse>("/api/v3/capabilities");
+    return rustCapabilitiesToCapabilitySpecs(payload);
+  }
   const payload = await requestJson<{ capabilities: CapabilitySpec[] }>("/api/v2/capabilities");
   return payload.capabilities;
 }
 
 export async function getAgentRoleCards(): Promise<RoleCardSpec[]> {
+  if (shouldUseRustApiV3()) {
+    const payload = await requestJson<{ role_cards: RoleCardSpec[] }>("/api/v3/agent-role-cards");
+    return rustRoleCardsToRoleCards(payload);
+  }
   const payload = await requestJson<{ role_cards: RoleCardSpec[] }>("/api/v2/agent-role-cards");
   return payload.role_cards;
 }
@@ -234,15 +273,37 @@ export async function testProvider(provider: string): Promise<ProviderStatus> {
 }
 
 export async function getRuns(): Promise<RunSummaryItem[]> {
+  if (shouldUseRustApiV3()) {
+    const runs = await getRustRuns();
+    return runs.map(rustRunSummaryToRunSummaryItem);
+  }
   const payload = await requestJson<{ runs: RunSummaryItem[] }>("/api/v2/runs");
   return payload.runs;
 }
 
-export function getRun(runId: string, includeEvents = true): Promise<StoredRunDetail> {
+export async function getRun(runId: string, includeEvents = true): Promise<StoredRunDetail> {
+  if (shouldUseRustApiV3()) {
+    const detail = await getRustRun(runId);
+    const mapped = rustRunDetailToStoredRunDetail(detail);
+    if (!includeEvents) {
+      return {
+        ...mapped,
+        result: {
+          ...mapped.result,
+          events: []
+        }
+      };
+    }
+    return mapped;
+  }
   return requestJson<StoredRunDetail>(`/api/v2/runs/${runId}?include_events=${includeEvents ? "true" : "false"}`);
 }
 
-export function getRunEvents(runId: string, cursor = 0, limit = 200): Promise<RunEventsPage> {
+export async function getRunEvents(runId: string, cursor = 0, limit = 200): Promise<RunEventsPage> {
+  if (shouldUseRustApiV3()) {
+    const payload = await getRustRunEvents(runId);
+    return rustRunEventsToRunEventsPage(payload, cursor, limit);
+  }
   return requestJson<RunEventsPage>(`/api/v2/runs/${runId}/events?cursor=${cursor}&limit=${limit}`);
 }
 
@@ -250,7 +311,15 @@ export function getContextPacket(runId: string, packetId: string): Promise<Conte
   return requestJson<ContextPacketDetail>(`/api/v2/runs/${runId}/context-packets/${packetId}`);
 }
 
-export function getArtifact(runId: string, artifactId: string): Promise<ArtifactDetail> {
+export async function getArtifact(runId: string, artifactId: string): Promise<ArtifactDetail> {
+  if (shouldUseRustApiV3()) {
+    if (artifactId === "final-report.json" || artifactId === "final_report") {
+      const report = await previewRustRunReport(runId);
+      return rustRunReportToArtifactDetail(report);
+    }
+    const response = await getRustRunArtifact(runId, artifactId);
+    return rustArtifactPayloadToArtifactDetail(response.artifact_name, response.payload);
+  }
   return requestJson<ArtifactDetail>(`/api/v2/runs/${runId}/artifacts/${artifactId}`);
 }
 
@@ -258,7 +327,12 @@ export function getToolResult(runId: string, toolResultId: string): Promise<Tool
   return requestJson<ToolResultDetail>(`/api/v2/runs/${runId}/tool-results/${toolResultId}`);
 }
 
-export function getBlob(runId: string, blobId: string): Promise<BlobDetail> {
+export async function getBlob(runId: string, blobId: string): Promise<BlobDetail> {
+  if (shouldUseRustApiV3()) {
+    const digest = blobId.startsWith("blob://sha256/") ? blobId.slice("blob://sha256/".length) : blobId;
+    const blob = await getRustBlobSha256(digest);
+    return rustBlobToBlobDetail(blobId, blob);
+  }
   return requestJson<BlobDetail>(`/api/v2/runs/${runId}/blobs/${encodeURIComponent(blobId)}`);
 }
 
@@ -269,10 +343,19 @@ export function getLiveAgentRun(runId: string): Promise<LiveRunDetail> {
 export async function getDefaultAgentWorkflow(): Promise<{
   agent_workflow: AgentWorkflowSpec;
 }> {
+  if (shouldUseRustApiV3()) {
+    const payload = await requestJson<RustDefaultWorkflowResponse>("/api/v3/workflows/default");
+    return { agent_workflow: rustDefaultWorkflowToAgentWorkflow(payload) };
+  }
   return requestJson("/api/v2/agent-workflows/default");
 }
 
-export function validateAgentWorkflow(agentWorkflow: AgentWorkflowSpec): Promise<AgentWorkflowValidationResult> {
+export async function validateAgentWorkflow(agentWorkflow: AgentWorkflowSpec): Promise<AgentWorkflowValidationResult> {
+  if (shouldUseRustApiV3()) {
+    const config = legacyCanvasToWorkflowSpec(agentWorkflow);
+    const report = await validateRustWorkflowSpec(config, agentWorkflow.id);
+    return rustValidationReportToAgentWorkflowValidationResult(report);
+  }
   return requestJson<AgentWorkflowValidationResult>("/api/v2/agent-workflows/validate", {
     method: "POST",
     headers: jsonHeaders,
@@ -473,11 +556,29 @@ export async function getAgentRuntimeProfiles(agentWorkflow: AgentWorkflowSpec):
 }
 
 export async function getAgentWorkflow(workflowId: string): Promise<AgentWorkflowSpec> {
+  if (shouldUseRustApiV3()) {
+    const payload = await requestJson<RustLibraryWorkflowGetResponse>(
+      `/api/v3/library/workflows/${encodeURIComponent(workflowId)}`
+    );
+    return rustLibraryWorkflowToAgentWorkflow(payload);
+  }
   const payload = await requestJson<{ agent_workflow: AgentWorkflowSpec }>(`/api/v2/library/agent-workflows/${workflowId}`);
   return payload.agent_workflow;
 }
 
 export async function saveAgentWorkflow(agentWorkflow: AgentWorkflowSpec): Promise<AgentWorkflowSpec> {
+  if (shouldUseRustApiV3()) {
+    const request = agentWorkflowToRustLibrarySaveRequest(agentWorkflow);
+    const payload = await requestJson<{ workflow_id: string; workflow: unknown; saved: boolean }>(
+      "/api/v3/library/workflows",
+      {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify(request)
+      }
+    );
+    return rustLibraryWorkflowToAgentWorkflow(payload);
+  }
   const payload = await requestJson<{ agent_workflow: AgentWorkflowSpec }>("/api/v2/library/agent-workflows", {
     method: "POST",
     headers: jsonHeaders,

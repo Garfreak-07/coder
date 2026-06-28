@@ -1,5 +1,12 @@
 import { defaultPlannerLedAgentWorkflow } from "./examples";
 import type { AgentWorkflowSpec, RustProjectConfig } from "./types";
+import { resolveCoderApiVersion } from "./apiVersion";
+import {
+  agentWorkflowToRustLibrarySaveRequest,
+  rustDefaultWorkflowToAgentWorkflow,
+  rustLibraryWorkflowToAgentWorkflow,
+  rustRunEventsToRunEventsPage
+} from "./rustApiAdapter";
 import {
   legacyCanvasToWorkflowExport,
   legacyCanvasToWorkflowSpec,
@@ -117,4 +124,75 @@ test("imports plain Rust ProjectConfig while preserving max rounds and planner",
 
   assert.equal(imported.primary_planner_id, "planner");
   assert.equal(imported.loop_policy.max_auto_rounds, defaultPlannerLedAgentWorkflow.loop_policy.max_auto_rounds);
+});
+
+test("resolves Rust API v3 from env, query string, and local storage values", () => {
+  assert.equal(resolveCoderApiVersion(), "v2");
+  assert.equal(resolveCoderApiVersion({ env: { VITE_CODER_API_VERSION: "v3" } }), "v3");
+  assert.equal(resolveCoderApiVersion({ env: { CODER_USE_RUST_API: "1" } }), "v3");
+  assert.equal(resolveCoderApiVersion({ localStorageValue: "rust" }), "v3");
+  assert.equal(resolveCoderApiVersion({ search: "?coder_api_version=v3" }), "v3");
+  assert.equal(resolveCoderApiVersion({ search: "?coder_api_version=v2", env: { VITE_CODER_API_VERSION: "v3" } }), "v2");
+});
+
+test("maps Rust default workflow response into the legacy canvas model", () => {
+  const config = legacyCanvasToWorkflowSpec(defaultPlannerLedAgentWorkflow);
+  const imported = rustDefaultWorkflowToAgentWorkflow({
+    workflow_id: "default-planner-led",
+    config,
+    workflow: config.workflows["default-planner-led"]
+  });
+
+  assert.equal(imported.id, "default-planner-led");
+  assert.equal(imported.name, defaultPlannerLedAgentWorkflow.name);
+  assert.equal(imported.agents.length, 2);
+  assert.equal(imported.edges[1].loop, true);
+});
+
+test("roundtrips library save payloads through Rust workflow storage shape", () => {
+  const request = agentWorkflowToRustLibrarySaveRequest(defaultPlannerLedAgentWorkflow);
+  const imported = rustLibraryWorkflowToAgentWorkflow({
+    workflow_id: request.workflow_id,
+    workflow: request.workflow
+  });
+
+  assert.equal(request.workflow_id, defaultPlannerLedAgentWorkflow.id);
+  assert.equal(imported.id, defaultPlannerLedAgentWorkflow.id);
+  assert.deepEqual(imported.ui?.layout, defaultPlannerLedAgentWorkflow.ui?.layout);
+});
+
+test("maps Rust run events into the existing paged event model", () => {
+  const page = rustRunEventsToRunEventsPage(
+    {
+      run_id: "run-1",
+      events: [
+        {
+          event_id: "evt-1",
+          run_id: "run-1",
+          sequence: 1,
+          timestamp: "2026-06-28T00:00:00Z",
+          kind: "node.started",
+          payload: { node_id: "planner", status: "running" },
+          refs: []
+        },
+        {
+          event_id: "evt-2",
+          run_id: "run-1",
+          sequence: 2,
+          timestamp: "2026-06-28T00:00:01Z",
+          kind: "node.completed",
+          payload: { node_id: "planner", status: "completed" },
+          refs: []
+        }
+      ]
+    },
+    1,
+    1
+  );
+
+  assert.equal(page.events.length, 1);
+  assert.equal(page.events[0].type, "node.completed");
+  assert.equal(page.events[0].node_id, "planner");
+  assert.equal(page.next_cursor, 2);
+  assert.equal(page.has_more, false);
 });
