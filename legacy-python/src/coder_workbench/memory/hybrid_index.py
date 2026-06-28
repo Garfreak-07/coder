@@ -54,6 +54,8 @@ class HybridIndexManager:
                 chroma_indexed = len([chunk for chunk in chunks if chunk.sensitivity != "secret" and chunk.acl.sensitivity != "secret"])
             except Exception as exc:
                 warnings.append(f"chroma rebuild failed: {exc}")
+            finally:
+                self.chroma_index.close()
         else:
             warnings.append("chromadb is not installed")
 

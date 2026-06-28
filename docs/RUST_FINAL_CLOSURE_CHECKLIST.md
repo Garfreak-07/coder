@@ -8,8 +8,8 @@
 - [x] Dense RAG mocked tests pass without live embeddings
 - [x] Release workflow/artifact baseline implemented
 - [x] Install scripts or packaging sources added
-- [ ] MIT license-only commit completed
-- [ ] README reflects Rust default + legacy path
-- [ ] Full verification commands pass
-- [ ] Completion report updated
-- [ ] Blockers file removed or changed to no-open-blockers
+- [x] MIT license-only commit completed
+- [x] README reflects Rust default + legacy path
+- [x] Full verification commands pass
+- [x] Completion report updated
+- [x] Blockers file removed or changed to no-open-blockers

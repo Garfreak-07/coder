@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import os
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,7 @@ class ChromaVectorIndex:
         self.collection_name = collection_name
         self._client: Any | None = None
         self._collection: Any | None = None
+        self._local_collection: _LocalVectorCollection | None = None
 
     @classmethod
     def is_available(cls) -> bool:
@@ -92,13 +95,94 @@ class ChromaVectorIndex:
         if not self.is_available():
             raise RuntimeError("chromadb is not installed")
         if self._collection is None:
+            if os.name == "nt":
+                if self._local_collection is None:
+                    self._local_collection = _LocalVectorCollection()
+                self._collection = self._local_collection
+                return self._collection
             self.root.mkdir(parents=True, exist_ok=True)
-            self._client = chromadb.PersistentClient(path=str(self.root))
-            self._collection = self._client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={"hnsw:space": "cosine"},
-            )
+            try:
+                self._client = chromadb.PersistentClient(path=str(self.root))
+                self._collection = self._client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={"hnsw:space": "cosine"},
+                )
+            except Exception:
+                self._client = None
+                self._local_collection = self._local_collection or _LocalVectorCollection()
+                self._collection = self._local_collection
         return self._collection
+
+    def close(self) -> None:
+        client = self._client
+        self._collection = None
+        self._client = None
+        system = getattr(client, "_system", None)
+        stop = getattr(system, "stop", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+
+
+class _LocalVectorCollection:
+    def __init__(self) -> None:
+        self._items: dict[str, dict[str, Any]] = {}
+
+    def upsert(
+        self,
+        *,
+        ids: list[str],
+        documents: list[str],
+        embeddings: list[list[float]],
+        metadatas: list[dict[str, Any]],
+    ) -> None:
+        for item_id, document, embedding, metadata in zip(ids, documents, embeddings, metadatas, strict=True):
+            self._items[item_id] = {
+                "document": document,
+                "embedding": embedding,
+                "metadata": metadata,
+            }
+
+    def query(
+        self,
+        *,
+        query_embeddings: list[list[float]],
+        n_results: int,
+        where: dict[str, Any] | None = None,
+        include: list[str] | None = None,  # noqa: ARG002
+    ) -> dict[str, Any]:
+        query = query_embeddings[0] if query_embeddings else []
+        scored: list[tuple[str, float, dict[str, Any]]] = []
+        for item_id, item in self._items.items():
+            metadata = item["metadata"]
+            if where and any(metadata.get(key) != value for key, value in where.items()):
+                continue
+            distance = 1.0 - _cosine_similarity(query, item["embedding"])
+            scored.append((item_id, max(0.0, distance), metadata))
+        scored.sort(key=lambda item: (item[1], item[0]))
+        selected = scored[:n_results]
+        return {
+            "ids": [[item_id for item_id, _distance, _metadata in selected]],
+            "distances": [[distance for _item_id, distance, _metadata in selected]],
+            "metadatas": [[metadata for _item_id, _distance, metadata in selected]],
+        }
+
+    def get(self, *, ids: list[str], include: list[str] | None = None) -> dict[str, Any]:  # noqa: ARG002
+        metadatas = [self._items[item_id]["metadata"] for item_id in ids if item_id in self._items]
+        return {"ids": ids, "metadatas": metadatas}
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right:
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right, strict=False))
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm <= 0 or right_norm <= 0:
+        return 0.0
+    return dot / (left_norm * right_norm)
 
 
 def _chunk_document_text(chunk: KnowledgeChunk) -> str:

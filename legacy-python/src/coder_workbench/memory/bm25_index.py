@@ -103,6 +103,8 @@ class BM25Index:
         tokenized_documents = self._tokenized_documents or []
         if self._rank_bm25 is not None:
             scores = [float(score) for score in self._rank_bm25.get_scores(query_tokens)]
+            if not any(score > 0 for score in scores):
+                scores = _fallback_bm25_scores(query_tokens, tokenized_documents)
         else:
             scores = _fallback_bm25_scores(query_tokens, tokenized_documents)
 

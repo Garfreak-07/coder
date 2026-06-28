@@ -51,6 +51,7 @@ class ChromaVectorIndexTests(unittest.TestCase):
             self.assertEqual(metadata["chunk_id"], "chunk-1")
             self.assertEqual(metadata["content_hash"], "sha256:chunk-1")
             self.assertIn("task_execution", metadata["allowed_agents"])
+            index.close()
 
     @unittest.skipUnless(ChromaVectorIndex.is_available(), "chromadb is not installed")
     def test_re_upsert_is_idempotent(self) -> None:

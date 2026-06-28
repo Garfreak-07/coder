@@ -181,18 +181,13 @@ pub struct KnowledgeImportResult {
     pub chunks: Vec<KnowledgeChunk>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RetrievalBackendKind {
+    #[default]
     Lexical,
     DenseMock,
     Hybrid,
-}
-
-impl Default for RetrievalBackendKind {
-    fn default() -> Self {
-        Self::Lexical
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
