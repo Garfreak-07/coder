@@ -730,11 +730,6 @@ export function App() {
     }
   }
 
-  const chatRunStatus = selectedRunDetail
-    ? runStatusLabel(selectedRunDetail, selectedRunKind)
-    : activeRunId
-      ? "running"
-      : "ready";
   const debugUiEnabled = useMemo(() => {
     if (typeof window === "undefined") return false;
     return (
@@ -789,7 +784,6 @@ export function App() {
           repo={repo}
           request={request}
           runLoading={runLoading}
-          runStatus={chatRunStatus}
           scopesText={scopesText}
           submittedRequest={submittedRequest}
           timelineItems={timelineItems}

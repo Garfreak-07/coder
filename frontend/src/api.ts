@@ -15,8 +15,6 @@ import type {
   ChangeSetActionResponse,
   ChangeSetDiffResponse,
   HookSummary,
-  PlannerChatConfirmResult,
-  PlannerChatDraft,
   PlannerChatSession,
   PlannerStartWorkResponse,
   PlannerChatTurn,
@@ -162,20 +160,6 @@ interface RustPlannerChatTurnResponse {
   } | null;
 }
 
-interface RustRunPreviewResponse {
-  status: string;
-  requires_confirmation: boolean;
-  workflow_id: string;
-  task: string;
-  backends: string[];
-  issues: Array<{
-    level?: string;
-    code?: string;
-    message?: string;
-    target?: string;
-  }>;
-}
-
 interface RustRunResponse {
   run_id: string;
   report_ref?: string;
@@ -183,16 +167,6 @@ interface RustRunResponse {
     status?: string;
   };
   events_url?: string;
-}
-
-interface RustPlannerRunContext {
-  original_user_request: string;
-  planner_conversation_summary: string;
-  plan_draft: RustPlannerPlanDraft | null;
-  acceptance_criteria: string[];
-  risks: string[];
-  affected_paths: string[];
-  selected_workflow_id: string;
 }
 
 interface PlannerSessionContext {
@@ -207,16 +181,7 @@ interface PlannerSessionContext {
   interactionMode: PlannerInteractionMode;
 }
 
-interface PlannerDraftContext {
-  config: RustProjectConfig;
-  workflowId: string;
-  task: string;
-  repo: string;
-  scopes: string[];
-}
-
 const rustPlannerSessionContexts = new Map<string, PlannerSessionContext>();
-const rustPlannerDraftContexts = new Map<string, PlannerDraftContext>();
 
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -785,31 +750,6 @@ export async function saveAgentWorkflow(agentWorkflow: AgentWorkflowSpec): Promi
   return rustLibraryWorkflowToAgentWorkflow(payload);
 }
 
-export function createPlannerChatDraft(input: {
-  repo: string;
-  request: string;
-  workflow_id: string;
-  planner_agent_id: string;
-  agent_workflow: AgentWorkflowSpec;
-  scopes: string[];
-  knowledge_pack_ids?: string[];
-  skill_pack_ids?: string[];
-  memory_pack_ids?: string[];
-}): Promise<PlannerChatDraft> {
-  return createRustPlannerChatDraft(input);
-}
-
-export function confirmPlannerChatDraft(input: {
-  draft_id: string;
-  approved: boolean;
-  repo?: string;
-  scopes?: string[];
-  edits?: Record<string, unknown>;
-  initial_data?: Record<string, unknown>;
-}): Promise<PlannerChatConfirmResult> {
-  return confirmRustPlannerChatDraft(input);
-}
-
 export function createPlannerChatSession(input: {
   repo?: string;
   workflow_id: string;
@@ -884,101 +824,6 @@ export async function startLiveAgentRun(input: {
   initial_data?: Record<string, unknown>;
 }): Promise<{ run_id: string; status: string; events_url: string; result_url: string }> {
   return startRustAgentRun(input);
-}
-
-async function createRustPlannerChatDraft(input: {
-  repo: string;
-  request: string;
-  workflow_id: string;
-  agent_workflow: AgentWorkflowSpec;
-  scopes: string[];
-}): Promise<PlannerChatDraft> {
-  const config = legacyCanvasToWorkflowSpec(input.agent_workflow);
-  const preview = await requestJson<RustRunPreviewResponse>("/api/v3/runs/preview", {
-    method: "POST",
-    headers: jsonHeaders,
-    body: JSON.stringify({
-      config,
-      workflow_id: input.workflow_id,
-      task: input.request
-    })
-  });
-  const draftId = `rust_draft_${Date.now().toString(36)}`;
-  rustPlannerDraftContexts.set(draftId, {
-    config,
-    workflowId: input.workflow_id,
-    task: preview.task || input.request,
-    repo: input.repo,
-    scopes: input.scopes
-  });
-  const issueMessages = preview.issues.map((issue) => issue.message || issue.code || "Workflow preview issue.");
-  return {
-    draft_id: draftId,
-    artifact_type: "project_plan_draft",
-    summary: `Rust run preview is ${preview.status} for workflow ${preview.workflow_id}.`,
-    proposed_scope: input.scopes,
-    success_criteria:
-      preview.status === "ready"
-        ? ["Run completes with an evidence-backed final report."]
-        : ["Resolve workflow preview issues before running."],
-    risks: issueMessages,
-    requires_confirmation: preview.requires_confirmation
-  };
-}
-
-async function confirmRustPlannerChatDraft(input: {
-  draft_id: string;
-  approved: boolean;
-  edits?: Record<string, unknown>;
-}): Promise<PlannerChatConfirmResult> {
-  if (!input.approved) {
-    rustPlannerDraftContexts.delete(input.draft_id);
-    return {
-      draft_id: input.draft_id,
-      status: "cancelled"
-    };
-  }
-  const context = rustPlannerDraftContexts.get(input.draft_id);
-  if (!context) {
-    throw new Error(`Rust planner draft ${input.draft_id} was not found.`);
-  }
-  const editedRequest = typeof input.edits?.request === "string" ? input.edits.request : context.task;
-  const response = await requestJson<RustRunResponse>("/api/v3/runs", {
-    method: "POST",
-    headers: jsonHeaders,
-    body: JSON.stringify({
-      config: context.config,
-      workflow_id: context.workflowId,
-      task: editedRequest,
-      repo_root: context.repo,
-      plan_context: {
-        original_user_request: editedRequest,
-        planner_conversation_summary: "Planner draft confirmed by the user.",
-        plan_draft: {
-          goal: editedRequest,
-          scope: context.scopes,
-          non_goals: [],
-          assumptions: [],
-          steps: ["Run the selected workflow.", "Report evidence and checks."],
-          affected_paths: context.scopes,
-          acceptance_criteria: ["Run completes with an evidence-backed final report."],
-          risks: [],
-          open_questions: [],
-          selected_workflow_id: context.workflowId
-        },
-        acceptance_criteria: ["Run completes with an evidence-backed final report."],
-        risks: [],
-        affected_paths: context.scopes,
-        selected_workflow_id: context.workflowId
-      }
-    })
-  });
-  rustPlannerDraftContexts.delete(input.draft_id);
-  return {
-    draft_id: input.draft_id,
-    run_id: response.run_id,
-    status: response.report?.status ?? "completed"
-  };
 }
 
 async function createRustPlannerChatSession(input: {
@@ -1299,35 +1144,6 @@ function rustPlannerReadiness(
   if (readiness === "needs_clarification") return "needs_clarification";
   if (readiness === "casual") return "not_ready";
   return "not_ready";
-}
-
-function rustPlannerRunContext(
-  response: RustPlannerChatTurnResponse,
-  userMessage: string,
-  planDraft: RustPlannerPlanDraft | null
-): RustPlannerRunContext {
-  return {
-    original_user_request: userMessage,
-    planner_conversation_summary: response.assistant_message,
-    plan_draft: planDraft,
-    acceptance_criteria:
-      response.acceptance_criteria ?? planDraft?.acceptance_criteria ?? [],
-    risks: response.risks ?? planDraft?.risks ?? [],
-    affected_paths: planDraft?.affected_paths ?? [],
-    selected_workflow_id: planDraft?.selected_workflow_id ?? response.session.workflow_id
-  };
-}
-
-function taskFromPlannerPlan(userMessage: string, planDraft: RustPlannerPlanDraft | null): string {
-  if (!planDraft) return userMessage;
-  const lines = [
-    planDraft.goal,
-    planDraft.affected_paths?.length ? `Affected paths: ${planDraft.affected_paths.join(", ")}` : "",
-    planDraft.acceptance_criteria?.length
-      ? `Acceptance: ${planDraft.acceptance_criteria.join("; ")}`
-      : ""
-  ].filter(Boolean);
-  return lines.join("\n");
 }
 
 function normalizePlannerMessageRole(role: string): "user" | "assistant" | "system" {

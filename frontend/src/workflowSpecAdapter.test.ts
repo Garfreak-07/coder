@@ -1,5 +1,6 @@
 import { defaultPlannerLedAgentWorkflow } from "./examples";
 import { readFileSync } from "node:fs";
+import { PlannerChatPage } from "./features/planner-chat/PlannerChatPage";
 import type { AgentWorkflowSpec, RustProjectConfig } from "./types";
 import {
   agentWorkflowToRustLibrarySaveRequest,
@@ -220,6 +221,109 @@ test("Planner Chat page uses Start Work timeline and hides legacy draft controls
   assert.ok(source.includes("Start Work"));
   assert.ok(source.includes("WorkTimeline"));
   assert.ok(source.includes("ReviewChangesCard"));
+  assert.ok(!source.includes("message-status"));
+  assert.ok(!source.includes("formatRunStatus"));
+  assert.ok(!source.includes("runStatus"));
   assert.ok(!source.includes("Draft plan"));
+  assert.ok(!source.includes("Draft Plan"));
+  assert.ok(!source.includes("Discuss"));
   assert.ok(!source.includes("plannerInteractionMode"));
 });
+
+test("Planner Chat page renders two turns without synthetic status cards", () => {
+  const tree = renderPlannerChat({
+    session_id: "session-1",
+    workflow_id: defaultPlannerLedAgentWorkflow.id,
+    planner_agent_id: "planner",
+    agent_workflow: defaultPlannerLedAgentWorkflow,
+    repo: ".",
+    scopes: [],
+    knowledge_pack_ids: [],
+    skill_pack_ids: [],
+    memory_pack_ids: [],
+    interaction_mode: "discuss",
+    messages: [
+      { role: "user", content: "First question" },
+      { role: "assistant", content: "First answer" },
+      { role: "user", content: "Second question" },
+      { role: "assistant", content: "Second answer" }
+    ],
+    task_state: {
+      goal: null,
+      user_intent: null,
+      scope: [],
+      constraints: [],
+      success_criteria: [],
+      known_context: [],
+      missing_context: [],
+      open_questions: [],
+      assumptions: [],
+      risks: [],
+      memory_proposals: [],
+      plan_steps: [],
+      readiness: "not_ready"
+    },
+    generation: 4,
+    last_turn: null,
+    run_id: null,
+    status: "chatting"
+  });
+  const text = collectReactTreeText(tree);
+  const classNames = collectReactTreeClassNames(tree);
+
+  assert.ok(text.includes("First question"));
+  assert.ok(text.includes("First answer"));
+  assert.ok(text.includes("Second question"));
+  assert.ok(text.includes("Second answer"));
+  assert.ok(!classNames.includes("message-status"));
+  assert.ok(!text.includes("Ready"));
+  assert.ok(!text.includes("Draft Plan"));
+  assert.ok(!text.includes("Discuss"));
+});
+
+function renderPlannerChat(plannerSession: Parameters<typeof PlannerChatPage>[0]["plannerSession"]): unknown {
+  return PlannerChatPage({
+    activeRunId: null,
+    changeSets: [],
+    debugEvidence: null,
+    diffByChangeSetId: {},
+    loadingChangeSetId: null,
+    repo: ".",
+    request: "",
+    runLoading: false,
+    scopesText: "",
+    submittedRequest: "",
+    timelineItems: [],
+    plannerSession,
+    plannerStrength: "balanced",
+    onAcceptChangeSet: () => undefined,
+    onLoadChangeSetDiff: () => undefined,
+    onRepoChange: () => undefined,
+    onRequestChange: () => undefined,
+    onScopesTextChange: () => undefined,
+    onPlannerStrengthChange: () => undefined,
+    onStartWork: () => undefined,
+    onSubmitRequest: () => undefined,
+    onUndoChangeSet: () => undefined
+  });
+}
+
+function collectReactTreeText(node: unknown): string {
+  if (node === null || typeof node === "undefined" || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(collectReactTreeText).join("");
+  if (typeof node !== "object") return "";
+  const props = (node as { props?: { children?: unknown } }).props;
+  return collectReactTreeText(props?.children);
+}
+
+function collectReactTreeClassNames(node: unknown): string {
+  if (node === null || typeof node === "undefined" || typeof node === "boolean") return "";
+  if (Array.isArray(node)) return node.map(collectReactTreeClassNames).join(" ");
+  if (typeof node !== "object") return "";
+  const props = (node as { props?: { children?: unknown; className?: unknown } }).props;
+  return [
+    typeof props?.className === "string" ? props.className : "",
+    collectReactTreeClassNames(props?.children)
+  ].filter(Boolean).join(" ");
+}

@@ -24,7 +24,6 @@ interface PlannerChatPageProps {
   repo: string;
   request: string;
   runLoading: boolean;
-  runStatus: string;
   scopesText: string;
   submittedRequest: string;
   timelineItems: TimelineItem[];
@@ -50,7 +49,6 @@ export function PlannerChatPage({
   repo,
   request,
   runLoading,
-  runStatus,
   scopesText,
   submittedRequest,
   timelineItems,
@@ -115,14 +113,6 @@ export function PlannerChatPage({
                 </article>
               )
             )}
-            <article className="chat-message planner-message">
-              <div className="message-role">Planner</div>
-              <div className="message-card">
-                <div className="message-status">
-                  <span>{formatRunStatus(runStatus)}</span>
-                </div>
-              </div>
-            </article>
             <WorkTimeline runId={runIdForTimeline} items={timelineItems} />
             <ReviewChangesCard
               changeSets={changeSets}
@@ -187,14 +177,4 @@ export function PlannerChatPage({
       </section>
     </main>
   );
-}
-
-function formatRunStatus(status: string): string {
-  if (status === "ready") return "Ready";
-  if (status === "queued") return "Run queued";
-  if (status === "running") return "Run active";
-  if (status === "completed") return "Run completed";
-  if (status === "blocked") return "Run blocked";
-  if (status === "failed") return "Run failed";
-  return status;
 }
