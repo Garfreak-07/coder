@@ -779,7 +779,12 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <AppSidebar activeSection={activeSection} status={status} onSectionChange={setActiveSection} />
+      <AppSidebar
+        activeSection={activeSection}
+        status={status}
+        onSectionChange={setActiveSection}
+        showExtensions={debugUiEnabled}
+      />
 
       {activeSection === "chat" ? (
         <PlannerChatPage
@@ -856,7 +861,7 @@ export function App() {
           }}
           onWorkflowNameChange={(name) => updateAgentWorkflow((current) => ({ ...current, name }))}
         />
-      ) : activeSection === "extensions" ? (
+      ) : activeSection === "extensions" && debugUiEnabled ? (
         <PluginsPage onStatus={setStatus} />
       ) : (
         <main className="page-main page-grid">

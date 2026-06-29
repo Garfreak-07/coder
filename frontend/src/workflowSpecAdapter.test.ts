@@ -1,5 +1,6 @@
 import { defaultPlannerLedAgentWorkflow } from "./examples";
 import { readFileSync } from "node:fs";
+import { AppSidebar } from "./components/AppSidebar";
 import { PlannerChatPage } from "./features/planner-chat/PlannerChatPage";
 import { ReviewChangesCard } from "./features/review-changes/ReviewChangesCard";
 import { WorkTimeline } from "./features/work-timeline/WorkTimeline";
@@ -281,6 +282,27 @@ test("Planner Chat page renders two turns without synthetic status cards", () =>
   assert.ok(!text.includes("Ready"));
   assert.ok(!text.includes("Draft Plan"));
   assert.ok(!text.includes("Discuss"));
+});
+
+test("App navigation hides Plugins & Skills outside debug UI", () => {
+  const defaultTree = AppSidebar({
+    activeSection: "chat",
+    status: "Ready",
+    onSectionChange: () => undefined
+  });
+  const debugTree = AppSidebar({
+    activeSection: "extensions",
+    status: "Ready",
+    onSectionChange: () => undefined,
+    showExtensions: true
+  });
+  const appSource = readFileSync("src/App.tsx", "utf8");
+
+  assert.ok(collectReactTreeText(defaultTree).includes("Planner Chat"));
+  assert.ok(!collectReactTreeText(defaultTree).includes("Plugins & Skills"));
+  assert.ok(collectReactTreeText(debugTree).includes("Plugins & Skills"));
+  assert.ok(appSource.includes("showExtensions={debugUiEnabled}"));
+  assert.ok(appSource.includes('activeSection === "extensions" && debugUiEnabled'));
 });
 
 test("Work timeline renders public ReAct items without raw backend details", () => {

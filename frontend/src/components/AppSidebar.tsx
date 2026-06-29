@@ -1,11 +1,13 @@
 export const appSections = ["chat", "workflow", "extensions", "settings"] as const;
 
 export type AppSection = (typeof appSections)[number];
+const coreAppSections = appSections.filter((section) => section !== "extensions");
 
 interface AppSidebarProps {
   activeSection: AppSection;
   status: string;
   onSectionChange: (section: AppSection) => void;
+  showExtensions?: boolean;
 }
 
 const sectionLabels: Record<AppSection, string> = {
@@ -15,7 +17,14 @@ const sectionLabels: Record<AppSection, string> = {
   settings: "Settings"
 };
 
-export function AppSidebar({ activeSection, status, onSectionChange }: AppSidebarProps) {
+export function AppSidebar({
+  activeSection,
+  status,
+  onSectionChange,
+  showExtensions = false
+}: AppSidebarProps) {
+  const visibleSections: readonly AppSection[] = showExtensions ? appSections : coreAppSections;
+
   return (
     <aside className="app-sidebar">
       <div className="sidebar-brand">
@@ -23,7 +32,7 @@ export function AppSidebar({ activeSection, status, onSectionChange }: AppSideba
         <h1>Coder</h1>
       </div>
       <nav className="side-nav" aria-label="Primary">
-        {appSections.map((section) => (
+        {visibleSections.map((section) => (
           <button
             className={activeSection === section ? "selected" : ""}
             key={section}

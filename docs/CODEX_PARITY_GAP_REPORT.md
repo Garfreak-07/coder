@@ -8,8 +8,6 @@
 - Timeline items cover plan updates, executor steps, tools, commands, file
   changes, approvals, verification, and final summary.
 - Review Changes exposes changed files, diff, checks, accept, and undo.
-- Plugins & Skills has local marketplace, installed, skill detail, MCP
-  dependency, hook, and settings/cache surfaces.
 
 ## Removed Coder Behavior
 
@@ -18,13 +16,16 @@
 - Chat input is no longer disabled by internal plan state.
 - PlanDraft details are no longer rendered as the default chat message card.
 - Raw run event replay is hidden behind debug UI.
+- Plugins & Skills marketplace UI is hidden from core navigation and remains a
+  developer/debug surface.
 
 ## Still Different From Codex
 
 - Coder keeps a user-editable Agent Workflow canvas.
 - Coder stores local run state through `RunStore`, repo evidence, artifacts,
   blobs, and checkpoints rather than Codex session JSONL names.
-- Plugin/skill marketplace support is local and baseline-only in this milestone.
+- Plugin/skill marketplace support is retained only as a local developer/debug
+  surface in this milestone.
 - Review/undo is conservative: undo requires current diff to match the recorded
   review diff.
 

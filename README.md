@@ -54,7 +54,8 @@ Rust v3 covers the ordinary product surface behind the React UI:
   artifacts, blobs, and repo evidence
 - repo, command, patch, MCP, skills, extensions, provider settings, and memory
   APIs
-- local Plugins & Skills marketplace surface, hooks display, and cache status
+- experimental Plugins & Skills developer/debug surface, hooks display, and
+  cache status
 - lexical, deterministic dense, and hybrid knowledge retrieval baselines
 
 ## Install

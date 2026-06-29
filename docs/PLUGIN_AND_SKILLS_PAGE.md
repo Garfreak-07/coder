@@ -1,7 +1,9 @@
 # Plugin And Skills Page
 
-The React Plugins & Skills page is available from the sidebar and is backed by
-local Rust API v3 endpoints.
+The React Plugins & Skills page is deferred from the core Planner/Executor
+product path. It is not shown in the main sidebar by default; the existing
+React page is only reachable through the developer debug UI while the core loop
+is the release focus.
 
 Frontend files:
 
@@ -15,7 +17,9 @@ frontend/src/features/plugins/HooksPanel.tsx
 frontend/src/features/plugins/PluginSettingsPanel.tsx
 ```
 
-Backend surfaces:
+Backend surfaces remain available as experimental/developer APIs for local
+skill and plugin validation, harness loading, and future Codex-inspired plugin
+work:
 
 ```text
 GET  /api/v3/plugins/marketplaces
@@ -33,7 +37,7 @@ POST /api/v3/skills/extra-roots
 GET  /api/v3/hooks
 ```
 
-Milestone scope:
+Retained developer scope:
 
 - local marketplace list
 - installed plugins and skills
@@ -43,8 +47,10 @@ Milestone scope:
 - hook display
 - cache/settings display
 
-Deferred:
+Deferred from core product:
 
+- main navigation marketplace UI
+- marketplace add/remove/upgrade UI in the ordinary product path
 - remote sharing
 - shared-with-me
 - public marketplace publishing
