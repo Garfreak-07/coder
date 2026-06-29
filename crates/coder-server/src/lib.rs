@@ -4057,6 +4057,54 @@ fn project_timeline_items(
                     created_at,
                 }));
             }
+            "executor.reasoning_summary" => {
+                let summary = payload_string(&event.payload, "summary")
+                    .unwrap_or_else(|| "Executor summarized its next step.".to_owned());
+                items.push(TimelineItem::ReasoningSummary(ReasoningSummaryItem {
+                    id: timeline_id(event, "reasoning"),
+                    agent_id: payload_string(&event.payload, "agent_id")
+                        .unwrap_or_else(|| "executor".to_owned()),
+                    summary_text: vec![public_preview(&summary, 500)],
+                    created_at,
+                }));
+            }
+            "executor.action_selected"
+            | "executor.next_step"
+            | "executor.completed"
+            | "executor.blocked"
+            | "executor.failed" => {
+                let title = match event.kind.as_str() {
+                    "executor.action_selected" => "Action selected",
+                    "executor.next_step" => "Next step",
+                    "executor.completed" => "Executor completed",
+                    "executor.blocked" => "Executor blocked",
+                    "executor.failed" => "Executor failed",
+                    _ => "Executor update",
+                };
+                items.push(TimelineItem::ExecutorStep(ExecutorStepItem {
+                    id: timeline_id(event, "executor"),
+                    agent_id: payload_string(&event.payload, "agent_id")
+                        .unwrap_or_else(|| "executor".to_owned()),
+                    title: title.to_owned(),
+                    status: timeline_status(event),
+                    summary: executor_event_summary(&event.payload)
+                        .map(|value| public_preview(&value, 500)),
+                    created_at,
+                }));
+            }
+            "observation.recorded" => {
+                let summary = payload_string(&event.payload, "summary")
+                    .unwrap_or_else(|| "Observation recorded.".to_owned());
+                items.push(TimelineItem::ExecutorStep(ExecutorStepItem {
+                    id: timeline_id(event, "observation"),
+                    agent_id: payload_string(&event.payload, "agent_id")
+                        .unwrap_or_else(|| "executor".to_owned()),
+                    title: "Observation recorded".to_owned(),
+                    status: timeline_status(event),
+                    summary: Some(public_preview(&summary, 500)),
+                    created_at,
+                }));
+            }
             "node.started" | "node.completed" | "agent.called" | "agent.completed"
             | "workflow.started" | "round.started" | "run.completed" | "run.failed"
             | "run.blocked" | "run.cancelled" => {
@@ -4073,15 +4121,17 @@ fn project_timeline_items(
                     created_at,
                 }));
             }
-            "tool.called" | "tool.result" | "mcp.tool.called" | "mcp.tool.completed" => {
+            "tool.started" | "tool.completed" | "tool.failed" | "tool.called" | "tool.result"
+            | "mcp.tool.called" | "mcp.tool.completed" => {
                 items.push(TimelineItem::ToolCall(ToolCallItem {
                     id: timeline_id(event, "tool"),
                     agent_id: payload_string(&event.payload, "agent_id")
                         .unwrap_or_else(|| "executor".to_owned()),
                     tool_name: payload_string(&event.payload, "tool_name")
+                        .or_else(|| payload_string(&event.payload, "tool"))
                         .or_else(|| payload_string(&event.payload, "node_id"))
                         .unwrap_or_else(|| "tool".to_owned()),
-                    status: status_from_event_kind(&event.kind),
+                    status: timeline_status(event),
                     summary: payload_string(&event.payload, "result_summary")
                         .or_else(|| payload_string(&event.payload, "summary"))
                         .map(|value| public_preview(&value, 500)),
@@ -4159,19 +4209,6 @@ fn project_timeline_items(
                     summary: payload_string(&event.payload, "summary")
                         .or_else(|| payload_string(&event.payload, "command"))
                         .unwrap_or_else(|| "Verification step.".to_owned()),
-                    evidence_ref: first_event_ref(event),
-                    created_at,
-                }));
-            }
-            kind if kind.starts_with("backend.openhands.") => {
-                items.push(TimelineItem::ToolCall(ToolCallItem {
-                    id: timeline_id(event, "openhands"),
-                    agent_id: "executor".to_owned(),
-                    tool_name: "OpenHands".to_owned(),
-                    status: status_from_event_kind(&event.kind),
-                    summary: payload_string(&event.payload, "summary")
-                        .or_else(|| payload_string(&event.payload, "message"))
-                        .map(|value| public_preview(&value, 500)),
                     evidence_ref: first_event_ref(event),
                     created_at,
                 }));
@@ -4479,9 +4516,24 @@ fn first_event_ref(event: &coder_events::CoderEvent) -> Option<String> {
     event.refs.first().map(|reference| reference.uri.clone())
 }
 
+fn timeline_status(event: &coder_events::CoderEvent) -> String {
+    payload_string(&event.payload, "status").unwrap_or_else(|| status_from_event_kind(&event.kind))
+}
+
+fn executor_event_summary(payload: &Value) -> Option<String> {
+    payload_string(payload, "summary")
+        .or_else(|| {
+            let tool_name = payload_string(payload, "tool_name")?;
+            Some(format!("Selected {tool_name}."))
+        })
+        .or_else(|| payload_string(payload, "based_on_observation"))
+}
+
 fn status_from_event_kind(kind: &str) -> String {
     if kind.ends_with(".failed") || kind == "run.failed" {
         "failed".to_owned()
+    } else if kind.ends_with(".blocked") || kind == "run.blocked" {
+        "blocked".to_owned()
     } else if kind.ends_with(".completed") || kind == "run.completed" {
         "completed".to_owned()
     } else if kind.ends_with(".started") {
@@ -8503,6 +8555,61 @@ diff --git a/tracked.txt b/tracked.txt
             )
             .unwrap();
         store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    4,
+                    "executor.reasoning_summary",
+                    json!({"agent_id": "executor", "summary": "Need inspect repo state."}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    5,
+                    "executor.action_selected",
+                    json!({"agent_id": "executor", "tool_name": "repo_find_files", "status": "selected"}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    6,
+                    "tool.completed",
+                    json!({"agent_id": "executor", "tool_name": "repo_find_files", "status": "completed", "summary": "Found README.md"}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    7,
+                    "observation.recorded",
+                    json!({"agent_id": "executor", "tool_name": "repo_find_files", "summary": "Found README.md"}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    8,
+                    "backend.openhands.ActionEvent",
+                    json!({"raw": {"api_key": "raw-secret-value"}, "raw_ref": "blob://sha256/raw"}),
+                ),
+            )
+            .unwrap();
+        store
             .write_report(
                 &run_id,
                 &FinalReport::completed("Done").with_check("cargo test: completed exit 0"),
@@ -8522,10 +8629,24 @@ diff --git a/tracked.txt b/tracked.txt
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         let items = body["items"].as_array().unwrap();
+        assert!(items.iter().any(|item| item["type"] == "reasoning_summary"));
+        assert!(items
+            .iter()
+            .any(|item| item["type"] == "executor_step" && item["title"] == "Action selected"));
+        assert!(
+            items
+                .iter()
+                .any(|item| item["type"] == "executor_step"
+                    && item["title"] == "Observation recorded")
+        );
+        assert!(items
+            .iter()
+            .any(|item| item["type"] == "tool_call" && item["tool_name"] == "repo_find_files"));
         assert!(items.iter().any(|item| item["type"] == "command_execution"));
         assert!(items.iter().any(|item| item["type"] == "file_change"));
         assert!(items.iter().any(|item| item["type"] == "final_summary"));
         assert!(items.iter().all(|item| item.get("payload").is_none()));
+        assert!(!body.to_string().contains("raw-secret-value"));
         let _ = fs::remove_dir_all(root);
     }
 

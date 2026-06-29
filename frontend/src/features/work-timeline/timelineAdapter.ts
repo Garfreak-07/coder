@@ -2,6 +2,8 @@ import type { TimelineItem } from "./timelineTypes";
 
 export function timelineItemTitle(item: TimelineItem): string {
   switch (item.type) {
+    case "user_message":
+      return "You";
     case "planner_message":
       return "Planner";
     case "reasoning_summary":

@@ -1,6 +1,7 @@
 import { defaultPlannerLedAgentWorkflow } from "./examples";
 import { readFileSync } from "node:fs";
 import { PlannerChatPage } from "./features/planner-chat/PlannerChatPage";
+import { WorkTimeline } from "./features/work-timeline/WorkTimeline";
 import type { AgentWorkflowSpec, RustProjectConfig } from "./types";
 import {
   agentWorkflowToRustLibrarySaveRequest,
@@ -281,6 +282,47 @@ test("Planner Chat page renders two turns without synthetic status cards", () =>
   assert.ok(!text.includes("Discuss"));
 });
 
+test("Work timeline renders public ReAct items without raw backend details", () => {
+  const tree = WorkTimeline({
+    runId: "run-1",
+    items: [
+      {
+        type: "reasoning_summary",
+        id: "reason-1",
+        agent_id: "executor",
+        summary_text: ["Need inspect repo state."],
+        created_at: "2026-01-01T00:00:00Z"
+      },
+      {
+        type: "executor_step",
+        id: "action-1",
+        agent_id: "executor",
+        title: "Action selected",
+        status: "selected",
+        summary: "Selected repo_find_files.",
+        created_at: "2026-01-01T00:00:01Z"
+      },
+      {
+        type: "tool_call",
+        id: "tool-1",
+        agent_id: "executor",
+        tool_name: "repo_find_files",
+        status: "completed",
+        summary: "Found README.md",
+        created_at: "2026-01-01T00:00:02Z"
+      }
+    ]
+  });
+  const text = collectReactTreeText(tree);
+
+  assert.ok(text.includes("Work timeline"));
+  assert.ok(text.includes("Need inspect repo state."));
+  assert.ok(text.includes("Action selected"));
+  assert.ok(text.includes("repo_find_files"));
+  assert.ok(!text.includes("raw_ref"));
+  assert.ok(!text.includes("backend.openhands"));
+});
+
 test("Provider Settings exposes DeepSeek preset and exact test result UI", () => {
   const panelSource = readFileSync("src/components/ProviderSettingsPanel.tsx", "utf8");
   const hookSource = readFileSync("src/hooks/useProviderSettings.ts", "utf8");
@@ -347,7 +389,11 @@ function collectReactTreeText(node: unknown): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(collectReactTreeText).join("");
   if (typeof node !== "object") return "";
-  const props = (node as { props?: { children?: unknown } }).props;
+  const element = node as { type?: unknown; props?: { children?: unknown } };
+  if (typeof element.type === "function") {
+    return collectReactTreeText(element.type(element.props ?? {}));
+  }
+  const props = element.props;
   return collectReactTreeText(props?.children);
 }
 
@@ -355,7 +401,11 @@ function collectReactTreeClassNames(node: unknown): string {
   if (node === null || typeof node === "undefined" || typeof node === "boolean") return "";
   if (Array.isArray(node)) return node.map(collectReactTreeClassNames).join(" ");
   if (typeof node !== "object") return "";
-  const props = (node as { props?: { children?: unknown; className?: unknown } }).props;
+  const element = node as { type?: unknown; props?: { children?: unknown; className?: unknown } };
+  if (typeof element.type === "function") {
+    return collectReactTreeClassNames(element.type(element.props ?? {}));
+  }
+  const props = element.props;
   return [
     typeof props?.className === "string" ? props.className : "",
     collectReactTreeClassNames(props?.children)
