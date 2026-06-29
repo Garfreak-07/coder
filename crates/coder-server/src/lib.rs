@@ -663,6 +663,29 @@ fn start_work_clarification(session: &PlannerChatSession) -> String {
         .to_owned()
 }
 
+fn start_work_provider_config_error(
+    config: &ProjectConfig,
+    workflow_id: &str,
+    settings: &ProviderSettings,
+) -> Option<String> {
+    if settings.mock_mode {
+        return None;
+    }
+    let workflow = config.workflows.get(workflow_id)?;
+    for node in &workflow.nodes {
+        let harness = config.harnesses.get(&node.harness)?;
+        if harness.backend != "planner-model" {
+            continue;
+        }
+        let agent = config.agents.get(&node.agent)?;
+        let model = config.models.get(&agent.model)?;
+        if model_provider_config_error(settings, model).is_some() {
+            return Some(planner_model_config_error());
+        }
+    }
+    None
+}
+
 fn planner_run_context_from_session(session: &PlannerChatSession, plan: &PlanDraft) -> Value {
     let conversation_summary = session
         .turns
@@ -963,6 +986,36 @@ async fn start_planner_chat_work(
             run_id: None,
             status: "needs_clarification".to_owned(),
             events_url: None,
+            timeline_url: None,
+        }));
+    }
+
+    let provider_settings = state.provider_settings.lock().unwrap().clone();
+    if let Some(message) =
+        start_work_provider_config_error(&config, &workflow_id, &provider_settings)
+    {
+        let planner_response = planner_provider_setup_required_response(message);
+        session.turns.push(PlannerChatTurn {
+            role: "assistant".to_owned(),
+            content: planner_response.assistant_message.clone(),
+        });
+        session.ready = false;
+        session.readiness = planner_response.readiness;
+        session.open_questions = planner_response.open_questions;
+        session.acceptance_criteria = planner_response.acceptance_criteria;
+        session.risks = planner_response.risks;
+        state
+            .planner_sessions
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), session.clone());
+        return Ok(Json(PlannerStartWorkResponse {
+            session,
+            assistant_message: Some(planner_response.assistant_message),
+            run_id: None,
+            status: "blocked".to_owned(),
+            events_url: None,
+            timeline_url: None,
         }));
     }
 
@@ -995,6 +1048,7 @@ async fn start_planner_chat_work(
         run_id: Some(run_id.clone()),
         status: format!("{:?}", output.report.status).to_lowercase(),
         events_url: Some(format!("/api/v3/runs/{run_id}/events")),
+        timeline_url: Some(format!("/api/v3/runs/{run_id}/timeline")),
     }))
 }
 
@@ -2835,6 +2889,7 @@ pub struct PlannerStartWorkResponse {
     pub run_id: Option<String>,
     pub status: String,
     pub events_url: Option<String>,
+    pub timeline_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4759,10 +4814,7 @@ fn normalize_provider(value: &str) -> String {
 
 fn provider_http_client_builder(url: &str) -> reqwest::ClientBuilder {
     let builder = Client::builder();
-    if url.contains("://127.0.0.1")
-        || url.contains("://localhost")
-        || url.contains("://[::1]")
-    {
+    if url.contains("://127.0.0.1") || url.contains("://localhost") || url.contains("://[::1]") {
         builder.no_proxy()
     } else {
         builder
@@ -4976,13 +5028,7 @@ fn planner_model_name(request: &PlannerConversationRequest, model: &ConfigModelS
 }
 
 fn planner_model_provider(request: &PlannerConversationRequest, model: &ConfigModelSpec) -> String {
-    if matches!(model.model.as_str(), "best" | "standard" | "economy")
-        && !request.provider_settings.default_provider.trim().is_empty()
-    {
-        normalize_provider(&request.provider_settings.default_provider)
-    } else {
-        normalize_provider(&model.provider)
-    }
+    model_provider_for_settings(&request.provider_settings, model)
 }
 
 fn planner_model_base_url(
@@ -4990,9 +5036,46 @@ fn planner_model_base_url(
     provider: &str,
     model: &ConfigModelSpec,
 ) -> Option<String> {
-    settings_provider_base_url(&request.provider_settings, provider)
+    model_provider_base_url(&request.provider_settings, provider, model)
+}
+
+fn model_provider_for_settings(settings: &ProviderSettings, model: &ConfigModelSpec) -> String {
+    if matches!(model.model.as_str(), "best" | "standard" | "economy")
+        && !settings.default_provider.trim().is_empty()
+    {
+        normalize_provider(&settings.default_provider)
+    } else {
+        normalize_provider(&model.provider)
+    }
+}
+
+fn model_provider_base_url(
+    settings: &ProviderSettings,
+    provider: &str,
+    model: &ConfigModelSpec,
+) -> Option<String> {
+    settings_provider_base_url(settings, provider)
         .or_else(|| provider_base_url_from_env(model.base_url_env.as_deref()))
         .or_else(|| default_provider_base_url(provider).map(str::to_owned))
+}
+
+fn model_provider_config_error(
+    settings: &ProviderSettings,
+    model: &ConfigModelSpec,
+) -> Option<String> {
+    if settings.mock_mode {
+        return None;
+    }
+    let provider = model_provider_for_settings(settings, model);
+    if model_provider_base_url(settings, &provider, model).is_none() {
+        return Some(planner_model_config_error());
+    }
+    if provider != "ollama"
+        && provider_api_key(settings, &provider, model.api_key_env.as_deref()).is_none()
+    {
+        return Some(planner_model_config_error());
+    }
+    None
 }
 
 const PLANNER_MODEL_CONFIG_ERROR: &str = "Planner model provider is not configured. Configure Provider Settings, or set LLM_BASE_URL and LLM_API_KEY for developer/headless fallback.";
@@ -8184,7 +8267,8 @@ diff --git a/tracked.txt b/tracked.txt
     #[tokio::test]
     async fn planner_chat_turn_does_not_start_run_and_start_work_does() {
         let root = temp_root();
-        let app = router(ApiState::new(RunStore::new(&root)));
+        let store = RunStore::new(&root);
+        let app = router(ApiState::new(store.clone()));
         let create_response = post_json(
             app.clone(),
             "/api/v3/planner-chat/sessions",
@@ -8215,10 +8299,7 @@ diff --git a/tracked.txt b/tracked.txt
         assert_eq!(turn_response.status(), StatusCode::OK);
         let turn_body = response_json(turn_response).await;
         assert_eq!(turn_body["ready"], true);
-        assert!(RunStore::new(&root)
-            .list_run_summaries()
-            .unwrap()
-            .is_empty());
+        assert!(store.list_run_summaries().unwrap().is_empty());
 
         let start_response = post_json(
             app.clone(),
@@ -8235,11 +8316,151 @@ diff --git a/tracked.txt b/tracked.txt
         assert_eq!(start_response.status(), StatusCode::OK);
         let start_body = response_json(start_response).await;
         let run_id = start_body["run_id"].as_str().unwrap();
-        let events = RunStore::new(&root)
-            .read_events(&RunId::from_string(run_id))
-            .unwrap();
+        assert_eq!(
+            start_body["events_url"],
+            format!("/api/v3/runs/{run_id}/events")
+        );
+        assert_eq!(
+            start_body["timeline_url"],
+            format!("/api/v3/runs/{run_id}/timeline")
+        );
+        let run_id = RunId::from_string(run_id);
+        let events = store.read_events(&run_id).unwrap();
         assert_eq!(events[0].kind, "run.started");
         assert!(events[0].payload.get("plan_context").is_some());
+        let report = store.read_report(&run_id).unwrap().unwrap();
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.starts_with("plan_context:")));
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.starts_with("acceptance:")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn planner_start_work_appends_clarification_when_not_ready() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let app = router(ApiState::new(store.clone()));
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "planner_agent_id": "planner",
+                "config": example_config(),
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        assert_eq!(create_response.status(), StatusCode::OK);
+        let create_body = response_json(create_response).await;
+        let session_id = create_body["session"]["session_id"].as_str().unwrap();
+
+        let start_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/start-work"),
+            json!({
+                "repo": ".",
+                "workflow_id": "planner-led",
+                "planner_agent_id": "planner",
+                "config": example_config()
+            }),
+        )
+        .await;
+
+        assert_eq!(start_response.status(), StatusCode::OK);
+        let body = response_json(start_response).await;
+        assert_eq!(body["run_id"], Value::Null);
+        assert_eq!(body["events_url"], Value::Null);
+        assert_eq!(body["timeline_url"], Value::Null);
+        assert_eq!(body["status"], "needs_clarification");
+        assert!(body["assistant_message"]
+            .as_str()
+            .unwrap()
+            .contains("concrete plan"));
+        assert_eq!(body["session"]["readiness"], "needs_clarification");
+        assert_eq!(body["session"]["turns"].as_array().unwrap().len(), 1);
+        assert!(store.list_run_summaries().unwrap().is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn planner_start_work_blocks_missing_provider_when_execution_requires_llm() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let state = ApiState::new(store.clone());
+        let app = router(state.clone());
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "planner_agent_id": "planner",
+                "config": example_config(),
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        assert_eq!(create_response.status(), StatusCode::OK);
+        let create_body = response_json(create_response).await;
+        let session_id = create_body["session"]["session_id"].as_str().unwrap();
+
+        let turn_response = post_json(
+            app.clone(),
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "Update README.md\nAcceptance: build passes.",
+                "confirmed": true,
+                "mode": "discuss",
+                "planner_agent_id": "planner",
+                "config": example_config()
+            }),
+        )
+        .await;
+        assert_eq!(turn_response.status(), StatusCode::OK);
+        let turn_body = response_json(turn_response).await;
+        assert_eq!(turn_body["ready"], true);
+
+        let mut config = default_project_config();
+        let model = config.models.get_mut("default").unwrap();
+        model.provider = "missing-start-work-provider".to_owned();
+        model.base_url_env = Some("CODER_TEST_START_WORK_MISSING_BASE_URL".to_owned());
+        model.api_key_env = Some("CODER_TEST_START_WORK_MISSING_API_KEY".to_owned());
+        {
+            let mut settings = state.provider_settings.lock().unwrap();
+            settings.mock_mode = false;
+            settings.api_keys.clear();
+            settings.base_urls.clear();
+        }
+
+        let start_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/start-work"),
+            json!({
+                "repo": ".",
+                "workflow_id": "planner-led",
+                "planner_agent_id": "planner",
+                "config": config
+            }),
+        )
+        .await;
+
+        assert_eq!(start_response.status(), StatusCode::OK);
+        let body = response_json(start_response).await;
+        assert_eq!(body["run_id"], Value::Null);
+        assert_eq!(body["events_url"], Value::Null);
+        assert_eq!(body["timeline_url"], Value::Null);
+        assert_eq!(body["status"], "blocked");
+        assert!(body["assistant_message"]
+            .as_str()
+            .unwrap()
+            .contains("Planner model provider is not configured"));
+        assert_eq!(body["session"]["readiness"], "blocked");
+        assert!(store.list_run_summaries().unwrap().is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

@@ -823,6 +823,7 @@ export interface PlannerStartWorkResponse {
   run_id?: string | null;
   status: string;
   events_url?: string | null;
+  timeline_url?: string | null;
 }
 
 export type TimelineItem =
