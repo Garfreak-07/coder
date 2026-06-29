@@ -1663,6 +1663,16 @@ impl HarnessBackend for NativeRustBackend {
         if !failures.is_empty() && status != "failed" {
             report.next_steps = failures;
         }
+        let react_events = native_react_lifecycle_events(&request, &events, status);
+        if !react_events.is_empty() {
+            let mut ordered_events = Vec::with_capacity(events.len() + react_events.len());
+            if !events.is_empty() {
+                ordered_events.push(events.remove(0));
+            }
+            ordered_events.extend(react_events);
+            ordered_events.extend(events);
+            events = ordered_events;
+        }
         events.push(HarnessRunEvent::new(
             format!("backend.native_rust.{status}"),
             json!({
@@ -1680,6 +1690,150 @@ impl HarnessBackend for NativeRustBackend {
             events,
         })
     }
+}
+
+fn native_react_lifecycle_events(
+    request: &HarnessRunRequest,
+    source_events: &[HarnessRunEvent],
+    terminal_status: &str,
+) -> Vec<HarnessRunEvent> {
+    if request_agent_role(request) != Some("executor") {
+        return Vec::new();
+    }
+    let action_events = source_events
+        .iter()
+        .filter(|event| native_event_has_tool_action(event))
+        .collect::<Vec<_>>();
+    let mut events = Vec::new();
+    let mut previous_observation: Option<String> = None;
+    for (index, event) in action_events.iter().enumerate() {
+        let step = index + 1;
+        let tool_name = event_payload_string(&event.payload, "tool")
+            .unwrap_or_else(|| "native_tool".to_owned());
+        let status = native_public_tool_status(event);
+        let observation = native_observation_summary(event, &tool_name, &status);
+        let next_tool = action_events
+            .get(index + 1)
+            .and_then(|next| event_payload_string(&next.payload, "tool"));
+        let reasoning_summary = if let Some(previous) = &previous_observation {
+            format!(
+                "Use the previous observation to choose the next harness action: {}",
+                truncate_public(previous, 180)
+            )
+        } else {
+            format!(
+                "Select the first harness action for executor task: {}",
+                truncate_public(&request.task, 180)
+            )
+        };
+
+        events.push(HarnessRunEvent::new(
+            "executor.reasoning_summary",
+            json!({
+                "backend": "native-rust",
+                "step": step,
+                "node_id": request.node_id,
+                "agent_id": request.agent_id,
+                "harness_id": request.harness_id,
+                "summary": reasoning_summary,
+                "previous_observation": previous_observation
+            }),
+        ));
+        events.push(HarnessRunEvent::new(
+            "executor.action_selected",
+            json!({
+                "backend": "native-rust",
+                "step": step,
+                "node_id": request.node_id,
+                "agent_id": request.agent_id,
+                "harness_id": request.harness_id,
+                "tool_name": tool_name,
+                "action": "run_harness_tool",
+                "permission_boundary": "harness",
+                "allowed_by_harness": true,
+                "status": "selected"
+            }),
+        ));
+        if event.kind != "native.tool.skipped" {
+            events.push(HarnessRunEvent::new(
+                "tool.started",
+                json!({
+                    "backend": "native-rust",
+                    "step": step,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
+                    "tool_name": tool_name,
+                    "status": "started"
+                }),
+            ));
+        }
+        events.push(copy_event_refs(
+            HarnessRunEvent::new(
+                "tool.completed",
+                json!({
+                    "backend": "native-rust",
+                    "step": step,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
+                    "tool_name": tool_name,
+                    "status": status,
+                    "summary": observation,
+                    "evidence_ref": first_event_ref_uri(event)
+                }),
+            ),
+            event,
+        ));
+        events.push(copy_event_refs(
+            HarnessRunEvent::new(
+                "observation.recorded",
+                json!({
+                    "backend": "native-rust",
+                    "step": step,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
+                    "tool_name": tool_name,
+                    "summary": observation,
+                    "evidence_ref": first_event_ref_uri(event)
+                }),
+            ),
+            event,
+        ));
+        events.push(HarnessRunEvent::new(
+            "executor.next_step",
+            json!({
+                "backend": "native-rust",
+                "step": step,
+                "node_id": request.node_id,
+                "agent_id": request.agent_id,
+                "harness_id": request.harness_id,
+                "based_on_observation": observation,
+                "next_action": if next_tool.is_some() { "continue" } else { "finalize" },
+                "next_tool": next_tool
+            }),
+        ));
+        previous_observation = Some(observation);
+    }
+    if !action_events.is_empty() {
+        events.push(HarnessRunEvent::new(
+            executor_terminal_event_kind(terminal_status),
+            json!({
+                "backend": "native-rust",
+                "node_id": request.node_id,
+                "agent_id": request.agent_id,
+                "harness_id": request.harness_id,
+                "status": terminal_status,
+                "summary": format!(
+                    "Executor {} after {} harness action(s).",
+                    terminal_status,
+                    action_events.len()
+                )
+            }),
+        ));
+    }
+    events
 }
 
 fn native_selected_tools(request: &HarnessRunRequest) -> BTreeSet<String> {
@@ -1740,6 +1894,92 @@ fn repo_evidence_ref(reference: &RepoEvidenceRef) -> coder_core::EvidenceRef {
         kind: "repo_evidence".to_owned(),
         reference: format!("repo-evidence://{}", reference.ref_id),
     }
+}
+
+fn native_event_has_tool_action(event: &HarnessRunEvent) -> bool {
+    matches!(
+        event.kind.as_str(),
+        "native.tool.completed"
+            | "native.tool.failed"
+            | "native.tool.skipped"
+            | "approval.requested"
+    ) && event.payload.get("tool").and_then(Value::as_str).is_some()
+}
+
+fn native_public_tool_status(event: &HarnessRunEvent) -> String {
+    if event.kind == "approval.requested" {
+        return "blocked".to_owned();
+    }
+    event_payload_string(&event.payload, "status").unwrap_or_else(|| {
+        if event.kind.ends_with(".failed") {
+            "failed".to_owned()
+        } else {
+            "completed".to_owned()
+        }
+    })
+}
+
+fn native_observation_summary(event: &HarnessRunEvent, tool_name: &str, status: &str) -> String {
+    if let Some(error) = event_payload_string(&event.payload, "error") {
+        return format!("{tool_name} {status}: {}", truncate_public(&error, 220));
+    }
+    if let Some(evidence_ref) = first_event_ref_uri(event) {
+        return format!("{tool_name} {status}; evidence recorded at {evidence_ref}");
+    }
+    if let Some(reason) = event_payload_string(&event.payload, "reason") {
+        return format!("{tool_name} {status}: {}", truncate_public(&reason, 220));
+    }
+    format!("{tool_name} {status}.")
+}
+
+fn executor_terminal_event_kind(status: &str) -> &'static str {
+    match status {
+        "blocked" => "executor.blocked",
+        "failed" => "executor.failed",
+        "cancelled" | "canceled" => "executor.failed",
+        _ => "executor.completed",
+    }
+}
+
+fn event_payload_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn first_event_ref_uri(event: &HarnessRunEvent) -> Option<String> {
+    event
+        .refs
+        .first()
+        .map(|reference| reference.uri.clone())
+        .or_else(|| {
+            event_payload_string(&event.payload, "evidence_ref").map(|reference| {
+                if reference.contains("://") {
+                    reference
+                } else {
+                    format!("repo-evidence://{reference}")
+                }
+            })
+        })
+}
+
+fn copy_event_refs(mut target: HarnessRunEvent, source: &HarnessRunEvent) -> HarnessRunEvent {
+    for reference in &source.refs {
+        target = target.with_ref(reference.label.clone(), reference.uri.clone());
+    }
+    target
+}
+
+fn truncate_public(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    let mut output = trimmed.chars().take(max_chars).collect::<String>();
+    if trimmed.chars().count() > max_chars {
+        output.push_str("...");
+    }
+    output
 }
 
 fn native_tool_event(
@@ -2063,7 +2303,7 @@ async fn poll_openhands_events(
             }
             captured_events += 1;
             let terminal = openhands_terminal_status(&raw, &config.terminal_event_kinds);
-            events.push(openhands_raw_harness_event(run_id, store, raw)?);
+            events.extend(openhands_raw_harness_events(run_id, store, raw)?);
             if let Some((status, reason)) = terminal {
                 return Ok(OpenHandsLifecycleResult {
                     status: status.to_owned(),
@@ -2118,23 +2358,194 @@ async fn poll_openhands_events(
     }
 }
 
-fn openhands_raw_harness_event(
+fn openhands_raw_harness_events(
     run_id: &RunId,
     store: &RunStore,
     raw: Value,
-) -> Result<HarnessRunEvent, HarnessError> {
+) -> Result<Vec<HarnessRunEvent>, HarnessError> {
     let raw_text =
         serde_json::to_string(&raw).map_err(|error| HarnessError::Failed(error.to_string()))?;
     let raw_ref = store
         .write_large_text_ref(&raw_text)
         .map_err(|error| HarnessError::Failed(error.to_string()))?
         .blob_ref;
-    let normalized = normalize_openhands_event(run_id.clone(), 0, raw, Some(raw_ref));
+    let normalized =
+        normalize_openhands_event(run_id.clone(), 0, raw.clone(), Some(raw_ref.clone()));
     let mut event = HarnessRunEvent::new(normalized.kind, normalized.payload);
     for reference in normalized.refs {
         event = event.with_ref(reference.label, reference.uri);
     }
-    Ok(event)
+    let mut events = vec![event];
+    events.extend(openhands_public_react_events(&raw, &raw_ref));
+    Ok(events)
+}
+
+fn openhands_public_react_events(raw: &Value, raw_ref: &str) -> Vec<HarnessRunEvent> {
+    let raw_kind = openhands_raw_event_kind(raw);
+    let normalized_kind = raw_kind.to_ascii_lowercase();
+    let summary =
+        openhands_public_summary(raw).unwrap_or_else(|| format!("OpenHands emitted {raw_kind}."));
+    let tool_name = openhands_tool_name(raw).unwrap_or_else(|| "OpenHands".to_owned());
+    let mut events = Vec::new();
+
+    if normalized_kind.contains("message")
+        || normalized_kind.contains("reason")
+        || normalized_kind.contains("thought")
+    {
+        events.push(
+            HarnessRunEvent::new(
+                "executor.reasoning_summary",
+                json!({
+                    "backend": "openhands",
+                    "summary": truncate_public(&summary, 500),
+                    "raw_kind": raw_kind,
+                    "raw_ref": raw_ref
+                }),
+            )
+            .with_ref("openhands.raw_event", raw_ref.to_owned()),
+        );
+    }
+
+    if normalized_kind.contains("action")
+        || normalized_kind.contains("tool")
+        || normalized_kind.contains("command")
+        || raw.get("action").is_some()
+    {
+        events.push(
+            HarnessRunEvent::new(
+                "executor.action_selected",
+                json!({
+                    "backend": "openhands",
+                    "tool_name": tool_name,
+                    "action": "openhands_action",
+                    "permission_boundary": "harness",
+                    "allowed_by_harness": true,
+                    "summary": truncate_public(&summary, 500),
+                    "raw_kind": raw_kind,
+                    "raw_ref": raw_ref
+                }),
+            )
+            .with_ref("openhands.raw_event", raw_ref.to_owned()),
+        );
+        events.push(
+            HarnessRunEvent::new(
+                "tool.started",
+                json!({
+                    "backend": "openhands",
+                    "tool_name": tool_name,
+                    "status": "started",
+                    "summary": truncate_public(&summary, 500),
+                    "raw_kind": raw_kind,
+                    "raw_ref": raw_ref
+                }),
+            )
+            .with_ref("openhands.raw_event", raw_ref.to_owned()),
+        );
+    }
+
+    let observation_like = normalized_kind.contains("observation")
+        || normalized_kind.contains("file")
+        || normalized_kind.contains("task")
+        || normalized_kind.contains("workspace")
+        || raw.get("observation").is_some()
+        || raw.get("result").is_some();
+    if observation_like {
+        events.push(
+            HarnessRunEvent::new(
+                "tool.completed",
+                json!({
+                    "backend": "openhands",
+                    "tool_name": tool_name,
+                    "status": "completed",
+                    "summary": truncate_public(&summary, 500),
+                    "raw_kind": raw_kind,
+                    "evidence_ref": raw_ref,
+                    "raw_ref": raw_ref
+                }),
+            )
+            .with_ref("openhands.raw_event", raw_ref.to_owned()),
+        );
+        events.push(
+            HarnessRunEvent::new(
+                "observation.recorded",
+                json!({
+                    "backend": "openhands",
+                    "tool_name": tool_name,
+                    "summary": truncate_public(&summary, 500),
+                    "evidence_ref": raw_ref,
+                    "raw_kind": raw_kind,
+                    "raw_ref": raw_ref
+                }),
+            )
+            .with_ref("openhands.raw_event", raw_ref.to_owned()),
+        );
+    }
+
+    let raw_status = raw
+        .get("status")
+        .or_else(|| raw.get("state"))
+        .or_else(|| raw.get("result"))
+        .and_then(Value::as_str)
+        .map(|value| value.to_ascii_lowercase());
+    let terminal_status = raw_status
+        .as_deref()
+        .and_then(terminal_status_from_text)
+        .or_else(|| terminal_status_from_text(&normalized_kind));
+    if let Some(status) = terminal_status {
+        events.push(
+            HarnessRunEvent::new(
+                executor_terminal_event_kind(status),
+                json!({
+                    "backend": "openhands",
+                    "status": status,
+                    "summary": truncate_public(&summary, 500),
+                    "raw_kind": raw_kind,
+                    "raw_ref": raw_ref
+                }),
+            )
+            .with_ref("openhands.raw_event", raw_ref.to_owned()),
+        );
+    }
+    events
+}
+
+fn openhands_public_summary(raw: &Value) -> Option<String> {
+    for key in [
+        "summary",
+        "message",
+        "content",
+        "text",
+        "thought",
+        "observation",
+        "result",
+    ] {
+        if let Some(value) = raw.get(key) {
+            if let Some(text) = value.as_str() {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_owned());
+                }
+            }
+            if value.is_object() || value.is_array() {
+                if let Ok(text) = serde_json::to_string(value) {
+                    return Some(truncate_public(&text, 500));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn openhands_tool_name(raw: &Value) -> Option<String> {
+    for key in ["tool_name", "tool", "command", "action"] {
+        if let Some(value) = raw.get(key).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn openhands_event_key(raw: &Value) -> String {
@@ -2552,6 +2963,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn native_react_lifecycle_records_reason_act_observe_steps() {
+        let (mut config, root, store) = fixture();
+        let repo = temp_root();
+        fs::create_dir_all(repo.join("src")).unwrap();
+        fs::write(
+            repo.join("README.md"),
+            "# Native review\nTODO: tighten docs\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join("src").join("lib.rs"),
+            "pub fn answer() -> u8 { 42 }\n",
+        )
+        .unwrap();
+        make_single_node_terminal_workflow(&mut config);
+        config.harnesses.get_mut("review-only").unwrap().tools = vec![
+            "repo_find_files".to_owned(),
+            "repo_read_file_range".to_owned(),
+            "git_diff".to_owned(),
+        ];
+        let runner = WorkflowRunner::new(config, store.clone());
+        let mut options = WorkflowRunOptions::new("planner-led", "review README.md for TODO");
+        options.repo_root = repo.clone();
+
+        let output = runner.run(options).await.unwrap();
+        let events = store.read_events(&output.run_id).unwrap();
+        let reasoning = events
+            .iter()
+            .filter(|event| event.kind == "executor.reasoning_summary")
+            .collect::<Vec<_>>();
+        let actions = events
+            .iter()
+            .filter(|event| event.kind == "executor.action_selected")
+            .collect::<Vec<_>>();
+        let observations = events
+            .iter()
+            .filter(|event| event.kind == "observation.recorded")
+            .collect::<Vec<_>>();
+
+        assert_eq!(output.report.status, ReportStatus::Completed);
+        assert!(reasoning.len() >= 2);
+        assert!(actions.len() >= 2);
+        assert!(events.iter().any(|event| event.kind == "tool.started"));
+        assert!(events.iter().any(|event| event.kind == "tool.completed"));
+        assert!(observations.len() >= 2);
+        assert!(reasoning[1]
+            .payload
+            .get("previous_observation")
+            .and_then(Value::as_str)
+            .unwrap()
+            .contains("repo_find_files"));
+        assert!(events.iter().any(|event| {
+            event.kind == "executor.next_step"
+                && event.payload["based_on_observation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("repo_find_files")
+                && event.payload["next_tool"].as_str() == Some("repo_read_file_range")
+        }));
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "executor.completed"));
+        assert!(output
+            .report
+            .evidence_refs
+            .iter()
+            .any(|item| item.reference.starts_with("repo-evidence://")));
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn workflow_runner_native_rust_patch_preview_records_diff_evidence() {
         let (mut config, root, store) = fixture();
         let repo = temp_root();
@@ -2653,6 +3136,12 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(events.iter().any(|event| {
             event.kind == "approval.requested"
                 && event.payload["approval_type"].as_str() == Some("command")
+        }));
+        assert!(events.iter().any(|event| event.kind == "executor.blocked"));
+        assert!(events.iter().any(|event| {
+            event.kind == "tool.completed"
+                && event.payload["tool_name"].as_str() == Some("command_run")
+                && event.payload["status"].as_str() == Some("blocked")
         }));
         assert!(evidence
             .iter()
@@ -3164,7 +3653,8 @@ diff --git a/tracked.txt b/tracked.txt
             .iter()
             .flat_map(|event| event.refs.iter())
             .filter(|reference| reference.label == "openhands.raw_event")
-            .collect::<Vec<_>>();
+            .map(|reference| reference.uri.clone())
+            .collect::<BTreeSet<_>>();
         assert_eq!(raw_refs.len(), 2);
         assert!(
             result
@@ -3185,6 +3675,65 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(request_log.contains("POST /conversations "));
         assert!(request_log.contains("POST /conversations/conv-1/events "));
         assert!(request_log.contains("GET /conversations/conv-1/events "));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn openhands_react_events_map_actions_observations_and_terminal_status() {
+        let (server_url, _) = spawn_openhands_server(vec![
+            json_response(r#"{"status":"ok"}"#),
+            json_response(r#"{"id":"conv-1"}"#),
+            json_response(r#"{"accepted":true}"#),
+            json_response(
+                r#"[
+                    {"id":"raw-1","type":"ActionEvent","tool_name":"shell","message":"Run tests"},
+                    {"id":"raw-2","type":"ObservationEvent","content":"tests passed"},
+                    {"id":"raw-3","type":"done","status":"completed"}
+                ]"#,
+            ),
+        ]);
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let backend =
+            OpenHandsHarnessBackend::new(openhands_test_config(server_url, 10, 0), store.clone());
+        let request = openhands_test_request("react terminal");
+
+        let result = backend.run(request).await.unwrap();
+
+        assert_eq!(result.status, "completed");
+        assert!(result
+            .events
+            .iter()
+            .any(|event| event.kind == "executor.action_selected"
+                && event.payload["tool_name"].as_str() == Some("shell")));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| event.kind == "tool.started"));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| event.kind == "tool.completed"));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| event.kind == "observation.recorded"
+                && event.payload["summary"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("tests passed")));
+        assert!(result
+            .events
+            .iter()
+            .any(|event| event.kind == "executor.completed"));
+        assert!(
+            result
+                .events
+                .iter()
+                .filter(|event| event.payload.get("raw").is_some())
+                .count()
+                == 0
+        );
         let _ = fs::remove_dir_all(root);
     }
 
