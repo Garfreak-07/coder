@@ -797,6 +797,11 @@ async fn load_project_memory(
     State(state): State<ApiState>,
     Json(request): Json<ProjectMemoryLoadRequest>,
 ) -> Result<Json<ProjectMemoryLoadResponse>, ApiError> {
+    if request.requested_by_role != AgentMemoryRole::PlanningChat {
+        return Err(ApiError::forbidden(
+            "only planning_chat can read project long-term memory",
+        ));
+    }
     let memory_path = resolve_repo_relative_path(&request.repo_root, &request.memory_path)?;
     let memory = load_project_memory_file(&memory_path)?;
     let mut event_recorded = false;
@@ -2330,6 +2335,7 @@ pub trait PlannerConversationEngine {
 pub struct ProjectMemoryLoadRequest {
     pub repo_root: String,
     pub memory_path: String,
+    pub requested_by_role: AgentMemoryRole,
     pub run_id: Option<String>,
 }
 
@@ -4550,6 +4556,7 @@ mod tests {
             json!({
                 "repo_root": repo.display().to_string(),
                 "memory_path": "memory.json",
+                "requested_by_role": "planning_chat",
                 "run_id": "run-1"
             }),
         )
@@ -4566,6 +4573,32 @@ mod tests {
         assert!(!events[0].payload.to_string().contains("control plane"));
         let _ = fs::remove_dir_all(repo);
         let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn workflow_agents_cannot_read_project_memory() {
+        let repo = temp_root();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(
+            repo.join("memory.json"),
+            r#"{"version":1,"records":[{"id":"mem_1","scope":"project","key":"architecture","content":"Rust owns the control plane.","tags":[],"source_ref":"memory://project/architecture"}]}"#,
+        )
+        .unwrap();
+        let app = test_router();
+
+        let response = post_json(
+            app,
+            "/api/v3/memory/project/load",
+            json!({
+                "repo_root": repo.display().to_string(),
+                "memory_path": "memory.json",
+                "requested_by_role": "task_execution"
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let _ = fs::remove_dir_all(repo);
     }
 
     #[tokio::test]

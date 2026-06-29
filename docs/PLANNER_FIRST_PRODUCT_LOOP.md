@@ -62,8 +62,9 @@ Set LLM_BASE_URL and LLM_API_KEY or configure provider settings.
 PlanDraft includes `memory_proposals`. These are not writes. Durable project
 memory requires an explicit `memory.write.proposed` event followed by a
 `memory.write.confirmed` request with `confirmed_by_role = planning_chat`.
-Workflow supervisor and task execution roles cannot propose or confirm project
-memory writes.
+Project long-term memory reads also require `requested_by_role =
+planning_chat`. Workflow supervisor and task execution roles cannot read,
+propose, or confirm project long-term memory through these endpoints.
 
 ## Work Mode
 

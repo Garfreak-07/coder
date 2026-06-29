@@ -138,6 +138,7 @@ export interface RustProjectMemoryFile {
 export interface RustProjectMemoryLoadRequest {
   repo_root: string;
   memory_path: string;
+  requested_by_role: RustAgentMemoryRole;
   run_id?: string | null;
 }
 

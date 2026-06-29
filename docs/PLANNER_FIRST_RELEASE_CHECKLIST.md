@@ -6,7 +6,7 @@
 - [x] Planner chat planning works through workflow-resolved `AgentSpec` and
   `planner-model` HarnessSpec.
 - [x] Planner global/project memory proposal is represented in `PlanDraft.memory_proposals`.
-- [x] Planner memory proposal and confirmation APIs require `planning_chat`.
+- [x] Planner memory read, proposal, and confirmation APIs require `planning_chat`.
 - [x] Workflow memory stays scoped to run/workflow paths for workflow agents.
 - [x] Work mode executes only after PlanDraft readiness and explicit confirmation.
 - [x] Final report includes event-log evidence and plan context summary/checks.
