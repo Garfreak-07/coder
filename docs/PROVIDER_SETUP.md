@@ -13,6 +13,10 @@ Normal users configure model access in the app UI:
 
 `deepseek-v4-pro` is also supported when the account has access to that model.
 
+Planner Chat uses the configured provider in product mode. If provider
+credentials are missing, the Planner returns a setup-required assistant message
+instead of using a fake product response.
+
 API keys are accepted by the Rust server and kept in server memory for this MVP.
 The settings response only returns whether a key is configured and where it came
 from. Plaintext keys must not be written into repository files, run events,
@@ -23,7 +27,8 @@ before public desktop release.
 
 ## Developer Fallback
 
-Environment variables remain for CI, smoke tests, and headless development:
+Environment variables remain for CI, smoke tests, and headless development.
+They are fallback paths, not the normal user setup path:
 
 ```powershell
 $env:LLM_BASE_URL="https://api.deepseek.com"
@@ -37,9 +42,9 @@ not the normal user setup path.
 
 ## Optional Live LLM Smoke
 
-Mock tests prove CI-safe plumbing. The live smoke proves the product Planner
-path can call a real OpenAI-compatible provider without making CI depend on
-paid credentials:
+Mock tests prove CI-safe plumbing only. The live smoke proves the product
+Planner path can call a real OpenAI-compatible provider without making CI
+depend on paid credentials:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\live-llm-smoke.ps1 -SkipIfMissingProvider

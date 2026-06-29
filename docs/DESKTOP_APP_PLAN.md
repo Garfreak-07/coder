@@ -1,7 +1,9 @@
 # Desktop App Plan
 
 Coder's first desktop app should be a thin local shell around the existing
-Planner/Executor product path. The target is Tauri because Coder is Rust-first
+Planner/Executor product path. Coder is Codex split into Planner and Executor:
+Planner owns user conversation and public summaries, while Executor performs
+ReAct work through harnesses. The target is Tauri because Coder is Rust-first
 and already has a React frontend plus Rust API v3 runtime.
 
 ## First Version
@@ -21,13 +23,16 @@ React UI, and keep the same core flow:
 
 ```text
 Provider Settings
--> Planner Chat
+-> LLM-backed Planner Chat
 -> Start Work
--> Executor through harness/OpenHands or native fallback
+-> Executor ReAct loop through harness/OpenHands or native fallback
 -> Work Timeline
 -> Review Changes / Undo
 -> Final Summary
 ```
+
+Chat turns must remain side-effect free. Start Work is the only execution
+boundary.
 
 ## Runtime Shape
 
@@ -111,3 +116,7 @@ Out of scope for the first desktop path:
 - cloud auth
 - replacing all HTTP APIs with Tauri commands
 - requiring GPU or local model acceleration
+
+Mock workflows and native fallback are useful for deterministic plumbing tests.
+Desktop product confidence still requires the optional live LLM smoke path when
+provider credentials are available.

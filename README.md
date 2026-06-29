@@ -14,24 +14,32 @@ tag `pre-rust-only-legacy-v2`.
 
 ## Product Path
 
+Coder is Codex split into two cooperating agents:
+
+- Planner talks to the user, organizes context, asks clarifying questions, and
+  owns public summaries.
+- Executor performs the ReAct work loop through harness-controlled tools,
+  permissions, evidence, and verification.
+
 ```text
-User talks to Planner first
+User configures provider in Settings
+-> User talks to Planner first
 -> Planner Chat clarifies scope, risks, and acceptance criteria
 -> Start Work is an explicit execution action
 -> WorkflowRunner
 -> HarnessSpec selects native Rust or OpenHands backend
--> Executor runs inside role-specific tools, permissions, memory, and verification
+-> Executor runs Reason -> Act -> Observe through role-specific tools
 -> Codex-style timeline projects commands, tools, approvals, file changes, checks
 -> Review Changes exposes diff, checks, evidence, accept, and undo
 -> Planner-authored final summary
 ```
 
-Planner Chat is side-effect free. It can answer casual questions, ask
-clarifying questions, maintain internal plan state, and mark work ready, but it
-does not write files, run commands, or start workflows. Execution starts only
-when the user clicks Start Work. That explicit action validates readiness,
-passes structured plan context into workflow execution, and opens the
-Codex-style work timeline.
+Planner Chat is side-effect free and LLM-backed in product mode. It can answer
+casual questions, ask clarifying questions, maintain internal plan state, and
+mark work ready, but it does not write files, run commands, or start workflows.
+Execution starts only when the user clicks Start Work. That explicit action
+validates readiness, passes structured plan context into workflow execution,
+and opens the Codex-style work timeline.
 
 Harnesses are the execution boundary. A harness controls backend selection,
 tools, permissions, sandbox policy, memory scope, approvals, verification, event
@@ -40,10 +48,11 @@ role-specific harness, meaning runtime claims must be backed by tool events,
 repo evidence, patch refs, command checks, or stored raw backend events.
 
 OpenHands is the preferred execution backend when available for coding-agent
-runtime behavior such as terminal/file/task execution. Coder owns the product
-control plane: Planner conversation, workflow graph, Agent/Harness specs,
-permission policy, approvals, event normalization, evidence storage, final
-reports, and the React product UI.
+runtime behavior such as terminal/file/task execution. Native Rust fallback is
+limited deterministic plumbing for CI and local smoke tests, not a second full
+agent runtime. Coder owns the product control plane: Planner conversation,
+workflow graph, Agent/Harness specs, permission policy, approvals, event
+normalization, evidence storage, final reports, and the React product UI.
 
 Rust v3 covers the ordinary product surface behind the React UI:
 
@@ -123,6 +132,9 @@ Optional live LLM smoke, skipped when no provider key is configured:
 powershell -ExecutionPolicy Bypass -File .\scripts\live-llm-smoke.ps1 -SkipIfMissingProvider
 ```
 
+Mock tests prove deterministic plumbing. The optional live LLM smoke is the
+product-confidence check for the real provider path.
+
 Installer dry-runs:
 
 ```powershell
@@ -151,9 +163,9 @@ cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8766
 
 ## OpenHands
 
-OpenHands remains an optional external backend. Without a running OpenHands
-server, local development can use native Rust fallback capabilities and the
-mock workflow endpoint used by smoke tests.
+OpenHands remains the preferred external Executor backend. Without a running
+OpenHands server, local development can use native Rust fallback capabilities
+and the mock workflow endpoint used by smoke tests.
 
 ## Provider Setup
 
@@ -180,10 +192,15 @@ SDK-style OpenHands servers.
 ## Guardrails
 
 - Keep the ordinary product path Planner-led and Rust-backed.
+- Keep Planner Chat LLM-backed in product mode.
 - Keep user interaction in `User <-> Planner`.
+- Keep Start Work as the only execution boundary.
 - Executors must not ask the user directly, commit, push, deploy, publish
   externally, or write long-term memory directly.
 - Keep OpenHands as an optional external backend.
+- Keep marketplace/plugin UI deferred from the ordinary product path.
+- Keep environment variables as developer/headless fallback, not normal setup.
+- Keep GPU support optional and provider-scoped; it is not core runtime.
 - Keep the React workflow canvas, user-defined agents, workflows, harnesses,
   provider settings, evidence/report systems, memory/knowledge/RAG baselines,
   MCP baselines, release tooling, and installer tooling.

@@ -19,8 +19,12 @@ The response contains stable public items:
 - `verification`
 - `final_summary`
 
-The projector summarizes existing run events and report data. It does not expose
-raw backend payloads, raw OpenHands JSON, or private chain-of-thought by
+The timeline is a public progress narrative. It shows what the Planner or
+Executor did, what tools ran, what changed, what was checked, and what happened
+next. It must not expose raw chain-of-thought.
+
+The projector summarizes existing run events and report data. It does not
+expose raw backend payloads, raw OpenHands JSON, or private chain-of-thought by
 default. Debug replay remains available only in the React debug UI.
 
 Frontend rendering lives in:
@@ -31,5 +35,16 @@ frontend/src/features/work-timeline/timelineTypes.ts
 frontend/src/features/work-timeline/timelineAdapter.ts
 ```
 
-The timeline is the normal work surface after Start Work. Raw event cards are
-not part of the ordinary chat view.
+The timeline appears only after Start Work starts execution. Chat turns never
+start runs and do not show an empty timeline. Raw event cards are not part of
+the ordinary chat view.
+
+Executor entries should reflect the public ReAct loop:
+
+```text
+Reasoning summary -> action selected -> tool started/completed -> observation -> next step
+```
+
+OpenHands remains the preferred backend for full coding-agent tool loops.
+Native Rust events are limited deterministic fallback for tests and local smoke
+checks.

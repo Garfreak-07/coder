@@ -2,8 +2,13 @@
 
 ## Mirrored Codex Behavior
 
+- Coder is Codex split into Planner and Executor roles.
 - Planner Chat is side-effect free; chat turns cannot start execution.
+- Planner Chat is LLM-backed in product mode and returns setup-required text
+  instead of pretending to plan when provider credentials are missing.
 - Start Work is an explicit execution action.
+- Executor work follows a public Reason -> Act -> Observe lifecycle through a
+  harness; OpenHands is preferred when configured.
 - Run events are projected into user-facing timeline items instead of raw JSON.
 - Timeline items cover plan updates, executor steps, tools, commands, file
   changes, approvals, verification, and final summary.
@@ -28,6 +33,8 @@
   surface in this milestone.
 - Review/undo is conservative: undo requires current diff to match the recorded
   review diff.
+- Mock tests prove deterministic plumbing only. Optional live LLM smoke is
+  required for confidence in the real product provider path.
 
 ## Intentionally Different
 
@@ -37,6 +44,9 @@ Coder splits Codex into Planner and Executor:
 - Executor acts through harnesses and never chats directly with the user.
 - Harness specs remain the tool, permission, memory, and backend boundary.
 - OpenHands stays the preferred executor backend when configured.
+- Environment variables remain developer/headless fallback; normal users use
+  Provider Settings.
+- GPU support is optional future provider capability, not core runtime.
 
 ## Non-Blocking
 

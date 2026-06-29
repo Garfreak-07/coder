@@ -1,7 +1,9 @@
 # Local Cache And Resource Policy
 
-Coder's local runtime uses disk and CPU for persistence, search, diffs, timeline
-projection, plugin and skill discovery, artifacts, and evidence.
+Coder's local runtime uses disk and CPU for persistence, search, diffs, public
+timeline projection, artifacts, and evidence. Plugin and skill discovery is
+retained as a developer/debug surface while marketplace UI is deferred from the
+core product path.
 
 Preferred local layout:
 
@@ -32,6 +34,9 @@ Rules:
 - CPU scans must be bounded by file size, binary detection, and cancellation.
 - Long scans should move to background tasks and report progress.
 - GPU is not part of the core runtime.
+- Provider API keys must not be stored in cache directories.
+- Environment variables are developer/headless fallback, not the normal user
+  path.
 
 Cache endpoints:
 
@@ -46,6 +51,6 @@ DELETE /api/v3/cache/tasks/{task_id}
 GPU policy:
 
 - No GPU scheduler in core Coder.
-- Future GPU use must be optional and provider-scoped.
+- Future GPU use must be optional, provider-scoped, and fully CPU-fallbackable.
 - Normal Planner Chat, OpenHands execution, tests, smoke checks, and release
   validation must not require GPU hardware.
