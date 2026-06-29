@@ -42,4 +42,4 @@
 - [x] `powershell -ExecutionPolicy Bypass -File .\scripts\smoke-rust-v3.ps1 -Store .tmp\smoke-rust-v3`
 - [x] `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -DryRun`
 - [x] `node packaging/npm/bin/coder-rust.js --dry-run`
-- [ ] `bash ./scripts/install.sh --dry-run` local bash unavailable on this Windows host; use CI POSIX installer dry-run
+- [x] `bash ./scripts/install.sh --dry-run` covered by Ubuntu `installer-dry-run` CI; local bash unavailable on this Windows host
