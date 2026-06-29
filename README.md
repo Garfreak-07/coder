@@ -88,6 +88,10 @@ npm.cmd run dev
 Open `http://127.0.0.1:5173`. Vite proxies `/api/*` to
 `http://127.0.0.1:8876`, and the frontend uses Rust API v3 directly.
 
+The future desktop packaging path is documented in
+[`docs/DESKTOP_APP_PLAN.md`](docs/DESKTOP_APP_PLAN.md). Current development
+mode stays as the Rust API server plus Vite frontend.
+
 ## Test
 
 Rust:
