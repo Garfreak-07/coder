@@ -113,6 +113,12 @@ Rust v3 smoke test:
 powershell -ExecutionPolicy Bypass -File .\scripts\smoke-rust-v3.ps1 -Store .tmp\smoke-rust-v3
 ```
 
+Optional live LLM smoke, skipped when no provider key is configured:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\live-llm-smoke.ps1 -SkipIfMissingProvider
+```
+
 Installer dry-runs:
 
 ```powershell
