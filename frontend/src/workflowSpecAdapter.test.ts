@@ -80,6 +80,9 @@ test("maps OpenHands harness profiles to OpenHands backend", () => {
   assert.equal(config.workflows["default-planner-led"].nodes[0].harness, "planner-conversation");
   assert.equal(taskHarness.backend, "openhands");
   assert.equal(taskHarness.openhands?.server_url, "http://127.0.0.1:8000");
+  assert.deepEqual(plannerHarness.memory.read, ["user", "project", "run", "repo_facts", "knowledge_hints"]);
+  assert.deepEqual(config.agents.executor.memory.read, ["workflow", "run"]);
+  assert.deepEqual(taskHarness.memory.read, ["workflow", "run"]);
 });
 
 test("maps native read-only harness profiles to native Rust backend", () => {
@@ -97,6 +100,7 @@ test("maps native read-only harness profiles to native Rust backend", () => {
   assert.equal(config.harnesses["review-only-chat"].backend, "planner-model");
   assert.equal(config.harnesses["review-only-task"].backend, "native-rust");
   assert.equal(config.harnesses["review-only-task"].openhands, null);
+  assert.deepEqual(config.harnesses["review-only-task"].memory.read, ["workflow", "run"]);
   assert.equal(config.workflows["default-planner-led"].nodes[0].harness, "review-only-chat");
 });
 

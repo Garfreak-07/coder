@@ -126,6 +126,7 @@ impl RunStore {
         let mut patch_ref_seen = BTreeSet::new();
         let mut evidence_ref_seen = BTreeSet::new();
         let mut evidence_refs = Vec::new();
+        let mut plan_context = None;
         if !events.is_empty() {
             evidence_ref_seen.insert((
                 "event_log".to_owned(),
@@ -140,6 +141,15 @@ impl RunStore {
             }
 
             match event.kind.as_str() {
+                "run.started" => {
+                    if let Some(value) = event
+                        .payload
+                        .get("plan_context")
+                        .filter(|value| !value.is_null())
+                    {
+                        plan_context = Some(value.clone());
+                    }
+                }
                 "approval.requested" => {
                     let approval_type = payload_string(&event.payload, "approval_type")
                         .unwrap_or_else(|| "approval".to_owned());
@@ -235,6 +245,12 @@ impl RunStore {
                     _ => {}
                 }
             }
+        }
+        if let Some(summary) = plan_context_summary(plan_context.as_ref()) {
+            checks.push(format!("plan_context: {summary}"));
+        }
+        for criterion in plan_acceptance_criteria(plan_context.as_ref()) {
+            checks.push(format!("acceptance: {criterion}"));
         }
         for (kind, reference) in evidence_ref_seen {
             evidence_refs.push(coder_core::EvidenceRef { kind, reference });
@@ -668,6 +684,60 @@ fn evidence_report_summary(
     format!("{prefix}: {event_count} event(s), {check_count} check(s), {evidence_ref_count} evidence ref(s).")
 }
 
+fn plan_context_summary(plan_context: Option<&Value>) -> Option<String> {
+    let plan_context = plan_context?;
+    let summary = plan_context
+        .get("plan_draft")
+        .and_then(|plan| plan.get("goal"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            plan_context
+                .get("original_user_request")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            plan_context
+                .get("planner_conversation_summary")
+                .and_then(Value::as_str)
+        })?
+        .trim();
+    if summary.is_empty() {
+        None
+    } else {
+        Some(summary.chars().take(240).collect())
+    }
+}
+
+fn plan_acceptance_criteria(plan_context: Option<&Value>) -> Vec<String> {
+    let Some(plan_context) = plan_context else {
+        return Vec::new();
+    };
+    let direct = string_array(plan_context.get("acceptance_criteria"));
+    if !direct.is_empty() {
+        return direct;
+    }
+    string_array(
+        plan_context
+            .get("plan_draft")
+            .and_then(|plan| plan.get("acceptance_criteria")),
+    )
+}
+
+fn string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn read_json_optional<T: DeserializeOwned>(
     path: impl AsRef<Path>,
 ) -> Result<Option<T>, StoreError> {
@@ -1063,6 +1133,44 @@ mod tests {
         assert_eq!(report.status, ReportStatus::Failed);
         assert!(report.checks[0].contains("cargo test"));
         assert!(report.blockers[0].contains("Command failed"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_report_includes_plan_context_from_run_started() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "run.started",
+                    json!({
+                        "plan_context": {
+                            "original_user_request": "Update Planner loop",
+                            "plan_draft": {
+                                "goal": "Update Planner loop",
+                                "acceptance_criteria": ["final report cites plan context"]
+                            }
+                        }
+                    }),
+                ),
+            )
+            .unwrap();
+
+        let report = store.build_evidence_report(&run_id).unwrap();
+
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check == "plan_context: Update Planner loop"));
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check == "acceptance: final report cites plan context"));
         let _ = fs::remove_dir_all(root);
     }
 

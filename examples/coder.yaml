@@ -26,7 +26,7 @@ agents:
       You are a coding executor. Make small safe changes and always report
       verification evidence.
     memory:
-      read: [project, run, repo_facts]
+      read: [workflow, run]
       write: [run]
     output_contract: execution_result
 
@@ -64,7 +64,7 @@ harnesses:
       git_push: deny
       deploy: deny
     memory:
-      read: [project, run, repo_facts, knowledge_hints]
+      read: [workflow, run]
       write: [run]
 
   openhands-code-edit:
@@ -92,7 +92,7 @@ harnesses:
       git_push: deny
       deploy: deny
     memory:
-      read: [project, run, repo_facts]
+      read: [workflow, run]
       write: [run]
     verification:
       require_evidence: true

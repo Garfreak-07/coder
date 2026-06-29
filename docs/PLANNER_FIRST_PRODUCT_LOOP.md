@@ -64,7 +64,11 @@ memory requires an explicit `memory.write.proposed` event followed by a
 `memory.write.confirmed` request with `confirmed_by_role = planning_chat`.
 Project long-term memory reads also require `requested_by_role =
 planning_chat`. Workflow supervisor and task execution roles cannot read,
-propose, or confirm project long-term memory through these endpoints.
+propose, or confirm project long-term memory through these endpoints. The
+default execution agents and execution harnesses are also config-limited to
+`workflow` and `run` memory scopes; evidence-backed repo context is delivered
+through tool events, evidence refs, and plan context rather than durable
+project/global memory reads.
 
 ## Work Mode
 

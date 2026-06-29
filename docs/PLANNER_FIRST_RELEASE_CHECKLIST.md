@@ -1,5 +1,15 @@
 # Planner-First Release Checklist
 
+## Current Status
+
+- Complete for the local release gate: Planner Chat, Planner-only long-term
+  memory, Work confirmation, plan-context propagation, OpenHands payload
+  projection, native fallback smoke, React build/tests, and packaging dry-runs.
+- Live OpenHands execution is environment-gated and non-blocking for this gate.
+- Real provider credentials are environment-gated and non-blocking for CI; in
+  product mode missing provider configuration returns a clear configuration
+  error.
+
 ## Product Flow
 
 - [x] Planner chat casual conversation works without status-only placeholder responses.
@@ -7,7 +17,8 @@
   `planner-model` HarnessSpec.
 - [x] Planner global/project memory proposal is represented in `PlanDraft.memory_proposals`.
 - [x] Planner memory read, proposal, and confirmation APIs require `planning_chat`.
-- [x] Workflow memory stays scoped to run/workflow paths for workflow agents.
+- [x] Workflow memory stays scoped to run/workflow paths for workflow agents and
+  execution harnesses.
 - [x] Work mode executes only after PlanDraft readiness and explicit confirmation.
 - [x] Final report includes event-log evidence and plan context summary/checks.
 
@@ -22,6 +33,14 @@
   preflight, approvals, and evidence capture.
 - [x] Native Rust fallback is not a duplicate OpenHands terminal/file/task loop.
 
+## Non-Blocking
+
+- [x] Non-blocking enhancement list explicitly tracks production embedding
+  providers, published npm/Homebrew channels, signed artifacts/checksums,
+  richer MCP compatibility, and live OpenHands matrix work.
+- [x] Avatar, voice, Live2D, VTuber, companion-persona, game-loop, and
+  unrelated multimedia systems are not Coder core release items.
+
 ## React UX
 
 - [x] React displays Planner transcript, plan draft/readiness, open questions,
@@ -29,7 +48,8 @@
 - [x] React sends the selected workflow config into Planner Chat so backend
   readiness and harness policy remain server-owned.
 - [x] React frontend tests cover planner harness export, Work config handoff,
-  memory proposal display surface, run event mapping, and final report surfaces.
+  execution memory scopes, memory proposal display surface, run event mapping,
+  and final report surfaces.
 
 ## Release Gates
 
@@ -40,6 +60,8 @@
 - [x] `cargo clippy --workspace --all-targets -- -D warnings`
 - [x] `frontend: npm.cmd ci`
 - [x] `powershell -ExecutionPolicy Bypass -File .\scripts\smoke-rust-v3.ps1 -Store .tmp\smoke-rust-v3`
+- [x] Local Planner loop API smoke against `coder-rust server`: Discuss,
+  Work confirmation, run events, and report preview plan-context check.
 - [x] `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -DryRun`
 - [x] `node packaging/npm/bin/coder-rust.js --dry-run`
 - [x] `bash ./scripts/install.sh --dry-run` covered by Ubuntu `installer-dry-run` CI; local bash unavailable on this Windows host

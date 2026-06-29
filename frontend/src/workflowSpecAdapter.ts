@@ -347,7 +347,7 @@ function rustHarnessSpecFor(binding: HarnessModeBinding, mode: HarnessMode): Rus
     permissions: taskMode ? { ...taskPermissions } : { ...readonlyPermissions },
     memory: taskMode
       ? {
-          read: ["project", "run", "repo_facts", "knowledge_hints"],
+          read: ["workflow", "run"],
           write: ["run"]
         }
       : plannerChatMode
@@ -356,7 +356,7 @@ function rustHarnessSpecFor(binding: HarnessModeBinding, mode: HarnessMode): Rus
             write: ["run"]
           }
       : {
-          read: ["user", "project", "workflow", "run", "repo_facts", "knowledge_hints"],
+          read: ["workflow", "run"],
           write: ["workflow", "run"]
         },
     verification: {
@@ -478,7 +478,7 @@ function memoryAccessFor(role: AgentWorkflowRole): RustMemoryAccess {
     };
   }
   return {
-    read: ["project", "run", "repo_facts", "knowledge_hints"],
+    read: ["workflow", "run"],
     write: ["run"]
   };
 }

@@ -387,6 +387,19 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationReport {
                 format!("agents.{agent_id}.system"),
             ));
         }
+        if agent.role != "planner"
+            && (contains_long_term_memory_scope(&agent.memory.read)
+                || contains_long_term_memory_scope(&agent.memory.write))
+        {
+            issues.push(error(
+                "agent_long_term_memory_for_non_planner",
+                format!(
+                    "agent '{agent_id}' has role '{}' and may only use workflow/run memory scopes",
+                    agent.role
+                ),
+                format!("agents.{agent_id}.memory"),
+            ));
+        }
     }
 
     for (harness_id, harness) in &config.harnesses {
@@ -395,6 +408,19 @@ pub fn validate_project_config(config: &ProjectConfig) -> ValidationReport {
                 "openhands_config_missing",
                 format!("harness '{harness_id}' uses openhands backend without openhands config"),
                 format!("harnesses.{harness_id}.openhands"),
+            ));
+        }
+        if harness.backend != "planner-model"
+            && (contains_long_term_memory_scope(&harness.memory.read)
+                || contains_long_term_memory_scope(&harness.memory.write))
+        {
+            issues.push(error(
+                "harness_long_term_memory_for_execution_backend",
+                format!(
+                    "harness '{harness_id}' uses backend '{}' and may only use workflow/run memory scopes",
+                    harness.backend
+                ),
+                format!("harnesses.{harness_id}.memory"),
             ));
         }
     }
@@ -556,6 +582,22 @@ fn is_known_stop_status(status: &str) -> bool {
     )
 }
 
+fn contains_long_term_memory_scope(scopes: &[MemoryScope]) -> bool {
+    scopes.iter().any(is_long_term_memory_scope)
+}
+
+fn is_long_term_memory_scope(scope: &MemoryScope) -> bool {
+    matches!(
+        scope,
+        MemoryScope::User
+            | MemoryScope::Project
+            | MemoryScope::Agent
+            | MemoryScope::RepoFacts
+            | MemoryScope::KnowledgeHints
+            | MemoryScope::ExternalDocs
+    )
+}
+
 fn error(
     code: impl Into<String>,
     message: impl Into<String>,
@@ -661,5 +703,47 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.code == "workflow_edge_condition_unknown"));
+    }
+
+    #[test]
+    fn non_planner_agents_cannot_request_long_term_memory_scopes() {
+        let mut config: ProjectConfig =
+            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
+        config
+            .agents
+            .get_mut("executor")
+            .unwrap()
+            .memory
+            .read
+            .push(MemoryScope::Project);
+
+        let report = validate_project_config(&config);
+
+        assert_eq!(report.status, "error");
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "agent_long_term_memory_for_non_planner"));
+    }
+
+    #[test]
+    fn execution_harnesses_cannot_request_long_term_memory_scopes() {
+        let mut config: ProjectConfig =
+            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
+        config
+            .harnesses
+            .get_mut("openhands-code-edit")
+            .unwrap()
+            .memory
+            .read
+            .push(MemoryScope::Project);
+
+        let report = validate_project_config(&config);
+
+        assert_eq!(report.status, "error");
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "harness_long_term_memory_for_execution_backend"));
     }
 }

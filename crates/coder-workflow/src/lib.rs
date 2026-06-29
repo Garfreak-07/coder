@@ -2396,7 +2396,7 @@ mod tests {
         time::Duration,
     };
 
-    use coder_config::{ProjectConfig, WorkflowNodeSpec};
+    use coder_config::{MemoryScope, ProjectConfig, WorkflowNodeSpec};
     use coder_core::ReportStatus;
 
     use super::*;
@@ -3385,6 +3385,8 @@ diff --git a/tracked.txt b/tracked.txt
         for harness in config.harnesses.values_mut() {
             harness.backend = "native-rust".to_owned();
             harness.openhands = None;
+            harness.memory.read = vec![MemoryScope::Workflow, MemoryScope::Run];
+            harness.memory.write = vec![MemoryScope::Run];
         }
     }
 

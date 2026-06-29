@@ -5600,6 +5600,8 @@ mod tests {
         for harness in config.harnesses.values_mut() {
             harness.backend = "native-rust".to_owned();
             harness.openhands = None;
+            harness.memory.read = vec![ConfigMemoryScope::Workflow, ConfigMemoryScope::Run];
+            harness.memory.write = vec![ConfigMemoryScope::Run];
         }
         let app = router(ApiState::new(RunStore::new(&store_root)));
 
