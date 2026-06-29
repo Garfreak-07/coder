@@ -4757,6 +4757,18 @@ fn normalize_provider(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
+fn provider_http_client_builder(url: &str) -> reqwest::ClientBuilder {
+    let builder = Client::builder();
+    if url.contains("://127.0.0.1")
+        || url.contains("://localhost")
+        || url.contains("://[::1]")
+    {
+        builder.no_proxy()
+    } else {
+        builder
+    }
+}
+
 async fn test_provider_chat_completion(
     settings: &ProviderSettings,
     provider: &str,
@@ -4787,7 +4799,7 @@ async fn test_provider_chat_completion(
     let base_url = provider_base_url(settings, &provider)
         .ok_or_else(|| "Provider test requires a base URL.".to_owned())?;
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = Client::builder()
+    let client = provider_http_client_builder(&url)
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|error| error.to_string())?;
@@ -4919,7 +4931,7 @@ impl ModelPlannerConversationEngine {
             "role": "user",
             "content": &request.message
         }));
-        let client = Client::builder()
+        let client = provider_http_client_builder(&url)
             .timeout(Duration::from_secs(20))
             .build()
             .map_err(|error| error.to_string())?;
@@ -4983,8 +4995,14 @@ fn planner_model_base_url(
         .or_else(|| default_provider_base_url(provider).map(str::to_owned))
 }
 
+const PLANNER_MODEL_CONFIG_ERROR: &str = "Planner model provider is not configured. Configure Provider Settings, or set LLM_BASE_URL and LLM_API_KEY for developer/headless fallback.";
+
 fn planner_model_config_error() -> String {
-    "Planner model provider is not configured. Configure Provider Settings, or set LLM_BASE_URL and LLM_API_KEY for developer/headless fallback.".to_owned()
+    PLANNER_MODEL_CONFIG_ERROR.to_owned()
+}
+
+fn is_planner_model_config_error(error: &str) -> bool {
+    error == PLANNER_MODEL_CONFIG_ERROR
 }
 
 fn planner_system_prompt(runtime: &PlannerRuntimeContext) -> String {
@@ -5006,11 +5024,30 @@ impl PlannerConversationEngine for ModelPlannerConversationEngine {
         &self,
         request: PlannerConversationRequest,
     ) -> Result<PlannerConversationResponse, String> {
-        let model_message = self.live_assistant_message(&request).await?;
+        let model_message = match self.live_assistant_message(&request).await {
+            Ok(message) => message,
+            Err(error) if is_planner_model_config_error(&error) => {
+                return Ok(planner_provider_setup_required_response(error));
+            }
+            Err(error) => return Err(error),
+        };
         if model_message.is_some() {
             return Ok(deterministic_planner_response(&request, model_message));
         }
         self.fallback.respond(request).await
+    }
+}
+
+fn planner_provider_setup_required_response(message: String) -> PlannerConversationResponse {
+    PlannerConversationResponse {
+        assistant_message: format!("{message} Open Settings and save a provider API key, then send the Planner message again."),
+        plan_draft: None,
+        readiness: PlannerReadiness::Blocked,
+        open_questions: vec!["Configure a provider API key in Settings.".to_owned()],
+        acceptance_criteria: Vec::new(),
+        risks: Vec::new(),
+        suggested_mode: "discuss".to_owned(),
+        should_start_workflow: false,
     }
 }
 
@@ -5992,6 +6029,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn planner_chat_mock_mode_supports_two_turns_without_starting_run() {
+        let app = test_router();
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        let session_id = response_json(create_response).await["session"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let first_response = post_json(
+            app.clone(),
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "Inspect crates/coder-server/src/lib.rs acceptance: cargo test planner"
+            }),
+        )
+        .await;
+        assert_eq!(first_response.status(), StatusCode::OK);
+        let first = response_json(first_response).await;
+        assert_eq!(first["run_preview"], Value::Null);
+        assert_eq!(first["should_start_workflow"], false);
+
+        let second_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "Also keep changes limited to planner chat behavior."
+            }),
+        )
+        .await;
+        assert_eq!(second_response.status(), StatusCode::OK);
+        let second = response_json(second_response).await;
+        assert_eq!(second["session"]["turns"].as_array().unwrap().len(), 4);
+        assert_eq!(second["should_start_workflow"], false);
+        assert_eq!(second["execution_allowed"], false);
+    }
+
+    #[tokio::test]
     async fn planner_chat_work_mode_requires_ready_and_confirmation() {
         let app = test_router();
         let create_response = post_json(
@@ -6130,12 +6212,71 @@ mod tests {
         )
         .await;
 
-        assert_eq!(turn_response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(turn_response.status(), StatusCode::OK);
         let body = response_json(turn_response).await;
-        assert!(body["error"]
+        assert!(body["assistant_message"]
             .as_str()
             .unwrap()
             .contains("Planner model provider is not configured"));
+        assert_eq!(body["readiness"], "blocked");
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["execution_allowed"], false);
+        assert_eq!(body["should_start_workflow"], false);
+        assert_eq!(body["plan_draft"], Value::Null);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn planner_chat_product_mode_calls_configured_provider() {
+        let store_root = temp_root();
+        let provider_base_url = spawn_openai_compatible_test_server().await;
+        let state = ApiState::new(RunStore::new(&store_root));
+        {
+            let mut settings = state.provider_settings.lock().unwrap();
+            settings.mock_mode = false;
+            settings.default_provider = "openai-compatible".to_owned();
+            settings.default_model = "test-model".to_owned();
+            settings
+                .base_urls
+                .insert("openai-compatible".to_owned(), provider_base_url);
+            settings.api_keys.insert(
+                "openai-compatible".to_owned(),
+                ProviderKeyState {
+                    configured: true,
+                    source: "settings".to_owned(),
+                    secret: Some("sk-test-secret".to_owned()),
+                },
+            );
+        }
+        let app = router(state);
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        let session_id = response_json(create_response).await["session"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let turn_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "hello planner"
+            }),
+        )
+        .await;
+
+        let turn_status = turn_response.status();
+        let body = response_json(turn_response).await;
+        assert_eq!(turn_status, StatusCode::OK, "{body}");
+        assert_eq!(body["assistant_message"], "Live provider response.");
+        assert_eq!(body["should_start_workflow"], false);
         let _ = fs::remove_dir_all(store_root);
     }
 
@@ -8289,6 +8430,28 @@ diff --git a/tracked.txt b/tracked.txt
 
     fn test_router() -> Router {
         router(ApiState::new(RunStore::new(temp_root())))
+    }
+
+    async fn spawn_openai_compatible_test_server() -> String {
+        async fn chat_completion() -> Json<Value> {
+            Json(json!({
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Live provider response."
+                        }
+                    }
+                ]
+            }))
+        }
+
+        let app = Router::new().route("/chat/completions", axum::routing::post(chat_completion));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
     }
 
     async fn post_json(app: Router, uri: &str, body: Value) -> axum::response::Response {
