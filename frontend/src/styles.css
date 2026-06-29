@@ -317,6 +317,36 @@ label {
   text-transform: capitalize;
 }
 
+.planner-state-card {
+  display: grid;
+  gap: 8px;
+}
+
+.planner-goal {
+  color: #e5e7eb;
+  font-size: 14px;
+  margin: 2px 0 0;
+}
+
+.planner-state-list {
+  display: grid;
+  gap: 4px;
+}
+
+.planner-state-list span {
+  color: #94a3b8;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.planner-state-list ul {
+  color: #cbd5e1;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
 .plan-draft-card {
   background: #101826;
   border: 1px solid #334155;

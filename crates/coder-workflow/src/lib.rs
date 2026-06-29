@@ -347,7 +347,8 @@ impl WorkflowRunner {
                 "task": &options.task,
                 "repo_root": request.repo_root,
                 "dry_run": options.dry_run,
-                "max_rounds": workflow.max_rounds
+                "max_rounds": workflow.max_rounds,
+                "plan_context": options.plan_context.clone()
             }),
         )?;
 
@@ -442,6 +443,7 @@ impl WorkflowRunner {
                         harness_id: &node.harness,
                         harness,
                         model,
+                        plan_context: options.plan_context.as_ref(),
                     }),
                 })
                 .await
@@ -633,6 +635,7 @@ impl WorkflowRunner {
             blockers,
             changed_files: changed_files.into_iter().collect(),
             patch_refs: patch_refs.into_iter().collect(),
+            plan_context: options.plan_context.clone(),
         });
         let report_ref = self.store.write_report(&run_id, &report)?;
         self.emit(
@@ -871,6 +874,7 @@ pub struct OpenHandsConversationPayloadInput<'a> {
     pub harness_id: &'a str,
     pub harness: &'a HarnessSpec,
     pub model: &'a ModelSpec,
+    pub plan_context: Option<&'a Value>,
 }
 
 pub fn build_openhands_conversation_payload(input: OpenHandsConversationPayloadInput<'_>) -> Value {
@@ -893,7 +897,8 @@ pub fn build_openhands_conversation_payload(input: OpenHandsConversationPayloadI
         "memory": memory,
         "permissions": permissions,
         "verification": verification,
-        "output_contract": &input.agent.output_contract
+        "output_contract": &input.agent.output_contract,
+        "plan_context": input.plan_context.cloned().unwrap_or(Value::Null)
     });
 
     json!({
@@ -936,7 +941,8 @@ pub fn build_openhands_conversation_payload(input: OpenHandsConversationPayloadI
             "output_contract": {
                 "name": &input.agent.output_contract,
                 "require_evidence": input.harness.verification.require_evidence
-            }
+            },
+            "plan_context": input.plan_context.cloned().unwrap_or(Value::Null)
         }
     })
 }
@@ -961,7 +967,8 @@ fn harness_backend_context(input: OpenHandsConversationPayloadInput<'_>) -> Valu
         },
         "model": model_reference(input.agent, input.model),
         "memory": memory_scope_summary(input.agent, input.harness),
-        "permissions": permission_summary(input.harness)
+        "permissions": permission_summary(input.harness),
+        "plan_context": input.plan_context.cloned().unwrap_or(Value::Null)
     });
     if input.harness.backend == "openhands" {
         json!({
@@ -1017,6 +1024,7 @@ pub struct WorkflowRunOptions {
     pub repo_root: PathBuf,
     pub dry_run: bool,
     pub max_rounds_override: Option<u32>,
+    pub plan_context: Option<Value>,
 }
 
 impl WorkflowRunOptions {
@@ -1027,6 +1035,7 @@ impl WorkflowRunOptions {
             repo_root: PathBuf::from("."),
             dry_run: false,
             max_rounds_override: None,
+            plan_context: None,
         }
     }
 }
@@ -2158,6 +2167,7 @@ struct WorkflowReportInput<'a> {
     blockers: Vec<String>,
     changed_files: Vec<String>,
     patch_refs: Vec<String>,
+    plan_context: Option<Value>,
 }
 
 fn workflow_run_report(input: WorkflowReportInput<'_>) -> FinalReport {
@@ -2177,6 +2187,9 @@ fn workflow_run_report(input: WorkflowReportInput<'_>) -> FinalReport {
         ),
     );
     report.checks = input.checks;
+    for criterion in plan_acceptance_criteria(input.plan_context.as_ref()) {
+        report.checks.push(format!("acceptance: {criterion}"));
+    }
     report.blockers = input.blockers;
     report.changed_files = input.changed_files;
     report.patch_refs = input.patch_refs;
@@ -2198,6 +2211,36 @@ fn workflow_run_report(input: WorkflowReportInput<'_>) -> FinalReport {
         .dedup_by(|left, right| left.kind == right.kind && left.reference == right.reference);
     report.evidence_refs = evidence_refs;
     report
+}
+
+fn plan_acceptance_criteria(plan_context: Option<&Value>) -> Vec<String> {
+    let Some(plan_context) = plan_context else {
+        return Vec::new();
+    };
+    let direct = string_array(plan_context.get("acceptance_criteria"));
+    if !direct.is_empty() {
+        return direct;
+    }
+    string_array(
+        plan_context
+            .get("plan_draft")
+            .and_then(|plan| plan.get("acceptance_criteria")),
+    )
+}
+
+fn string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn run_status_str(status: RunStatus) -> &'static str {
@@ -2896,6 +2939,14 @@ diff --git a/tracked.txt b/tracked.txt
         let harness = config.harnesses.get(&node.harness).unwrap();
         let model = config.models.get(&agent.model).unwrap();
         let run_id = RunId::from_string("run-phase2");
+        let plan_context = json!({
+            "original_user_request": "Update planner loop",
+            "acceptance_criteria": ["planner criteria reached"],
+            "plan_draft": {
+                "goal": "Update planner loop",
+                "affected_paths": ["crates/coder-workflow/src/lib.rs"]
+            }
+        });
 
         let payload = build_openhands_conversation_payload(OpenHandsConversationPayloadInput {
             run_id: &run_id,
@@ -2907,6 +2958,7 @@ diff --git a/tracked.txt b/tracked.txt
             harness_id: &node.harness,
             harness,
             model,
+            plan_context: Some(&plan_context),
         });
         let payload_text = serde_json::to_string(&payload).unwrap();
 
@@ -2946,6 +2998,14 @@ diff --git a/tracked.txt b/tracked.txt
         assert_eq!(
             payload["coder_context"]["memory"]["note"],
             "scope names only; memory contents are not embedded"
+        );
+        assert_eq!(
+            payload["metadata"]["coder"]["plan_context"]["acceptance_criteria"][0],
+            "planner criteria reached"
+        );
+        assert_eq!(
+            payload["coder_context"]["plan_context"]["plan_draft"]["goal"],
+            "Update planner loop"
         );
         assert!(!payload_text.contains(secret_value));
         let _ = fs::remove_dir_all(root);

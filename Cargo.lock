@@ -317,6 +317,7 @@ dependencies = [
 name = "coder-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "coder-config",
  "coder-core",
@@ -327,6 +328,7 @@ dependencies = [
  "coder-store",
  "coder-tools",
  "coder-workflow",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",

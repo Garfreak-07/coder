@@ -1607,7 +1607,7 @@ function RunSummary({ events }: { events: RunEvent[] }) {
   const agentCalls = events.filter((event) => event.type === "agent.called").length;
   const toolCalls = events.filter((event) => event.type === "tool.called").length;
   const selectedEdges = events.filter((event) => event.type === "edge.selected").length;
-  const approvalRequests = events.filter((event) => event.type === "approval.required");
+  const approvalRequests = events.filter(isApprovalRequestEvent);
   const approvalRecords = events.filter((event) => event.type === "approval.recorded");
   const latestApproval = pendingApprovalEvent(events);
   const isBlocked = latest?.type === "run.blocked";
@@ -1672,7 +1672,7 @@ function mergeEvents(events: RunEvent[], incoming: RunEvent[]): RunEvent[] {
 }
 
 function pendingApprovalEvent(events: RunEvent[]): RunEvent | null {
-  const latestApproval = [...events].reverse().find((event) => event.type === "approval.required");
+  const latestApproval = [...events].reverse().find(isApprovalRequestEvent);
   if (!latestApproval) return null;
   const latestRecord = [...events].reverse().find((event) => event.type === "approval.recorded");
   if (!latestRecord) return latestApproval;
@@ -1695,9 +1695,18 @@ function isTerminalRunEvent(type: string): boolean {
   );
 }
 
+function isApprovalRequestEvent(event: RunEvent): boolean {
+  return event.type === "approval.requested" || event.type === "approval.required";
+}
+
 function statusClass(type: string | undefined): string {
   if (type === "run.completed" || type === "agent_graph.run.completed") return "good";
   if (type === "run.failed" || type === "agent_graph.run.failed") return "bad";
-  if (type === "run.blocked" || type === "agent_graph.run.blocked" || type === "approval.required") return "warn";
+  if (
+    type === "run.blocked" ||
+    type === "agent_graph.run.blocked" ||
+    type === "approval.required" ||
+    type === "approval.requested"
+  ) return "warn";
   return "";
 }

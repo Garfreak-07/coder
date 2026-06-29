@@ -1,4 +1,5 @@
 import { defaultPlannerLedAgentWorkflow } from "./examples";
+import { readFileSync } from "node:fs";
 import type { AgentWorkflowSpec, RustProjectConfig } from "./types";
 import {
   agentWorkflowToRustLibrarySaveRequest,
@@ -185,4 +186,21 @@ test("maps Rust run events into the existing paged event model", () => {
   assert.equal(page.events[0].node_id, "planner");
   assert.equal(page.next_cursor, 2);
   assert.equal(page.has_more, false);
+});
+
+test("frontend API client stays on Rust v3 without Python switch", () => {
+  const apiSource = readFileSync("src/api.ts", "utf8");
+  const removedV2Route = "/api/" + "v2";
+  const removedPythonServer = "fast" + "api";
+
+  assert.ok(!apiSource.includes(removedV2Route));
+  assert.ok(!apiSource.toLowerCase().includes(removedPythonServer));
+  assert.ok(apiSource.includes("/api/v3/planner-chat/sessions"));
+});
+
+test("run summary recognizes backend approval request events", () => {
+  const appSource = readFileSync("src/App.tsx", "utf8");
+
+  assert.ok(appSource.includes("approval.requested"));
+  assert.ok(appSource.includes("isApprovalRequestEvent"));
 });

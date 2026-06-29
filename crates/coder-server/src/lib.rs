@@ -4,8 +4,10 @@ use std::{
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
+use async_trait::async_trait;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -47,7 +49,8 @@ use coder_tools::{
     PatchApplyRequest as ToolPatchApplyRequest, PatchPreviewEvidence, RepoFileEvidence,
     RepoFileRef, RepoReadSnippet, RepoSearchMatch, RepoToolConfig, RepoToolError,
 };
-use coder_workflow::{MockWorkflowRunner, WorkflowError};
+use coder_workflow::{MockWorkflowRunner, WorkflowError, WorkflowRunOptions, WorkflowRunner};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -425,13 +428,19 @@ async fn create_planner_chat_session(
     Json(request): Json<PlannerChatSessionCreateRequest>,
 ) -> Json<PlannerChatSessionResponse> {
     let session_id = format!("pcs_{}", RunId::new());
+    let workflow_id = request
+        .workflow_id
+        .unwrap_or_else(|| "planner-led".to_owned());
     let session = PlannerChatSession {
         session_id: session_id.clone(),
-        workflow_id: request
-            .workflow_id
-            .unwrap_or_else(|| "planner-led".to_owned()),
-        mode: request.mode.unwrap_or_else(|| "discuss".to_owned()),
+        workflow_id: workflow_id.clone(),
+        mode: normalize_planner_mode(request.mode.as_deref()),
         ready: false,
+        readiness: PlannerReadiness::NeedsClarification,
+        plan_draft: None,
+        open_questions: vec!["What exact outcome should this plan target?".to_owned()],
+        acceptance_criteria: Vec::new(),
+        risks: Vec::new(),
         turns: Vec::new(),
     };
     state
@@ -461,44 +470,88 @@ async fn planner_chat_turn(
     Path(session_id): Path<String>,
     Json(request): Json<PlannerChatTurnRequest>,
 ) -> Result<Json<PlannerChatTurnResponse>, ApiError> {
+    let requested_mode = request.mode.clone();
+    let confirmed = request.confirmed.unwrap_or(false);
+    let provider_settings = state.provider_settings.lock().unwrap().clone();
+    let conversation_request = {
+        let mut sessions = state.planner_sessions.lock().unwrap();
+        let session = sessions
+            .get_mut(&session_id)
+            .ok_or_else(|| ApiError::not_found(format!("session '{session_id}' was not found")))?;
+        let mode = requested_mode
+            .as_deref()
+            .map(|mode| normalize_planner_mode(Some(mode)))
+            .unwrap_or_else(|| normalize_planner_mode(Some(&session.mode)));
+        session.mode = mode.clone();
+        PlannerConversationRequest {
+            session_id: session.session_id.clone(),
+            workflow_id: session.workflow_id.clone(),
+            mode: mode.clone(),
+            message: request.message.clone(),
+            confirmed,
+            history: session.turns.clone(),
+            current_plan: session.plan_draft.clone(),
+            provider_settings,
+        }
+    };
+
+    let engine = ModelPlannerConversationEngine::new();
+    let planner_response = engine
+        .respond(conversation_request)
+        .await
+        .map_err(ApiError::internal)?;
+
     let mut sessions = state.planner_sessions.lock().unwrap();
     let session = sessions
         .get_mut(&session_id)
         .ok_or_else(|| ApiError::not_found(format!("session '{session_id}' was not found")))?;
-    let user_turn = PlannerChatTurn {
+    let mode = requested_mode
+        .as_deref()
+        .map(|mode| normalize_planner_mode(Some(mode)))
+        .unwrap_or_else(|| normalize_planner_mode(Some(&session.mode)));
+    session.mode = mode;
+    session.turns.push(PlannerChatTurn {
         role: "user".to_owned(),
-        content: request.message.clone(),
-    };
-    session.turns.push(user_turn);
-    let ready = request.message.to_ascii_lowercase().contains("ready");
-    session.ready = session.ready || ready;
-    let execution_allowed =
-        session.mode == "work" && session.ready && request.confirmed == Some(true);
-    let assistant = if session.mode == "discuss" {
-        "Discuss mode recorded the turn without starting execution.".to_owned()
-    } else if execution_allowed {
-        "Work mode is confirmed and ready for run creation.".to_owned()
-    } else {
-        "Work mode needs a ready task state and explicit confirmation before execution.".to_owned()
-    };
+        content: request.message,
+    });
     session.turns.push(PlannerChatTurn {
         role: "assistant".to_owned(),
-        content: assistant.clone(),
+        content: planner_response.assistant_message.clone(),
     });
+    session.plan_draft = planner_response.plan_draft.clone();
+    session.readiness = planner_response.readiness;
+    session.ready = planner_response.readiness == PlannerReadiness::Ready;
+    session.open_questions = planner_response.open_questions.clone();
+    session.acceptance_criteria = planner_response.acceptance_criteria.clone();
+    session.risks = planner_response.risks.clone();
+    let execution_allowed = planner_response.should_start_workflow;
+    let run_preview = if session.mode == "work" {
+        Some(json!({
+            "status": if session.ready { "ready" } else { "blocked" },
+            "requires_confirmation": session.ready,
+            "workflow_id": session.workflow_id,
+            "readiness": session.readiness,
+            "open_questions": session.open_questions,
+            "acceptance_criteria": session.acceptance_criteria,
+            "risks": session.risks,
+            "plan_draft": session.plan_draft
+        }))
+    } else {
+        None
+    };
     Ok(Json(PlannerChatTurnResponse {
         session: session.clone(),
-        assistant_message: assistant,
+        assistant_message: planner_response.assistant_message,
+        plan_draft: planner_response.plan_draft,
+        readiness: planner_response.readiness,
+        open_questions: planner_response.open_questions,
+        acceptance_criteria: planner_response.acceptance_criteria,
+        risks: planner_response.risks,
+        suggested_mode: planner_response.suggested_mode,
+        should_start_workflow: planner_response.should_start_workflow,
         ready: session.ready,
         execution_allowed,
-        run_preview: if session.mode == "work" {
-            Some(json!({
-                "status": if session.ready { "ready" } else { "blocked" },
-                "requires_confirmation": session.ready,
-                "workflow_id": session.workflow_id
-            }))
-        } else {
-            None
-        },
+        run_preview,
     }))
 }
 
@@ -1225,7 +1278,19 @@ async fn run_workflow(
     State(state): State<ApiState>,
     Json(request): Json<MockRunRequest>,
 ) -> Result<Json<MockRunResponse>, ApiError> {
-    run_mock_workflow(State(state), Json(request)).await
+    let mut options = WorkflowRunOptions::new(&request.workflow_id, &request.task);
+    if let Some(repo_root) = &request.repo_root {
+        options.repo_root = PathBuf::from(repo_root);
+    }
+    options.plan_context = request.plan_context.clone();
+    let runner = WorkflowRunner::new(request.config, state.store);
+    let output = runner.run(options).await?;
+    Ok(Json(MockRunResponse {
+        run_id: output.run_id.to_string(),
+        report_ref: output.report_ref,
+        report: output.report,
+        events_url: format!("/api/v3/runs/{}/events", output.run_id.as_str()),
+    }))
 }
 
 async fn preview_run(Json(request): Json<RunPreviewRequest>) -> Json<RunPreviewResponse> {
@@ -1869,6 +1934,14 @@ pub struct PlannerChatSession {
     pub workflow_id: String,
     pub mode: String,
     pub ready: bool,
+    pub readiness: PlannerReadiness,
+    pub plan_draft: Option<PlanDraft>,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
     pub turns: Vec<PlannerChatTurn>,
 }
 
@@ -1893,15 +1966,89 @@ pub struct PlannerChatSessionResponse {
 pub struct PlannerChatTurnRequest {
     pub message: String,
     pub confirmed: Option<bool>,
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct PlannerChatTurnResponse {
     pub session: PlannerChatSession,
     pub assistant_message: String,
+    pub plan_draft: Option<PlanDraft>,
+    pub readiness: PlannerReadiness,
+    pub open_questions: Vec<String>,
+    pub acceptance_criteria: Vec<String>,
+    pub risks: Vec<String>,
+    pub suggested_mode: String,
+    pub should_start_workflow: bool,
     pub ready: bool,
     pub execution_allowed: bool,
     pub run_preview: Option<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannerReadiness {
+    Ready,
+    NeedsClarification,
+    Blocked,
+    Casual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanDraft {
+    pub goal: String,
+    #[serde(default)]
+    pub scope: Vec<String>,
+    #[serde(default)]
+    pub non_goals: Vec<String>,
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    #[serde(default)]
+    pub steps: Vec<String>,
+    #[serde(default)]
+    pub affected_paths: Vec<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
+    pub selected_workflow_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlannerConversationRequest {
+    pub session_id: String,
+    pub workflow_id: String,
+    pub mode: String,
+    pub message: String,
+    pub confirmed: bool,
+    pub history: Vec<PlannerChatTurn>,
+    pub current_plan: Option<PlanDraft>,
+    pub provider_settings: ProviderSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannerConversationResponse {
+    pub assistant_message: String,
+    pub plan_draft: Option<PlanDraft>,
+    pub readiness: PlannerReadiness,
+    #[serde(default)]
+    pub open_questions: Vec<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub risks: Vec<String>,
+    pub suggested_mode: String,
+    pub should_start_workflow: bool,
+}
+
+#[async_trait]
+pub trait PlannerConversationEngine {
+    async fn respond(
+        &self,
+        request: PlannerConversationRequest,
+    ) -> Result<PlannerConversationResponse, String>;
 }
 
 #[derive(Debug, Deserialize)]
@@ -2203,6 +2350,8 @@ pub struct MockRunRequest {
     pub config: ProjectConfig,
     pub workflow_id: String,
     pub task: String,
+    pub repo_root: Option<String>,
+    pub plan_context: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2775,6 +2924,468 @@ fn normalize_provider(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
+fn normalize_planner_mode(value: Option<&str>) -> String {
+    if value
+        .map(|item| item.trim().eq_ignore_ascii_case("work"))
+        .unwrap_or(false)
+    {
+        "work".to_owned()
+    } else {
+        "discuss".to_owned()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct DeterministicPlannerConversationEngine;
+
+#[async_trait]
+impl PlannerConversationEngine for DeterministicPlannerConversationEngine {
+    async fn respond(
+        &self,
+        request: PlannerConversationRequest,
+    ) -> Result<PlannerConversationResponse, String> {
+        Ok(deterministic_planner_response(&request, None))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ModelPlannerConversationEngine {
+    fallback: DeterministicPlannerConversationEngine,
+}
+
+impl ModelPlannerConversationEngine {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    async fn live_assistant_message(
+        &self,
+        request: &PlannerConversationRequest,
+    ) -> Result<Option<String>, String> {
+        if request.provider_settings.mock_mode {
+            return Ok(None);
+        }
+        let provider = normalize_provider(&request.provider_settings.default_provider);
+        let env_keys = provider_env_keys();
+        let key_env = env_keys
+            .get(&provider)
+            .map(String::as_str)
+            .unwrap_or("CODER_API_KEY");
+        let api_key = env::var(key_env)
+            .or_else(|_| env::var("CODER_API_KEY"))
+            .map_err(|_| "planner model credential is not configured in the environment")?;
+        if api_key.trim().is_empty() {
+            return Ok(None);
+        }
+        let base_url = provider_base_url(&request.provider_settings, &provider)
+            .unwrap_or_else(|| "https://api.openai.com/v1".to_owned());
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": "You are the Coder Planner. Discuss, clarify, identify risks, draft concise plans, and never claim that Discuss mode started execution."
+        })];
+        for turn in request
+            .history
+            .iter()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            let role = if turn.role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
+            messages.push(json!({
+                "role": role,
+                "content": &turn.content
+            }));
+        }
+        messages.push(json!({
+            "role": "user",
+            "content": &request.message
+        }));
+        let client = Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .map_err(|error| error.to_string())?;
+        let response = client
+            .post(url)
+            .bearer_auth(api_key)
+            .json(&json!({
+                "model": &request.provider_settings.default_model,
+                "messages": messages,
+                "temperature": 0.2
+            }))
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("planner model returned HTTP {}", response.status()));
+        }
+        let payload: Value = response.json().await.map_err(|error| error.to_string())?;
+        Ok(payload
+            .get("choices")
+            .and_then(Value::as_array)
+            .and_then(|choices| choices.first())
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(str::to_owned))
+    }
+}
+
+#[async_trait]
+impl PlannerConversationEngine for ModelPlannerConversationEngine {
+    async fn respond(
+        &self,
+        request: PlannerConversationRequest,
+    ) -> Result<PlannerConversationResponse, String> {
+        let model_message = self.live_assistant_message(&request).await.ok().flatten();
+        if model_message.is_some() {
+            return Ok(deterministic_planner_response(&request, model_message));
+        }
+        self.fallback.respond(request).await
+    }
+}
+
+fn deterministic_planner_response(
+    request: &PlannerConversationRequest,
+    model_message: Option<String>,
+) -> PlannerConversationResponse {
+    let mode = normalize_planner_mode(Some(&request.mode));
+    let work_like = message_looks_like_work(&request.message) || request.current_plan.is_some();
+    if mode == "discuss" && !work_like {
+        let assistant_message = model_message.unwrap_or_else(|| {
+            "I can discuss that. If you want repository work later, I will first turn it into a scoped plan and keep execution in Work mode.".to_owned()
+        });
+        return PlannerConversationResponse {
+            assistant_message,
+            plan_draft: request.current_plan.clone(),
+            readiness: PlannerReadiness::Casual,
+            open_questions: Vec::new(),
+            acceptance_criteria: Vec::new(),
+            risks: Vec::new(),
+            suggested_mode: "discuss".to_owned(),
+            should_start_workflow: false,
+        };
+    }
+
+    let plan = planner_plan_draft(request);
+    let readiness = if plan.open_questions.is_empty() {
+        PlannerReadiness::Ready
+    } else {
+        PlannerReadiness::NeedsClarification
+    };
+    let should_start_workflow =
+        mode == "work" && readiness == PlannerReadiness::Ready && request.confirmed;
+    let assistant_message = model_message.unwrap_or_else(|| {
+        deterministic_planner_message(&mode, &plan, readiness, request.confirmed)
+    });
+
+    PlannerConversationResponse {
+        assistant_message,
+        open_questions: plan.open_questions.clone(),
+        acceptance_criteria: plan.acceptance_criteria.clone(),
+        risks: plan.risks.clone(),
+        suggested_mode: if readiness == PlannerReadiness::Ready {
+            "work".to_owned()
+        } else {
+            "discuss".to_owned()
+        },
+        should_start_workflow,
+        readiness,
+        plan_draft: Some(plan),
+    }
+}
+
+fn deterministic_planner_message(
+    mode: &str,
+    plan: &PlanDraft,
+    readiness: PlannerReadiness,
+    confirmed: bool,
+) -> String {
+    if readiness == PlannerReadiness::NeedsClarification {
+        return format!(
+            "I can plan this, but I need clarification before Work mode can run:\n{}",
+            numbered_lines(&plan.open_questions)
+        );
+    }
+    if mode == "work" && confirmed {
+        return format!(
+            "Work mode is confirmed. I will run workflow '{}' with the current plan and report back with evidence against the acceptance criteria.",
+            plan.selected_workflow_id
+        );
+    }
+    if mode == "work" {
+        return format!(
+            "The plan is ready, but I need explicit confirmation before starting workflow '{}'. Acceptance criteria:\n{}",
+            plan.selected_workflow_id,
+            numbered_lines(&plan.acceptance_criteria)
+        );
+    }
+    format!(
+        "I have enough information to draft a plan. Goal: {}\nAcceptance criteria:\n{}\nSwitch to Work mode when you want me to execute it.",
+        plan.goal,
+        numbered_lines(&plan.acceptance_criteria)
+    )
+}
+
+fn planner_plan_draft(request: &PlannerConversationRequest) -> PlanDraft {
+    let current = request.current_plan.clone();
+    let affected_paths = unique_strings(extract_affected_paths(&request.message));
+    let acceptance_criteria = {
+        let parsed = unique_strings(extract_acceptance_criteria(&request.message));
+        if !parsed.is_empty() {
+            parsed
+        } else {
+            current
+                .as_ref()
+                .map(|plan| plan.acceptance_criteria.clone())
+                .filter(|items| !items.is_empty())
+                .unwrap_or_else(|| {
+                    vec!["The workflow ends with an evidence-backed final report.".to_owned()]
+                })
+        }
+    };
+    let mut open_questions = Vec::new();
+    if affected_paths.is_empty()
+        && current
+            .as_ref()
+            .map(|plan| plan.affected_paths.is_empty() && plan.scope.is_empty())
+            .unwrap_or(true)
+        && !message_has_whole_repo_scope(&request.message)
+    {
+        open_questions
+            .push("Which path, module, or repository scope should I focus on?".to_owned());
+    }
+    if acceptance_criteria.is_empty() {
+        open_questions
+            .push("Which checks or acceptance criteria should prove completion?".to_owned());
+    }
+    if request.message.trim().len() < 12 {
+        open_questions
+            .push("What exact change or investigation should the workflow perform?".to_owned());
+    }
+    open_questions = unique_strings(open_questions);
+    let goal = extract_goal(&request.message)
+        .or_else(|| current.as_ref().map(|plan| plan.goal.clone()))
+        .unwrap_or_else(|| "Complete the requested repository work.".to_owned());
+    let scope = if affected_paths.is_empty() {
+        current
+            .as_ref()
+            .map(|plan| plan.scope.clone())
+            .unwrap_or_default()
+    } else {
+        affected_paths.clone()
+    };
+    let risks = {
+        let parsed = unique_strings(extract_risks(&request.message));
+        if !parsed.is_empty() {
+            parsed
+        } else {
+            current
+                .as_ref()
+                .map(|plan| plan.risks.clone())
+                .filter(|items| !items.is_empty())
+                .unwrap_or_else(|| {
+                    vec!["Behavior may change if the affected scope is too broad.".to_owned()]
+                })
+        }
+    };
+    PlanDraft {
+        goal,
+        scope,
+        non_goals: current
+            .as_ref()
+            .map(|plan| plan.non_goals.clone())
+            .unwrap_or_else(|| vec!["Do not change unrelated product surfaces.".to_owned()]),
+        assumptions: current
+            .as_ref()
+            .map(|plan| plan.assumptions.clone())
+            .unwrap_or_else(|| {
+                vec![
+                    "Normal validation must stay offline.".to_owned(),
+                    "Current repo evidence overrides stale memory.".to_owned(),
+                ]
+            }),
+        steps: plan_steps_for(&request.message),
+        affected_paths,
+        acceptance_criteria,
+        risks,
+        open_questions,
+        selected_workflow_id: request.workflow_id.clone(),
+    }
+}
+
+fn numbered_lines(items: &[String]) -> String {
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| format!("{}. {}", index + 1, item))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn message_looks_like_work(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    let work_markers = [
+        "add",
+        "build",
+        "change",
+        "check",
+        "code",
+        "delete",
+        "fix",
+        "implement",
+        "inspect",
+        "plan",
+        "patch",
+        "refactor",
+        "repo",
+        "run",
+        "test",
+        "update",
+        "work",
+        "workflow",
+    ];
+    work_markers.iter().any(|marker| lower.contains(marker))
+        || !extract_affected_paths(message).is_empty()
+}
+
+fn message_has_whole_repo_scope(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("whole repo") || lower.contains("entire repo") || lower.contains("project")
+}
+
+fn extract_goal(message: &str) -> Option<String> {
+    message
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| {
+            line.trim_matches(|ch: char| ch == '"' || ch == '\'')
+                .to_owned()
+        })
+        .filter(|line| !line.is_empty())
+}
+
+fn extract_affected_paths(message: &str) -> Vec<String> {
+    message
+        .split_whitespace()
+        .filter_map(|token| {
+            let cleaned = token
+                .trim_matches(|ch: char| {
+                    matches!(ch, ',' | ';' | ':' | ')' | '(' | '[' | ']' | '"' | '\'')
+                })
+                .replace('\\', "/");
+            let lower = cleaned.to_ascii_lowercase();
+            let path_like = cleaned.contains('/')
+                || [
+                    ".rs", ".tsx", ".ts", ".js", ".jsx", ".md", ".toml", ".yaml", ".yml", ".json",
+                    ".css", ".ps1", ".sh",
+                ]
+                .iter()
+                .any(|suffix| lower.ends_with(suffix));
+            if path_like && !cleaned.contains("://") {
+                Some(cleaned)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn extract_acceptance_criteria(message: &str) -> Vec<String> {
+    let mut criteria = Vec::new();
+    for line in message.lines().map(str::trim) {
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower
+            .find("acceptance:")
+            .or_else(|| lower.find("success criteria:"))
+            .and_then(|index| line.get(index..))
+        {
+            let value = rest
+                .split_once(':')
+                .map(|(_, right)| right.trim())
+                .unwrap_or_default();
+            if !value.is_empty() {
+                criteria.extend(split_list_like(value));
+            }
+        }
+    }
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("test") {
+        criteria.push("Relevant tests pass.".to_owned());
+    }
+    if lower.contains("build") {
+        criteria.push("The build passes.".to_owned());
+    }
+    criteria
+}
+
+fn extract_risks(message: &str) -> Vec<String> {
+    let mut risks = Vec::new();
+    for line in message.lines().map(str::trim) {
+        let lower = line.to_ascii_lowercase();
+        if let Some(rest) = lower
+            .find("risk:")
+            .or_else(|| lower.find("risks:"))
+            .and_then(|index| line.get(index..))
+        {
+            let value = rest
+                .split_once(':')
+                .map(|(_, right)| right.trim())
+                .unwrap_or_default();
+            if !value.is_empty() {
+                risks.extend(split_list_like(value));
+            }
+        }
+    }
+    risks
+}
+
+fn split_list_like(value: &str) -> Vec<String> {
+    value
+        .split([';', '|'])
+        .map(|item| item.trim().trim_start_matches('-').trim())
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn plan_steps_for(message: &str) -> Vec<String> {
+    let mut steps = vec![
+        "Confirm the scoped goal and acceptance criteria.".to_owned(),
+        "Gather bounded repository evidence for the affected scope.".to_owned(),
+        "Execute the selected workflow through role-specific harnesses.".to_owned(),
+        "Report checks, evidence, patches, blockers, and next steps.".to_owned(),
+    ];
+    if message.to_ascii_lowercase().contains("refactor") {
+        steps.insert(2, "Preserve behavior while changing structure.".to_owned());
+    }
+    steps
+}
+
+fn unique_strings(items: Vec<String>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let item = item.trim().to_owned();
+            if item.is_empty() || !seen.insert(item.clone()) {
+                None
+            } else {
+                Some(item)
+            }
+        })
+        .collect()
+}
+
 fn clean_provider_string_map(values: BTreeMap<String, String>) -> BTreeMap<String, String> {
     values
         .into_iter()
@@ -3322,8 +3933,14 @@ mod tests {
         .await;
         assert_eq!(turn_response.status(), StatusCode::OK);
         let turn_body = response_json(turn_response).await;
-        assert_eq!(turn_body["ready"], true);
+        assert_ne!(
+            turn_body["assistant_message"],
+            "Discuss mode recorded the turn without starting execution."
+        );
+        assert_eq!(turn_body["ready"], false);
+        assert_eq!(turn_body["readiness"], "needs_clarification");
         assert_eq!(turn_body["execution_allowed"], false);
+        assert_eq!(turn_body["should_start_workflow"], false);
         assert_eq!(turn_body["run_preview"], Value::Null);
     }
 
@@ -3355,33 +3972,42 @@ mod tests {
         .await;
         let unready = response_json(unready_response).await;
         assert_eq!(unready["execution_allowed"], false);
+        assert_eq!(unready["should_start_workflow"], false);
         assert_eq!(unready["run_preview"]["status"], "blocked");
+        assert!(!unready["open_questions"].as_array().unwrap().is_empty());
 
         let unconfirmed_response = post_json(
             app.clone(),
             &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
             json!({
-                "message": "ready to run",
+                "message": "ready to run for crates/coder-server/src/lib.rs acceptance: cargo test passes",
                 "confirmed": false
             }),
         )
         .await;
         let unconfirmed = response_json(unconfirmed_response).await;
         assert_eq!(unconfirmed["ready"], true);
+        assert_eq!(unconfirmed["readiness"], "ready");
         assert_eq!(unconfirmed["execution_allowed"], false);
+        assert_eq!(unconfirmed["should_start_workflow"], false);
         assert_eq!(unconfirmed["run_preview"]["requires_confirmation"], true);
 
         let confirmed_response = post_json(
             app,
             &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
             json!({
-                "message": "ready and confirmed",
+                "message": "ready and confirmed for crates/coder-server/src/lib.rs acceptance: cargo test passes",
                 "confirmed": true
             }),
         )
         .await;
         let confirmed = response_json(confirmed_response).await;
         assert_eq!(confirmed["execution_allowed"], true);
+        assert_eq!(confirmed["should_start_workflow"], true);
+        assert_eq!(
+            confirmed["plan_draft"]["affected_paths"][0],
+            "crates/coder-server/src/lib.rs"
+        );
     }
 
     #[tokio::test]
@@ -4389,6 +5015,67 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(codes.contains(&"workflow_not_found"));
         assert!(codes.contains(&"task_empty"));
+    }
+
+    #[tokio::test]
+    async fn run_endpoint_uses_workflow_runner_and_plan_context() {
+        let root = temp_root();
+        fs::create_dir_all(&root).unwrap();
+        let store_root = temp_root();
+        let mut config: ProjectConfig =
+            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
+        for harness in config.harnesses.values_mut() {
+            harness.backend = "native-rust".to_owned();
+            harness.openhands = None;
+        }
+        let app = router(ApiState::new(RunStore::new(&store_root)));
+
+        let response = post_json(
+            app,
+            "/api/v3/runs",
+            json!({
+                "config": config,
+                "workflow_id": "planner-led",
+                "task": "Inspect project scope acceptance: evidence report exists",
+                "repo_root": root.display().to_string(),
+                "plan_context": {
+                    "original_user_request": "Inspect project scope",
+                    "planner_conversation_summary": "Ready to inspect project scope.",
+                    "plan_draft": {
+                        "goal": "Inspect project scope",
+                        "scope": ["."],
+                        "non_goals": [],
+                        "assumptions": [],
+                        "steps": ["Inspect", "Report"],
+                        "affected_paths": ["."],
+                        "acceptance_criteria": ["evidence report exists"],
+                        "risks": [],
+                        "open_questions": [],
+                        "selected_workflow_id": "planner-led"
+                    },
+                    "acceptance_criteria": ["evidence report exists"],
+                    "risks": [],
+                    "affected_paths": ["."],
+                    "selected_workflow_id": "planner-led"
+                }
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["run_id"].as_str().unwrap().len() > 8);
+        assert!(body["report"]["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check.as_str() == Some("acceptance: evidence report exists")));
+        assert!(body["report_ref"]
+            .as_str()
+            .unwrap()
+            .ends_with("/final-report.json"));
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(store_root);
     }
 
     #[tokio::test]

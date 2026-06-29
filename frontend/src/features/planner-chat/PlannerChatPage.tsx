@@ -256,15 +256,33 @@ export function PlannerChatPage({
 
 function PlannerTaskStateSummary({ session }: { session: PlannerChatSession }) {
   const state = session.task_state;
-  const criteria = state.success_criteria.length;
-  const questions = state.open_questions.length;
 
   return (
-    <div className="planner-state-strip">
-      <span>{session.interaction_mode === "work" ? "Work" : "Discuss"}</span>
-      <span>{state.readiness.replaceAll("_", " ")}</span>
-      <span>{criteria} criteria</span>
-      <span>{questions} questions</span>
+    <div className="planner-state-card">
+      <div className="planner-state-strip">
+        <span>{session.interaction_mode === "work" ? "Work" : "Discuss"}</span>
+        <span>{state.readiness.replaceAll("_", " ")}</span>
+        <span>{state.success_criteria.length} criteria</span>
+        <span>{state.open_questions.length} questions</span>
+      </div>
+      {state.goal && <p className="planner-goal">{state.goal}</p>}
+      <PlannerStateList title="Open questions" items={state.open_questions} />
+      <PlannerStateList title="Acceptance" items={state.success_criteria} />
+      <PlannerStateList title="Risks" items={state.risks} />
+    </div>
+  );
+}
+
+function PlannerStateList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="planner-state-list">
+      <span>{title}</span>
+      <ul>
+        {items.slice(0, 4).map((item, index) => (
+          <li key={`${title}-${index}`}>{item}</li>
+        ))}
+      </ul>
     </div>
   );
 }

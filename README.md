@@ -1,6 +1,7 @@
 # Coder
 
-Coder is a Rust v3 control-plane coding workbench with a React frontend.
+Coder is a Planner-first coding workbench with a React frontend and a Rust API
+v3 runtime/control plane.
 
 Current `main` is Rust-only. The supported product path is the Rust API v3
 server, the React workflow canvas, Rust workflow/agent/harness execution, run
@@ -14,22 +15,39 @@ tag `pre-rust-only-legacy-v2`.
 ## Product Path
 
 ```text
-User request
--> Planner Chat
--> Rust API v3 run preview / confirmation
+User talks to Planner first
+-> Discuss mode clarifies scope, risks, acceptance criteria, and plan draft
+-> Work mode validates readiness and confirmation
 -> WorkflowRunner
--> native Rust or OpenHands harness backend
--> stored events / evidence-backed final_report
+-> HarnessSpec selects native Rust or OpenHands backend
+-> agents run inside role-specific tools, permissions, memory, and verification
+-> stored events, approvals, evidence, patches, checks, and final_report
 ```
 
-Planning Chat Discuss mode does not start execution. Work mode can start a Rust
-run only after readiness and confirmation gates pass.
+Discuss mode is real Planner conversation. It can answer casual questions,
+ask clarification questions, and maintain a plan draft, but it does not write
+files, run commands, or start workflows. Work mode can start a Rust run only
+after readiness and confirmation gates pass, and it passes the structured plan
+context into workflow execution.
+
+Harnesses are the execution boundary. A harness controls backend selection,
+tools, permissions, sandbox policy, memory scope, approvals, verification, event
+capture, and evidence. Each agent is expected to be Codex-grade inside its
+role-specific harness, meaning runtime claims must be backed by tool events,
+repo evidence, patch refs, command checks, or stored raw backend events.
+
+OpenHands is the preferred execution backend when available for coding-agent
+runtime behavior such as terminal/file/task execution. Coder owns the product
+control plane: Planner conversation, workflow graph, Agent/Harness specs,
+permission policy, approvals, event normalization, evidence storage, final
+reports, and the React product UI.
 
 Rust v3 covers the ordinary product surface behind the React UI:
 
 - health, capabilities, and role cards
 - workflow validation, import/export, and library storage
-- Planner Chat sessions and run preview/confirmation
+- Planner Chat sessions, structured plan drafts, readiness, and
+  run preview/confirmation
 - stored run inspection, events, reports, artifacts, blobs, and repo evidence
 - repo, command, patch, MCP, skills, extensions, provider settings, and memory
   APIs
@@ -118,9 +136,9 @@ cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8766
 
 ## OpenHands
 
-OpenHands remains an optional external backend. Without credentials or the
-runtime flag, local development can use the internal fallback provider or Rust
-mock workflow path.
+OpenHands remains an optional external backend. Without a running OpenHands
+server, local development can use native Rust fallback capabilities and the
+mock workflow endpoint used by smoke tests.
 
 For local OpenHands smoke tests, prefer environment variables rather than
 committed files:

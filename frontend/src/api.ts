@@ -97,10 +97,28 @@ interface RustPlannerChatSession {
   workflow_id: string;
   mode: PlannerInteractionMode | string;
   ready: boolean;
+  readiness?: "ready" | "needs_clarification" | "blocked" | "casual" | string;
+  plan_draft?: RustPlannerPlanDraft | null;
+  open_questions?: string[];
+  acceptance_criteria?: string[];
+  risks?: string[];
   turns: Array<{
     role: string;
     content: string;
   }>;
+}
+
+interface RustPlannerPlanDraft {
+  goal: string;
+  scope?: string[];
+  non_goals?: string[];
+  assumptions?: string[];
+  steps?: string[];
+  affected_paths?: string[];
+  acceptance_criteria?: string[];
+  risks?: string[];
+  open_questions?: string[];
+  selected_workflow_id: string;
 }
 
 interface RustPlannerChatSessionResponse {
@@ -110,6 +128,13 @@ interface RustPlannerChatSessionResponse {
 interface RustPlannerChatTurnResponse {
   session: RustPlannerChatSession;
   assistant_message: string;
+  plan_draft?: RustPlannerPlanDraft | null;
+  readiness?: "ready" | "needs_clarification" | "blocked" | "casual" | string;
+  open_questions?: string[];
+  acceptance_criteria?: string[];
+  risks?: string[];
+  suggested_mode?: PlannerInteractionMode | string;
+  should_start_workflow?: boolean;
   ready: boolean;
   execution_allowed: boolean;
   run_preview?: {
@@ -140,6 +165,16 @@ interface RustRunResponse {
     status?: string;
   };
   events_url?: string;
+}
+
+interface RustPlannerRunContext {
+  original_user_request: string;
+  planner_conversation_summary: string;
+  plan_draft: RustPlannerPlanDraft | null;
+  acceptance_criteria: string[];
+  risks: string[];
+  affected_paths: string[];
+  selected_workflow_id: string;
 }
 
 interface PlannerSessionContext {
@@ -792,7 +827,28 @@ async function confirmRustPlannerChatDraft(input: {
     body: JSON.stringify({
       config: context.config,
       workflow_id: context.workflowId,
-      task: editedRequest
+      task: editedRequest,
+      repo_root: context.repo,
+      plan_context: {
+        original_user_request: editedRequest,
+        planner_conversation_summary: "Planner draft confirmed by the user.",
+        plan_draft: {
+          goal: editedRequest,
+          scope: context.scopes,
+          non_goals: [],
+          assumptions: [],
+          steps: ["Run the selected workflow.", "Report evidence and checks."],
+          affected_paths: context.scopes,
+          acceptance_criteria: ["Run completes with an evidence-backed final report."],
+          risks: [],
+          open_questions: [],
+          selected_workflow_id: context.workflowId
+        },
+        acceptance_criteria: ["Run completes with an evidence-backed final report."],
+        risks: [],
+        affected_paths: context.scopes,
+        selected_workflow_id: context.workflowId
+      }
     })
   });
   rustPlannerDraftContexts.delete(input.draft_id);
@@ -859,7 +915,8 @@ async function sendRustPlannerChatTurn(input: {
       headers: jsonHeaders,
       body: JSON.stringify({
         message: input.message,
-        confirmed: input.start_if_ready ?? false
+        confirmed: input.start_if_ready ?? false,
+        mode: input.interaction_mode
       })
     }
   );
@@ -868,14 +925,19 @@ async function sendRustPlannerChatTurn(input: {
   const turn = mapRustPlannerTurn(payload, input.message, context);
   let runId: string | null = null;
   let status = mappedSession.status;
-  if (payload.execution_allowed && context) {
+  const shouldStart = Boolean(payload.should_start_workflow ?? payload.execution_allowed);
+  if (shouldStart && context) {
+    const planDraft = payload.plan_draft ?? payload.session.plan_draft ?? null;
+    const planContext = rustPlannerRunContext(payload, input.message, planDraft);
     const response = await requestJson<RustRunResponse>("/api/v3/runs", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({
         config: legacyCanvasToWorkflowSpec(context.agentWorkflow),
         workflow_id: context.workflowId,
-        task: input.message
+        task: taskFromPlannerPlan(input.message, planDraft),
+        repo_root: context.repo ?? ".",
+        plan_context: planContext
       })
     });
     runId = response.run_id;
@@ -897,6 +959,7 @@ async function sendRustPlannerChatTurn(input: {
 }
 
 async function startRustAgentRun(input: {
+  repo?: string;
   request: string;
   agent_workflow: AgentWorkflowSpec;
 }): Promise<{ run_id: string; status: string; events_url: string; result_url: string }> {
@@ -907,7 +970,17 @@ async function startRustAgentRun(input: {
     body: JSON.stringify({
       config,
       workflow_id: input.agent_workflow.id,
-      task: input.request
+      task: input.request,
+      repo_root: input.repo ?? ".",
+      plan_context: {
+        original_user_request: input.request,
+        planner_conversation_summary: "Run started from direct agent run entry point.",
+        plan_draft: null,
+        acceptance_criteria: ["Run completes with an evidence-backed final report."],
+        risks: [],
+        affected_paths: [],
+        selected_workflow_id: input.agent_workflow.id
+      }
     })
   });
   return {
@@ -979,7 +1052,8 @@ function mapRustPlannerSession(
     content: turn.content
   }));
   const latestAssistant = [...session.turns].reverse().find((turn) => turn.role === "assistant");
-  const taskState = rustPlannerTaskState(session.ready, context?.scopes ?? []);
+  const taskState = rustPlannerTaskState(session, context?.scopes ?? []);
+  const ready = rustReadinessIsReady(session.readiness, session.ready);
   return {
     session_id: session.session_id,
     workflow_id: session.workflow_id,
@@ -999,24 +1073,24 @@ function mapRustPlannerSession(
           artifact_type: "planner_chat_turn",
           assistant_message: latestAssistant.content,
           interaction_mode: mode,
-          decision: session.ready ? "produce_plan" : "continue_chat",
+          decision: ready ? "produce_plan" : session.readiness === "casual" ? "answer_without_workflow" : "continue_chat",
           visible_thinking: {
-            phase: session.ready ? "ready_to_start" : "checking_readiness",
+            phase: ready ? "ready_to_start" : session.readiness === "casual" ? "understanding" : "checking_readiness",
             summary: latestAssistant.content
           },
           task_state: taskState,
-          handoff: session.ready
+          handoff: ready
             ? {
-                workflow_request: latestAssistant.content,
-                scope: context?.scopes ?? [],
-                success_criteria: [],
-                risks: []
+                workflow_request: session.plan_draft?.goal ?? latestAssistant.content,
+                scope: taskState.scope,
+                success_criteria: taskState.success_criteria,
+                risks: taskState.risks
               }
             : null
         }
       : null,
     run_id: null,
-    status: session.ready ? "ready" : "chatting"
+    status: ready ? "ready" : session.readiness === "blocked" ? "blocked" : "chatting"
   };
 }
 
@@ -1026,51 +1100,126 @@ function mapRustPlannerTurn(
   context?: PlannerSessionContext
 ): PlannerChatTurn {
   const mode = response.session.mode === "work" ? "work" : "discuss";
-  const taskState = rustPlannerTaskState(response.ready, context?.scopes ?? []);
+  const taskState = rustPlannerTaskState(
+    {
+      ...response.session,
+      readiness: response.readiness ?? response.session.readiness,
+      plan_draft: response.plan_draft ?? response.session.plan_draft,
+      open_questions: response.open_questions ?? response.session.open_questions,
+      acceptance_criteria: response.acceptance_criteria ?? response.session.acceptance_criteria,
+      risks: response.risks ?? response.session.risks
+    },
+    context?.scopes ?? []
+  );
+  const ready = rustReadinessIsReady(response.readiness, response.ready);
   return {
     artifact_type: "planner_chat_turn",
     assistant_message: response.assistant_message,
     interaction_mode: mode,
-    decision: response.execution_allowed
+    decision: response.should_start_workflow || response.execution_allowed
       ? "start_workflow"
-      : response.ready
+      : ready
         ? "produce_plan"
+        : response.readiness === "casual"
+          ? "answer_without_workflow"
         : "continue_chat",
     visible_thinking: {
-      phase: response.execution_allowed
+      phase: response.should_start_workflow || response.execution_allowed
         ? "ready_to_start"
-        : response.ready
+        : ready
           ? "checking_readiness"
+          : response.readiness === "casual"
+            ? "understanding"
           : "understanding",
       summary: response.assistant_message
     },
     task_state: taskState,
-    handoff: response.ready
+    handoff: ready
       ? {
-          workflow_request: userMessage,
-          scope: context?.scopes ?? [],
-          success_criteria: [],
-          risks: []
+          workflow_request: response.plan_draft?.goal ?? userMessage,
+          scope: taskState.scope,
+          success_criteria: taskState.success_criteria,
+          risks: taskState.risks
         }
       : null
   };
 }
 
-function rustPlannerTaskState(ready: boolean, scopes: string[]): PlannerChatSession["task_state"] {
+function rustPlannerTaskState(
+  session: Pick<
+    RustPlannerChatSession,
+    "ready" | "readiness" | "plan_draft" | "open_questions" | "acceptance_criteria" | "risks"
+  >,
+  fallbackScopes: string[]
+): PlannerChatSession["task_state"] {
+  const plan = session.plan_draft ?? null;
+  const openQuestions = session.open_questions ?? plan?.open_questions ?? [];
+  const acceptanceCriteria = session.acceptance_criteria ?? plan?.acceptance_criteria ?? [];
+  const risks = session.risks ?? plan?.risks ?? [];
+  const affectedPaths = plan?.affected_paths ?? [];
+  const scope = plan?.scope && plan.scope.length > 0 ? plan.scope : fallbackScopes;
   return {
-    goal: null,
-    user_intent: null,
-    scope: scopes,
+    goal: plan?.goal ?? null,
+    user_intent: plan?.goal ?? null,
+    scope,
     constraints: [],
-    success_criteria: [],
-    known_context: [],
-    missing_context: [],
-    open_questions: [],
-    assumptions: [],
-    risks: [],
-    plan_steps: [],
-    readiness: ready ? "ready_to_execute" : "needs_clarification"
+    success_criteria: acceptanceCriteria,
+    known_context: affectedPaths,
+    missing_context: openQuestions,
+    open_questions: openQuestions,
+    assumptions: plan?.assumptions ?? [],
+    risks,
+    plan_steps: (plan?.steps ?? []).map((summary, index) => ({
+      id: `step-${index + 1}`,
+      summary,
+      depends_on: index === 0 ? [] : [`step-${index}`],
+      status: rustReadinessIsReady(session.readiness, session.ready) ? "ready" : "draft"
+    })),
+    readiness: rustPlannerReadiness(session.readiness, session.ready)
   };
+}
+
+function rustReadinessIsReady(readiness: string | undefined, fallbackReady: boolean): boolean {
+  return readiness === "ready" || (!readiness && fallbackReady);
+}
+
+function rustPlannerReadiness(
+  readiness: string | undefined,
+  fallbackReady: boolean
+): PlannerChatSession["task_state"]["readiness"] {
+  if (readiness === "ready" || (!readiness && fallbackReady)) return "ready_to_execute";
+  if (readiness === "needs_clarification") return "needs_clarification";
+  if (readiness === "casual") return "not_ready";
+  return "not_ready";
+}
+
+function rustPlannerRunContext(
+  response: RustPlannerChatTurnResponse,
+  userMessage: string,
+  planDraft: RustPlannerPlanDraft | null
+): RustPlannerRunContext {
+  return {
+    original_user_request: userMessage,
+    planner_conversation_summary: response.assistant_message,
+    plan_draft: planDraft,
+    acceptance_criteria:
+      response.acceptance_criteria ?? planDraft?.acceptance_criteria ?? [],
+    risks: response.risks ?? planDraft?.risks ?? [],
+    affected_paths: planDraft?.affected_paths ?? [],
+    selected_workflow_id: planDraft?.selected_workflow_id ?? response.session.workflow_id
+  };
+}
+
+function taskFromPlannerPlan(userMessage: string, planDraft: RustPlannerPlanDraft | null): string {
+  if (!planDraft) return userMessage;
+  const lines = [
+    planDraft.goal,
+    planDraft.affected_paths?.length ? `Affected paths: ${planDraft.affected_paths.join(", ")}` : "",
+    planDraft.acceptance_criteria?.length
+      ? `Acceptance: ${planDraft.acceptance_criteria.join("; ")}`
+      : ""
+  ].filter(Boolean);
+  return lines.join("\n");
 }
 
 function normalizePlannerMessageRole(role: string): "user" | "assistant" | "system" {

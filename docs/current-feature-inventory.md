@@ -6,11 +6,11 @@ This inventory describes current Rust-only `main`.
 
 | Area | Current implementation | Status |
 |---|---|---|
-| Planner Chat | React Planner Chat page backed by Rust API v3 sessions, readiness, preview, and run start | Active |
+| Planner Chat | React Planner Chat page backed by Rust API v3 sessions, structured plan drafts, readiness, preview, and Work confirmation | Active |
 | Workflow canvas | React Agent Workflow editor with Rust workflow import/export and validation adapters | Active |
 | User-defined agents and workflows | `AgentWorkflowSpec` UI model mapped to Rust `ProjectConfig`, `AgentSpec`, `HarnessSpec`, and `WorkflowSpec` | Active |
-| Native Rust backend | Rust workflow runner, native/mock execution, tool registry, and report builder | Active |
-| OpenHands backend | Optional external backend through `coder-openhands` | Active |
+| Native Rust backend | Rust workflow runner fallback with repo, command, patch, approval, evidence, and report capabilities | Active |
+| OpenHands backend | Preferred external coding-agent runtime through `coder-openhands` when available | Active |
 | Run storage | Rust metadata, event, artifact, blob, checkpoint, and repo-evidence stores | Active |
 | Run controls | Rust pause, resume, cancel, heartbeat, listing, detail, event, and report endpoints | Active |
 | Final reports | Rust `FinalReport` from event and evidence refs | Active |
@@ -20,7 +20,7 @@ This inventory describes current Rust-only `main`.
 | Memory | Rust project memory load and write proposal events | Active |
 | Knowledge/RAG | Rust text import plus lexical, deterministic dense, and hybrid retrieval baselines | Active |
 | Skills/extensions | Rust installed/discover/update/install/enable/disable/remove/pin/unpin/rollback/update-policy APIs | Active |
-| MCP | Rust manifest validation, deny-by-default registry, and mock execution baseline | Active |
+| MCP | Rust manifest validation, deny-by-default registry, and mock execution baseline for CI/dev | Active |
 | Provider settings | Rust provider settings, redaction, status, and test endpoint | Active |
 | CLI | `coder-rust` doctor, config, workflow, run, server, OpenHands, tools, and evidence commands | Active |
 | Release/install | GitHub release workflow, PowerShell/POSIX installers, npm wrapper, and Homebrew template | Active |
@@ -34,7 +34,7 @@ Primary Rust API groups:
 
 - health, capabilities, and role cards
 - workflow validation, default workflow, and workflow library storage
-- Planner Chat sessions and turns
+- Planner Chat sessions, turns, plan drafts, readiness, and Work confirmation
 - run preview, start, list, detail, events, controls, reports, artifacts,
   checkpoints, blobs, and repo evidence
 - repo, command, patch, memory, knowledge, MCP, extensions, skills, and provider
@@ -48,3 +48,9 @@ current `main`. It remains available in git history at tag
 
 Current `main` does not maintain a Python/FastAPI v2 package, CI job, or
 frontend API selector.
+
+## Mock And Development Surfaces
+
+`/api/v3/runs/mock`, `NativeMockBackend`, and the local mock MCP operations are
+kept for deterministic CI, smoke tests, and development. They are not the
+ordinary product execution path. `/api/v3/runs` uses `WorkflowRunner`.
