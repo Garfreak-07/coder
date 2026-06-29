@@ -11,7 +11,7 @@ interface AppSidebarProps {
 const sectionLabels: Record<AppSection, string> = {
   chat: "Planner Chat",
   workflow: "Agent Workflow",
-  extensions: "Extensions",
+  extensions: "Plugins & Skills",
   settings: "Settings"
 };
 

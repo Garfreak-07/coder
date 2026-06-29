@@ -11,18 +11,28 @@ import type {
   InstalledSkillsPayload,
   LibraryIndex,
   LiveRunDetail,
+  CacheStatusResponse,
+  ChangeSetActionResponse,
+  ChangeSetDiffResponse,
+  HookSummary,
   PlannerChatConfirmResult,
   PlannerChatDraft,
   PlannerChatSession,
+  PlannerStartWorkResponse,
   PlannerChatTurn,
   PlannerChatTurnResponse,
   PlannerInteractionMode,
+  PluginMarketplace,
+  PluginMarketplaceListResponse,
+  PluginReadResponse,
   ProviderSettings,
   ProviderStatus,
+  RunChangeSetListResponse,
   PluginManifest,
   RoleCardSpec,
   RunEvent,
   RunEventsPage,
+  RunTimelineResponse,
   RunSummaryItem,
   RustRepoEvidenceResponse,
   RustCommandPreview,
@@ -405,6 +415,80 @@ export async function getRunEvents(runId: string, cursor = 0, limit = 200): Prom
   return rustRunEventsToRunEventsPage(payload, cursor, limit);
 }
 
+export function getRunTimeline(runId: string): Promise<RunTimelineResponse> {
+  return requestJson<RunTimelineResponse>(`/api/v3/runs/${encodeURIComponent(runId)}/timeline`);
+}
+
+export function getRunChangeSets(runId: string): Promise<RunChangeSetListResponse> {
+  return requestJson<RunChangeSetListResponse>(`/api/v3/runs/${encodeURIComponent(runId)}/changes`);
+}
+
+export function getChangeSetDiff(runId: string, changeSetId: string): Promise<ChangeSetDiffResponse> {
+  return requestJson<ChangeSetDiffResponse>(
+    `/api/v3/runs/${encodeURIComponent(runId)}/changes/${encodeURIComponent(changeSetId)}/diff`
+  );
+}
+
+export function acceptChangeSet(runId: string, changeSetId: string): Promise<ChangeSetActionResponse> {
+  return requestJson<ChangeSetActionResponse>(
+    `/api/v3/runs/${encodeURIComponent(runId)}/changes/${encodeURIComponent(changeSetId)}/accept`,
+    {
+      method: "POST",
+      headers: jsonHeaders
+    }
+  );
+}
+
+export function undoChangeSet(runId: string, changeSetId: string): Promise<ChangeSetActionResponse> {
+  return requestJson<ChangeSetActionResponse>(
+    `/api/v3/runs/${encodeURIComponent(runId)}/changes/${encodeURIComponent(changeSetId)}/undo`,
+    {
+      method: "POST",
+      headers: jsonHeaders
+    }
+  );
+}
+
+export function getPluginMarketplaces(): Promise<PluginMarketplaceListResponse> {
+  return requestJson<PluginMarketplaceListResponse>("/api/v3/plugins/marketplaces");
+}
+
+export function addPluginMarketplace(input: {
+  name: string;
+  url: string;
+  enabled?: boolean;
+}): Promise<{ status: string; marketplace: PluginMarketplace }> {
+  return requestJson("/api/v3/plugins/marketplaces", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input)
+  });
+}
+
+export function getPlugins(): Promise<{ plugins: PluginManifest[] }> {
+  return requestJson<{ plugins: PluginManifest[] }>("/api/v3/plugins");
+}
+
+export function getInstalledPlugins(): Promise<{ plugins: PluginManifest[] }> {
+  return requestJson<{ plugins: PluginManifest[] }>("/api/v3/plugins/installed");
+}
+
+export function getPlugin(pluginId: string): Promise<PluginReadResponse> {
+  return requestJson<PluginReadResponse>(`/api/v3/plugins/${encodeURIComponent(pluginId)}`);
+}
+
+export function getSkillExtraRoots(): Promise<{ roots: Array<{ path: string; scope: string; enabled: boolean }> }> {
+  return requestJson("/api/v3/skills/extra-roots");
+}
+
+export function getHooks(): Promise<{ hooks: HookSummary[] }> {
+  return requestJson<{ hooks: HookSummary[] }>("/api/v3/hooks");
+}
+
+export function getCacheStatus(): Promise<CacheStatusResponse> {
+  return requestJson<CacheStatusResponse>("/api/v3/cache/status");
+}
+
 export function getContextPacket(runId: string, packetId: string): Promise<ContextPacketDetail> {
   void runId;
   void packetId;
@@ -743,7 +827,7 @@ export function createPlannerChatSession(input: {
 export function sendPlannerChatTurn(input: {
   session_id: string;
   message: string;
-  interaction_mode: PlannerInteractionMode;
+  interaction_mode?: PlannerInteractionMode;
   start_if_ready?: boolean;
   repo?: string;
   workflow_id?: string;
@@ -755,6 +839,36 @@ export function sendPlannerChatTurn(input: {
   memory_pack_ids?: string[];
 }): Promise<PlannerChatTurnResponse> {
   return sendRustPlannerChatTurn(input);
+}
+
+export function startPlannerSessionWork(input: {
+  session_id: string;
+  repo?: string;
+  workflow_id: string;
+  planner_agent_id: string;
+  agent_workflow: AgentWorkflowSpec;
+  scopes: string[];
+  knowledge_pack_ids?: string[];
+  skill_pack_ids?: string[];
+  memory_pack_ids?: string[];
+}): Promise<PlannerStartWorkResponse> {
+  return requestJson<PlannerStartWorkResponse>(
+    `/api/v3/planner-chat/sessions/${encodeURIComponent(input.session_id)}/start-work`,
+    {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({
+        repo: input.repo,
+        workflow_id: input.workflow_id,
+        planner_agent_id: input.planner_agent_id,
+        config: legacyCanvasToWorkflowSpec(input.agent_workflow),
+        scopes: input.scopes,
+        knowledge_pack_ids: input.knowledge_pack_ids ?? [],
+        skill_pack_ids: input.skill_pack_ids ?? [],
+        memory_pack_ids: input.memory_pack_ids ?? []
+      })
+    }
+  );
 }
 
 export function getPlannerChatSession(sessionId: string): Promise<PlannerChatSession> {
@@ -903,7 +1017,7 @@ async function getRustPlannerChatSession(sessionId: string): Promise<PlannerChat
 async function sendRustPlannerChatTurn(input: {
   session_id: string;
   message: string;
-  interaction_mode: PlannerInteractionMode;
+  interaction_mode?: PlannerInteractionMode;
   start_if_ready?: boolean;
   repo?: string;
   workflow_id?: string;
@@ -925,8 +1039,8 @@ async function sendRustPlannerChatTurn(input: {
       headers: jsonHeaders,
       body: JSON.stringify({
         message: input.message,
-        confirmed: input.start_if_ready ?? false,
-        mode: input.interaction_mode,
+        confirmed: false,
+        mode: input.interaction_mode ?? "discuss",
         planner_agent_id: input.planner_agent_id,
         config: input.agent_workflow ? legacyCanvasToWorkflowSpec(input.agent_workflow) : undefined
       })
@@ -935,37 +1049,17 @@ async function sendRustPlannerChatTurn(input: {
   const context = explicitContext ?? rustPlannerSessionContexts.get(input.session_id);
   const mappedSession = mapRustPlannerSession(payload.session, context);
   const turn = mapRustPlannerTurn(payload, input.message, context);
-  let runId: string | null = null;
-  let status = mappedSession.status;
-  const shouldStart = Boolean(payload.should_start_workflow ?? payload.execution_allowed);
-  if (shouldStart && context) {
-    const planDraft = payload.plan_draft ?? payload.session.plan_draft ?? null;
-    const planContext = rustPlannerRunContext(payload, input.message, planDraft);
-    const response = await requestJson<RustRunResponse>("/api/v3/runs", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({
-        config: legacyCanvasToWorkflowSpec(context.agentWorkflow),
-        workflow_id: context.workflowId,
-        task: taskFromPlannerPlan(input.message, planDraft),
-        repo_root: context.repo ?? ".",
-        plan_context: planContext
-      })
-    });
-    runId = response.run_id;
-    status = "running";
-  }
   return {
     session_id: input.session_id,
     generation: mappedSession.generation,
-    status,
-    run_id: runId,
+    status: mappedSession.status,
+    run_id: null,
     turn,
     session: {
       ...mappedSession,
       last_turn: turn,
-      run_id: runId,
-      status
+      run_id: null,
+      status: mappedSession.status
     }
   };
 }
@@ -1036,7 +1130,7 @@ function plannerSessionContextFromTurnInput(input: {
   knowledge_pack_ids?: string[];
   skill_pack_ids?: string[];
   memory_pack_ids?: string[];
-  interaction_mode: PlannerInteractionMode;
+  interaction_mode?: PlannerInteractionMode;
 }): PlannerSessionContext | null {
   if (!input.workflow_id || !input.planner_agent_id || !input.agent_workflow) {
     return null;
@@ -1050,7 +1144,7 @@ function plannerSessionContextFromTurnInput(input: {
     knowledgePackIds: input.knowledge_pack_ids ?? [],
     skillPackIds: input.skill_pack_ids ?? [],
     memoryPackIds: input.memory_pack_ids ?? [],
-    interactionMode: input.interaction_mode
+    interactionMode: input.interaction_mode ?? "discuss"
   };
 }
 

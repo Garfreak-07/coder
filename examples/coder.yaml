@@ -12,8 +12,11 @@ agents:
     role: planner
     model: default
     system: |
-      You are a planning agent. Produce concise plans, identify open questions,
-      and decide whether executor work is ready.
+      You are the Planner half of a Codex-like coding agent. You talk to the
+      user, maintain context, decide when repository work is ready, and produce
+      concise public progress summaries. Do not expose private chain-of-thought.
+      Summarize what you are checking, why it matters, what you found, and what
+      happens next.
     memory:
       read: [user, project, run, repo_facts, knowledge_hints]
       write: [run]
@@ -23,8 +26,10 @@ agents:
     role: executor
     model: default
     system: |
-      You are a coding executor. Make small safe changes and always report
-      verification evidence.
+      You are a coding executor and the Executor half of a Codex-like coding
+      agent. You never talk directly to the user. Act through the assigned harness and emit
+      evidence-backed action summaries for tools, commands, file changes, and
+      verification. Do not claim success without evidence.
     memory:
       read: [workflow, run]
       write: [run]

@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
-import type { PlannerChatDraft, PlannerChatSession, PlannerInteractionMode } from "../../types";
+import type { ChangeSet, PlannerChatSession, TimelineItem } from "../../types";
+import { ReviewChangesCard } from "../review-changes/ReviewChangesCard";
+import { WorkTimeline } from "../work-timeline/WorkTimeline";
 
 export type PlannerStrength = "fast" | "balanced" | "strong";
 
@@ -15,96 +17,83 @@ export interface PlannerChatWorkflowSummary {
 
 interface PlannerChatPageProps {
   activeRunId: string | null;
-  draftRequestText: string;
-  draftScopesText: string;
-  draftSuccessCriteriaText: string;
-  evidence: ReactNode;
+  changeSets: ChangeSet[];
+  debugEvidence: ReactNode;
+  diffByChangeSetId: Record<string, string>;
+  loadingChangeSetId: string | null;
   repo: string;
   request: string;
   runLoading: boolean;
   runStatus: string;
   scopesText: string;
   submittedRequest: string;
-  planDraft: PlannerChatDraft | null;
-  plannerInteractionMode: PlannerInteractionMode;
+  timelineItems: TimelineItem[];
   plannerSession: PlannerChatSession | null;
   plannerStrength: PlannerStrength;
-  workflowSummary: PlannerChatWorkflowSummary;
-  onCancelDraft: () => void;
-  onConfirmDraft: () => void;
-  onDraftPlan: () => void;
-  onDraftRequestTextChange: (value: string) => void;
-  onDraftScopesTextChange: (value: string) => void;
-  onDraftSuccessCriteriaTextChange: (value: string) => void;
-  onPlannerInteractionModeChange: (value: PlannerInteractionMode) => void;
+  onAcceptChangeSet: (changeSetId: string) => void;
+  onLoadChangeSetDiff: (changeSetId: string) => void;
   onRepoChange: (value: string) => void;
   onRequestChange: (value: string) => void;
   onScopesTextChange: (value: string) => void;
   onPlannerStrengthChange: (value: PlannerStrength) => void;
+  onStartWork: () => void;
   onSubmitRequest: () => void;
+  onUndoChangeSet: (changeSetId: string) => void;
 }
 
 export function PlannerChatPage({
   activeRunId,
-  draftRequestText,
-  draftScopesText,
-  draftSuccessCriteriaText,
-  evidence,
+  changeSets,
+  debugEvidence,
+  diffByChangeSetId,
+  loadingChangeSetId,
   repo,
   request,
   runLoading,
   runStatus,
   scopesText,
   submittedRequest,
-  planDraft,
-  plannerInteractionMode,
+  timelineItems,
   plannerSession,
   plannerStrength,
-  workflowSummary,
-  onCancelDraft,
-  onConfirmDraft,
-  onDraftPlan,
-  onDraftRequestTextChange,
-  onDraftScopesTextChange,
-  onDraftSuccessCriteriaTextChange,
-  onPlannerInteractionModeChange,
+  onAcceptChangeSet,
+  onLoadChangeSetDiff,
   onRepoChange,
   onRequestChange,
   onScopesTextChange,
   onPlannerStrengthChange,
-  onSubmitRequest
+  onStartWork,
+  onSubmitRequest,
+  onUndoChangeSet
 }: PlannerChatPageProps) {
-  const inputValue = request;
-  const inputDisabled = runLoading || planDraft !== null;
+  const inputDisabled = runLoading;
   const canSend = request.trim().length > 0 && !inputDisabled;
-  const canDraft = request.trim().length > 0 && !runLoading && !plannerSession;
-  const canConfirmDraft = draftRequestText.trim().length > 0 && !runLoading;
-  const statusMessage = planDraft ? "Plan ready for review" : formatRunStatus(runStatus);
+  const canStartWork =
+    Boolean(plannerSession) &&
+    !runLoading &&
+    plannerSession?.task_state.readiness === "ready_to_execute" &&
+    !activeRunId;
   const sessionMessages = plannerSession?.messages ?? [];
   const hasSessionMessages = sessionMessages.length > 0;
+  const runIdForTimeline = activeRunId ?? plannerSession?.run_id ?? null;
 
   function submit() {
     if (!canSend) return;
     onSubmitRequest();
   }
 
-  function draftPlan() {
-    if (!canDraft) return;
-    onDraftPlan();
-  }
-
-  function confirmDraft() {
-    if (!canConfirmDraft) return;
-    onConfirmDraft();
+  function startWork() {
+    if (!canStartWork) return;
+    onStartWork();
   }
 
   return (
     <main className="chat-page">
       <section className="chat-thread" aria-label="Planner conversation">
-        {!submittedRequest && !activeRunId && !planDraft && !hasSessionMessages ? (
+        {!submittedRequest && !runIdForTimeline && !hasSessionMessages ? (
           <div className="chat-empty">
             <h2>What should the Planner work on?</h2>
-            <p>Send a request and the Planner will coordinate the Executor.</p>
+            <p>Chat with the Planner, then start work when the plan is ready.</p>
           </div>
         ) : (
           <>
@@ -130,58 +119,20 @@ export function PlannerChatPage({
               <div className="message-role">Planner</div>
               <div className="message-card">
                 <div className="message-status">
-                  <span>{statusMessage}</span>
+                  <span>{formatRunStatus(runStatus)}</span>
                 </div>
-                {activeRunId && <p>The confirmed workflow is running. Results will appear here as they arrive.</p>}
-                {plannerSession?.last_turn && (
-                  <PlannerTaskStateSummary session={plannerSession} />
-                )}
               </div>
-              {planDraft && (
-                <div className="plan-draft-card">
-                  <div className="plan-draft-header">
-                    <span>Review before run</span>
-                  </div>
-                  <p className="plan-draft-summary">{planDraft.summary}</p>
-                  <DraftWorkflowSummary summary={workflowSummary} />
-                  <div className="draft-edit-grid">
-                    <label>
-                      Request
-                      <textarea
-                        value={draftRequestText}
-                        onChange={(event) => onDraftRequestTextChange(event.target.value)}
-                        rows={4}
-                      />
-                    </label>
-                    <label>
-                      Scope
-                      <textarea
-                        placeholder="Whole project if left empty."
-                        value={draftScopesText}
-                        onChange={(event) => onDraftScopesTextChange(event.target.value)}
-                        rows={3}
-                      />
-                    </label>
-                    <label>
-                      Success criteria
-                      <textarea
-                        value={draftSuccessCriteriaText}
-                        onChange={(event) => onDraftSuccessCriteriaTextChange(event.target.value)}
-                        rows={4}
-                      />
-                    </label>
-                  </div>
-                  <RiskList risks={planDraft.risks} />
-                  <div className="draft-actions">
-                    <button onClick={onCancelDraft} disabled={runLoading}>Discard</button>
-                    <button className="primary-action" onClick={confirmDraft} disabled={!canConfirmDraft}>
-                      {runLoading ? "Starting..." : "Confirm and run"}
-                    </button>
-                  </div>
-                </div>
-              )}
-              {evidence}
             </article>
+            <WorkTimeline runId={runIdForTimeline} items={timelineItems} />
+            <ReviewChangesCard
+              changeSets={changeSets}
+              diffByChangeSetId={diffByChangeSetId}
+              loadingChangeSetId={loadingChangeSetId}
+              onAccept={onAcceptChangeSet}
+              onLoadDiff={onLoadChangeSetDiff}
+              onUndo={onUndoChangeSet}
+            />
+            {debugEvidence}
           </>
         )}
       </section>
@@ -207,29 +158,13 @@ export function PlannerChatPage({
         </details>
         <div className="composer-shell">
           <textarea
-            value={inputValue}
+            value={request}
             disabled={inputDisabled}
             onChange={(event) => onRequestChange(event.target.value)}
             placeholder="Message the Planner..."
             rows={4}
           />
           <div className="composer-footer">
-            <div className="mode-toggle" aria-label="Planner interaction mode">
-              <button
-                type="button"
-                className={plannerInteractionMode === "discuss" ? "selected" : ""}
-                onClick={() => onPlannerInteractionModeChange("discuss")}
-              >
-                Discuss
-              </button>
-              <button
-                type="button"
-                className={plannerInteractionMode === "work" ? "selected" : ""}
-                onClick={() => onPlannerInteractionModeChange("work")}
-              >
-                Work
-              </button>
-            </div>
             <label className="strength-control">
               Planner strength
               <select
@@ -241,8 +176,8 @@ export function PlannerChatPage({
                 <option value="strong">Strong</option>
               </select>
             </label>
-            <button onClick={draftPlan} disabled={!canDraft}>
-              Draft plan
+            <button onClick={startWork} disabled={!canStartWork}>
+              {runLoading ? "Starting..." : "Start Work"}
             </button>
             <button className="primary-action" onClick={submit} disabled={!canSend}>
               {runLoading ? "Sending..." : "Send"}
@@ -251,117 +186,6 @@ export function PlannerChatPage({
         </div>
       </section>
     </main>
-  );
-}
-
-function PlannerTaskStateSummary({ session }: { session: PlannerChatSession }) {
-  const state = session.task_state;
-
-  return (
-    <div className="planner-state-card">
-      <div className="planner-state-strip">
-        <span>{session.interaction_mode === "work" ? "Work" : "Discuss"}</span>
-        <span>{state.readiness.replaceAll("_", " ")}</span>
-        <span>{state.success_criteria.length} criteria</span>
-        <span>{state.open_questions.length} questions</span>
-      </div>
-      {state.goal && <p className="planner-goal">{state.goal}</p>}
-      <PlannerStateList title="Open questions" items={state.open_questions} />
-      <PlannerStateList title="Acceptance" items={state.success_criteria} />
-      <PlannerStateList title="Risks" items={state.risks} />
-      <MemoryProposalList proposals={state.memory_proposals} />
-    </div>
-  );
-}
-
-function PlannerStateList({ title, items }: { title: string; items: string[] }) {
-  if (items.length === 0) return null;
-  return (
-    <div className="planner-state-list">
-      <span>{title}</span>
-      <ul>
-        {items.slice(0, 4).map((item, index) => (
-          <li key={`${title}-${index}`}>{item}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function MemoryProposalList({ proposals }: { proposals: PlannerChatSession["task_state"]["memory_proposals"] }) {
-  if (proposals.length === 0) return null;
-  return (
-    <div className="planner-state-list memory-proposal-list">
-      <span>Memory proposals</span>
-      <ul>
-        {proposals.slice(0, 3).map((proposal) => (
-          <li key={`${proposal.scope}-${proposal.key}`}>
-            <strong>{proposal.scope}: {proposal.key}</strong>
-            <p>{proposal.content}</p>
-            <small>{proposal.rationale}</small>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function DraftWorkflowSummary({ summary }: { summary: PlannerChatWorkflowSummary }) {
-  const executors = summary.executorNames.length > 0 ? summary.executorNames.join(", ") : "Executor";
-  const selectedPacks = [
-    ...summary.skillPackIds.map((id) => ({ group: "Skill", id })),
-    ...summary.knowledgePackIds.map((id) => ({ group: "Knowledge", id })),
-    ...summary.memoryPackIds.map((id) => ({ group: "Memory", id }))
-  ];
-
-  return (
-    <div className="draft-workflow-summary">
-      <div className="draft-summary-grid">
-        <div>
-          <span>Selected workflow</span>
-          <strong>{summary.workflowName}</strong>
-        </div>
-        <div>
-          <span>Planner</span>
-          <strong>{summary.plannerName}</strong>
-        </div>
-        <div>
-          <span>Executor</span>
-          <strong>{executors}</strong>
-        </div>
-        <div>
-          <span>Run limit</span>
-          <strong>{summary.maxAutoRounds ? `${summary.maxAutoRounds} rounds` : "Default"}</strong>
-        </div>
-      </div>
-      <div className="draft-pack-summary">
-        <span>Selected packs</span>
-        {selectedPacks.length > 0 ? (
-          <div className="draft-pack-list">
-            {selectedPacks.map((pack) => (
-              <code key={`${pack.group}-${pack.id}`}>{pack.group}: {pack.id}</code>
-            ))}
-          </div>
-        ) : (
-          <div className="muted">No selected skill, knowledge, or memory packs.</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function RiskList({ risks }: { risks: string[] }) {
-  const items = risks.length > 0 ? risks : ["No specific risks identified."];
-
-  return (
-    <div className="draft-risk-list">
-      <div>Risks to check</div>
-      <ul>
-        {items.map((item, index) => (
-          <li key={`risk-${index}`}>{item}</li>
-        ))}
-      </ul>
-    </div>
   );
 }
 

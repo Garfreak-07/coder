@@ -6,7 +6,7 @@ This inventory describes current Rust-only `main`.
 
 | Area | Current implementation | Status |
 |---|---|---|
-| Planner Chat | React Planner Chat page backed by Rust API v3 sessions, structured plan drafts, readiness, preview, and Work confirmation | Active |
+| Planner Chat | React Planner Chat page backed by Rust API v3 sessions, internal plan state, readiness, and explicit Start Work | Active |
 | Workflow canvas | React Agent Workflow editor with Rust workflow import/export and validation adapters | Active |
 | User-defined agents and workflows | `AgentWorkflowSpec` UI model mapped to Rust `ProjectConfig`, `AgentSpec`, `HarnessSpec`, and `WorkflowSpec` | Active |
 | Native Rust backend | Rust workflow runner fallback with repo, command, patch, approval, evidence, and report capabilities | Active |
@@ -34,7 +34,7 @@ Primary Rust API groups:
 
 - health, capabilities, and role cards
 - workflow validation, default workflow, and workflow library storage
-- Planner Chat sessions, turns, plan drafts, readiness, and Work confirmation
+- Planner Chat sessions, turns, plan state, readiness, and explicit Start Work
 - run preview, start, list, detail, events, controls, reports, artifacts,
   checkpoints, blobs, and repo evidence
 - repo, command, patch, memory, knowledge, MCP, extensions, skills, and provider

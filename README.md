@@ -16,19 +16,22 @@ tag `pre-rust-only-legacy-v2`.
 
 ```text
 User talks to Planner first
--> Discuss mode clarifies scope, risks, acceptance criteria, and plan draft
--> Work mode validates readiness and confirmation
+-> Planner Chat clarifies scope, risks, and acceptance criteria
+-> Start Work is an explicit execution action
 -> WorkflowRunner
 -> HarnessSpec selects native Rust or OpenHands backend
--> agents run inside role-specific tools, permissions, memory, and verification
--> stored events, approvals, evidence, patches, checks, and final_report
+-> Executor runs inside role-specific tools, permissions, memory, and verification
+-> Codex-style timeline projects commands, tools, approvals, file changes, checks
+-> Review Changes exposes diff, checks, evidence, accept, and undo
+-> Planner-authored final summary
 ```
 
-Discuss mode is real Planner conversation. It can answer casual questions,
-ask clarification questions, and maintain a plan draft, but it does not write
-files, run commands, or start workflows. Work mode can start a Rust run only
-after readiness and confirmation gates pass, and it passes the structured plan
-context into workflow execution.
+Planner Chat is side-effect free. It can answer casual questions, ask
+clarifying questions, maintain internal plan state, and mark work ready, but it
+does not write files, run commands, or start workflows. Execution starts only
+when the user clicks Start Work. That explicit action validates readiness,
+passes structured plan context into workflow execution, and opens the
+Codex-style work timeline.
 
 Harnesses are the execution boundary. A harness controls backend selection,
 tools, permissions, sandbox policy, memory scope, approvals, verification, event
@@ -46,11 +49,12 @@ Rust v3 covers the ordinary product surface behind the React UI:
 
 - health, capabilities, and role cards
 - workflow validation, import/export, and library storage
-- Planner Chat sessions, structured plan drafts, readiness, and
-  run preview/confirmation
-- stored run inspection, events, reports, artifacts, blobs, and repo evidence
+- Planner Chat sessions, internal plan state, readiness, and explicit Start Work
+- stored run inspection, timeline projection, changesets, undo, reports,
+  artifacts, blobs, and repo evidence
 - repo, command, patch, MCP, skills, extensions, provider settings, and memory
   APIs
+- local Plugins & Skills marketplace surface, hooks display, and cache status
 - lexical, deterministic dense, and hybrid knowledge retrieval baselines
 
 ## Install

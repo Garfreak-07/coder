@@ -1,10 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
+    io::Write,
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path as FsPath, PathBuf},
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -65,6 +67,8 @@ pub struct ApiState {
     library_workflows: Arc<Mutex<BTreeMap<String, Value>>>,
     planner_sessions: Arc<Mutex<BTreeMap<String, PlannerChatSession>>>,
     installed_skills: Arc<Mutex<BTreeMap<String, InstalledSkillRecord>>>,
+    plugin_marketplaces: Arc<Mutex<BTreeMap<String, PluginMarketplace>>>,
+    skill_extra_roots: Arc<Mutex<Vec<SkillExtraRoot>>>,
     provider_settings: Arc<Mutex<ProviderSettings>>,
 }
 
@@ -75,6 +79,15 @@ impl ApiState {
             library_workflows: Arc::new(Mutex::new(BTreeMap::new())),
             planner_sessions: Arc::new(Mutex::new(BTreeMap::new())),
             installed_skills: Arc::new(Mutex::new(BTreeMap::new())),
+            plugin_marketplaces: Arc::new(Mutex::new(BTreeMap::from([(
+                "builtin".to_owned(),
+                PluginMarketplace {
+                    name: "builtin".to_owned(),
+                    url: "builtin://plugins".to_owned(),
+                    enabled: true,
+                },
+            )]))),
+            skill_extra_roots: Arc::new(Mutex::new(Vec::new())),
             provider_settings: Arc::new(Mutex::new(ProviderSettings::default())),
         }
     }
@@ -127,6 +140,10 @@ pub fn router(state: ApiState) -> Router {
             "/api/v3/planner-chat/sessions/{session_id}/turn",
             post(planner_chat_turn),
         )
+        .route(
+            "/api/v3/planner-chat/sessions/{session_id}/start-work",
+            post(start_planner_chat_work),
+        )
         .route("/api/v3/mcp/servers", get(list_mcp_servers))
         .route("/api/v3/mcp/servers/validate", post(validate_mcp))
         .route("/api/v3/mcp/tools", get(list_mcp_tools))
@@ -170,6 +187,38 @@ pub fn router(state: ApiState) -> Router {
             "/api/v3/skills/{skill_id}/update-policy",
             post(set_skill_update_policy),
         )
+        .route(
+            "/api/v3/plugins/marketplaces",
+            get(list_plugin_marketplaces).post(add_plugin_marketplace),
+        )
+        .route(
+            "/api/v3/plugins/marketplaces/{name}",
+            axum::routing::delete(remove_plugin_marketplace),
+        )
+        .route(
+            "/api/v3/plugins/marketplaces/{name}/upgrade",
+            post(upgrade_plugin_marketplace),
+        )
+        .route("/api/v3/plugins", get(list_plugins))
+        .route("/api/v3/plugins/installed", get(list_installed_plugins))
+        .route("/api/v3/plugins/{plugin_id}", get(read_plugin))
+        .route(
+            "/api/v3/plugins/{plugin_id}/skills/{skill_name}",
+            get(read_plugin_skill),
+        )
+        .route(
+            "/api/v3/skills/extra-roots",
+            get(list_skill_extra_roots).post(add_skill_extra_root),
+        )
+        .route("/api/v3/hooks", get(list_hooks))
+        .route("/api/v3/cache/status", get(cache_status))
+        .route("/api/v3/cache/clear", post(cache_clear))
+        .route("/api/v3/cache/reindex", post(cache_reindex))
+        .route("/api/v3/cache/tasks", get(cache_tasks))
+        .route(
+            "/api/v3/cache/tasks/{task_id}",
+            axum::routing::delete(cancel_cache_task),
+        )
         .route("/api/v3/harness/tools", get(list_harness_tools))
         .route(
             "/api/v3/providers/settings",
@@ -207,6 +256,20 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/runs/mock", post(run_mock_workflow))
         .route("/api/v3/runs/{run_id}", get(get_run_detail))
         .route("/api/v3/runs/{run_id}/events", get(list_run_events))
+        .route("/api/v3/runs/{run_id}/timeline", get(list_run_timeline))
+        .route("/api/v3/runs/{run_id}/changes", get(list_run_changes))
+        .route(
+            "/api/v3/runs/{run_id}/changes/{change_set_id}/diff",
+            get(get_change_diff),
+        )
+        .route(
+            "/api/v3/runs/{run_id}/changes/{change_set_id}/accept",
+            post(accept_change_set),
+        )
+        .route(
+            "/api/v3/runs/{run_id}/changes/{change_set_id}/undo",
+            post(undo_change_set),
+        )
         .route("/api/v3/runs/{run_id}/pause", post(pause_run))
         .route("/api/v3/runs/{run_id}/resume", post(resume_run))
         .route("/api/v3/runs/{run_id}/cancel", post(cancel_run))
@@ -586,6 +649,64 @@ fn planner_turn_events(
     events
 }
 
+fn start_work_clarification(session: &PlannerChatSession) -> String {
+    if session.plan_draft.is_none() {
+        return "I need to turn this into a concrete plan before starting work.".to_owned();
+    }
+    if !session.open_questions.is_empty() {
+        return format!(
+            "I need clarification before starting work:\n{}",
+            numbered_lines(&session.open_questions)
+        );
+    }
+    "I am not ready to start work yet. Please confirm the goal, scope, and acceptance criteria."
+        .to_owned()
+}
+
+fn planner_run_context_from_session(session: &PlannerChatSession, plan: &PlanDraft) -> Value {
+    let conversation_summary = session
+        .turns
+        .iter()
+        .rev()
+        .find(|turn| turn.role == "assistant")
+        .map(|turn| turn.content.clone())
+        .unwrap_or_else(|| "Planner session was ready to start work.".to_owned());
+    let original_user_request = session
+        .turns
+        .iter()
+        .find(|turn| turn.role == "user")
+        .map(|turn| turn.content.clone())
+        .unwrap_or_else(|| plan.goal.clone());
+    json!({
+        "original_user_request": original_user_request,
+        "planner_conversation_summary": conversation_summary,
+        "plan_draft": plan,
+        "acceptance_criteria": plan.acceptance_criteria,
+        "risks": plan.risks,
+        "affected_paths": if plan.affected_paths.is_empty() { plan.scope.clone() } else { plan.affected_paths.clone() },
+        "selected_workflow_id": plan.selected_workflow_id
+    })
+}
+
+fn task_from_plan(plan: &PlanDraft) -> String {
+    let mut lines = vec![plan.goal.clone()];
+    if !plan.affected_paths.is_empty() {
+        lines.push(format!(
+            "Affected paths: {}",
+            plan.affected_paths.join(", ")
+        ));
+    } else if !plan.scope.is_empty() {
+        lines.push(format!("Scope: {}", plan.scope.join(", ")));
+    }
+    if !plan.acceptance_criteria.is_empty() {
+        lines.push(format!(
+            "Acceptance: {}",
+            plan.acceptance_criteria.join("; ")
+        ));
+    }
+    lines.join("\n")
+}
+
 async fn get_library(State(state): State<ApiState>) -> Json<LibraryResponse> {
     let workflows = state
         .library_workflows
@@ -790,6 +911,90 @@ async fn planner_chat_turn(
         execution_allowed,
         run_preview,
         events,
+    }))
+}
+
+async fn start_planner_chat_work(
+    State(state): State<ApiState>,
+    Path(session_id): Path<String>,
+    Json(request): Json<PlannerStartWorkRequest>,
+) -> Result<Json<PlannerStartWorkResponse>, ApiError> {
+    let mut session = state
+        .planner_sessions
+        .lock()
+        .unwrap()
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| ApiError::not_found(format!("session '{session_id}' was not found")))?;
+    let workflow_id = request
+        .workflow_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| session.workflow_id.clone());
+    let config = request
+        .config
+        .clone()
+        .unwrap_or_else(default_project_config);
+    let runtime =
+        resolve_planner_runtime(&config, &workflow_id, request.planner_agent_id.as_deref())?;
+    session.workflow_id = workflow_id.clone();
+    session.mode = "discuss".to_owned();
+    session.runtime = Some(runtime);
+
+    if session.plan_draft.is_none()
+        || session.readiness != PlannerReadiness::Ready
+        || !session.open_questions.is_empty()
+    {
+        let assistant_message = start_work_clarification(&session);
+        session.turns.push(PlannerChatTurn {
+            role: "assistant".to_owned(),
+            content: assistant_message.clone(),
+        });
+        session.ready = false;
+        session.readiness = PlannerReadiness::NeedsClarification;
+        state
+            .planner_sessions
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), session.clone());
+        return Ok(Json(PlannerStartWorkResponse {
+            session,
+            assistant_message: Some(assistant_message),
+            run_id: None,
+            status: "needs_clarification".to_owned(),
+            events_url: None,
+        }));
+    }
+
+    let plan = session
+        .plan_draft
+        .clone()
+        .ok_or_else(|| ApiError::bad_request("planner session has no plan draft"))?;
+    let repo_root = request.repo.clone().unwrap_or_else(|| ".".to_owned());
+    let plan_context = planner_run_context_from_session(&session, &plan);
+    let task = task_from_plan(&plan);
+    let mut options = WorkflowRunOptions::new(&workflow_id, &task);
+    options.repo_root = PathBuf::from(&repo_root);
+    options.plan_context = Some(plan_context);
+    let runner = WorkflowRunner::new(config, state.store.clone());
+    let output = runner.run(options).await?;
+    let run_id = output.run_id.to_string();
+    session.ready = false;
+    session.turns.push(PlannerChatTurn {
+        role: "assistant".to_owned(),
+        content: format!("Work started for workflow '{workflow_id}'."),
+    });
+    state
+        .planner_sessions
+        .lock()
+        .unwrap()
+        .insert(session_id, session.clone());
+    Ok(Json(PlannerStartWorkResponse {
+        session,
+        assistant_message: None,
+        run_id: Some(run_id.clone()),
+        status: format!("{:?}", output.report.status).to_lowercase(),
+        events_url: Some(format!("/api/v3/runs/{run_id}/events")),
     }))
 }
 
@@ -1458,6 +1663,230 @@ async fn developer_import_skill() -> Result<Json<SkillActionResponse>, ApiError>
     ))
 }
 
+async fn list_plugin_marketplaces(
+    State(state): State<ApiState>,
+) -> Json<PluginMarketplaceListResponse> {
+    Json(PluginMarketplaceListResponse {
+        marketplaces: state
+            .plugin_marketplaces
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect(),
+    })
+}
+
+async fn add_plugin_marketplace(
+    State(state): State<ApiState>,
+    Json(request): Json<PluginMarketplaceRequest>,
+) -> Result<Json<PluginMarketplaceActionResponse>, ApiError> {
+    if request.name.trim().is_empty() || request.url.trim().is_empty() {
+        return Err(ApiError::bad_request(
+            "marketplace name and url must not be empty",
+        ));
+    }
+    let marketplace = PluginMarketplace {
+        name: request.name,
+        url: request.url,
+        enabled: request.enabled.unwrap_or(true),
+    };
+    state
+        .plugin_marketplaces
+        .lock()
+        .unwrap()
+        .insert(marketplace.name.clone(), marketplace.clone());
+    Ok(Json(PluginMarketplaceActionResponse {
+        status: "added".to_owned(),
+        marketplace,
+    }))
+}
+
+async fn remove_plugin_marketplace(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<Json<PluginMarketplaceRemoveResponse>, ApiError> {
+    if name == "builtin" {
+        return Err(ApiError::bad_request(
+            "the builtin marketplace cannot be removed",
+        ));
+    }
+    let removed = state
+        .plugin_marketplaces
+        .lock()
+        .unwrap()
+        .remove(&name)
+        .is_some();
+    Ok(Json(PluginMarketplaceRemoveResponse { name, removed }))
+}
+
+async fn upgrade_plugin_marketplace(
+    State(state): State<ApiState>,
+    Path(name): Path<String>,
+) -> Result<Json<PluginMarketplaceUpgradeResponse>, ApiError> {
+    if !state
+        .plugin_marketplaces
+        .lock()
+        .unwrap()
+        .contains_key(&name)
+    {
+        return Err(ApiError::not_found(format!(
+            "plugin marketplace '{name}' was not found"
+        )));
+    }
+    Ok(Json(PluginMarketplaceUpgradeResponse {
+        name,
+        status: "up_to_date".to_owned(),
+        updated_plugins: Vec::new(),
+        updated_skills: Vec::new(),
+    }))
+}
+
+async fn list_plugins() -> Json<PluginListResponse> {
+    Json(PluginListResponse {
+        plugins: builtin_plugin_manifests(),
+    })
+}
+
+async fn list_installed_plugins() -> Json<PluginListResponse> {
+    Json(PluginListResponse {
+        plugins: builtin_plugin_manifests()
+            .into_iter()
+            .filter(|plugin| plugin.installed)
+            .collect(),
+    })
+}
+
+async fn read_plugin(Path(plugin_id): Path<String>) -> Result<Json<PluginReadResponse>, ApiError> {
+    let plugin = builtin_plugin_manifests()
+        .into_iter()
+        .find(|plugin| plugin.id == plugin_id)
+        .ok_or_else(|| ApiError::not_found(format!("plugin '{plugin_id}' was not found")))?;
+    Ok(Json(PluginReadResponse {
+        plugin,
+        skills: builtin_remote_skill_entries(),
+        mcp_dependencies: Vec::new(),
+        hooks: builtin_hooks(),
+    }))
+}
+
+async fn read_plugin_skill(
+    Path((plugin_id, skill_name)): Path<(String, String)>,
+) -> Result<Json<PluginSkillReadResponse>, ApiError> {
+    if !builtin_plugin_manifests()
+        .into_iter()
+        .any(|plugin| plugin.id == plugin_id)
+    {
+        return Err(ApiError::not_found(format!(
+            "plugin '{plugin_id}' was not found"
+        )));
+    }
+    let skill = builtin_remote_skill_entries()
+        .into_iter()
+        .find(|skill| skill.id == skill_name || skill.name == skill_name)
+        .ok_or_else(|| ApiError::not_found(format!("skill '{skill_name}' was not found")))?;
+    Ok(Json(PluginSkillReadResponse { plugin_id, skill }))
+}
+
+async fn list_skill_extra_roots(State(state): State<ApiState>) -> Json<SkillExtraRootsResponse> {
+    Json(SkillExtraRootsResponse {
+        roots: state.skill_extra_roots.lock().unwrap().clone(),
+    })
+}
+
+async fn add_skill_extra_root(
+    State(state): State<ApiState>,
+    Json(request): Json<SkillExtraRootRequest>,
+) -> Result<Json<SkillExtraRootsResponse>, ApiError> {
+    if request.path.trim().is_empty() {
+        return Err(ApiError::bad_request("skill root path must not be empty"));
+    }
+    let root = SkillExtraRoot {
+        path: request.path,
+        scope: request.scope.unwrap_or_else(|| "user".to_owned()),
+        enabled: request.enabled.unwrap_or(true),
+    };
+    let mut roots = state.skill_extra_roots.lock().unwrap();
+    if !roots.iter().any(|item| item.path == root.path) {
+        roots.push(root);
+    }
+    Ok(Json(SkillExtraRootsResponse {
+        roots: roots.clone(),
+    }))
+}
+
+async fn list_hooks() -> Json<HooksResponse> {
+    Json(HooksResponse {
+        hooks: builtin_hooks(),
+    })
+}
+
+async fn cache_status(
+    State(state): State<ApiState>,
+) -> Result<Json<CacheStatusResponse>, ApiError> {
+    let probe_run_dir = state.store.run_dir(&RunId::from_string("__cache_probe__"));
+    let runs_dir = probe_run_dir
+        .parent()
+        .map(FsPath::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("runs"));
+    let store_root = runs_dir
+        .parent()
+        .map(FsPath::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let blob_entries = fs::read_dir(store_root.join("blobs"))
+        .map(|entries| entries.filter_map(Result::ok).count())
+        .unwrap_or(0);
+    Ok(Json(CacheStatusResponse {
+        repo_index: CacheBucketStatus {
+            entries: 0,
+            bytes: 0,
+            stale: false,
+        },
+        plugin_cache: CacheBucketStatus {
+            entries: builtin_plugin_manifests().len(),
+            bytes: 0,
+            stale: false,
+        },
+        skill_cache: CacheBucketStatus {
+            entries: installed_skill_summaries(&state).len(),
+            bytes: 0,
+            stale: false,
+        },
+        blob_store: CacheBucketStatus {
+            entries: blob_entries,
+            bytes: store_dir_size(&store_root.join("blobs")),
+            stale: false,
+        },
+    }))
+}
+
+async fn cache_clear() -> Json<CacheActionResponse> {
+    Json(CacheActionResponse {
+        status: "noop".to_owned(),
+        message: "Disposable cache clearing is not required for the current in-memory baseline."
+            .to_owned(),
+    })
+}
+
+async fn cache_reindex() -> Json<CacheTaskResponse> {
+    Json(CacheTaskResponse {
+        task_id: "repo-index-noop".to_owned(),
+        status: "completed".to_owned(),
+    })
+}
+
+async fn cache_tasks() -> Json<CacheTasksResponse> {
+    Json(CacheTasksResponse { tasks: Vec::new() })
+}
+
+async fn cancel_cache_task(Path(task_id): Path<String>) -> Json<CacheTaskCancelResponse> {
+    Json(CacheTaskCancelResponse {
+        task_id,
+        cancelled: false,
+        status: "not_found".to_owned(),
+    })
+}
+
 async fn list_harness_tools(Query(query): Query<ToolRegistryQuery>) -> Json<ToolRegistryResponse> {
     let registry = ToolRegistry::default();
     Json(ToolRegistryResponse {
@@ -1901,6 +2330,127 @@ async fn list_run_events(
     }))
 }
 
+async fn list_run_timeline(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunTimelineResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    let events = state.store.read_events(&run_id)?;
+    let report = state.store.read_report(&run_id)?;
+    if events.is_empty() && report.is_none() && !stored_run_exists(&state.store, &run_id)? {
+        return Err(ApiError::not_found(format!(
+            "run '{}' was not found",
+            run_id.as_str()
+        )));
+    }
+    let items = project_timeline_items(&run_id, &events, report.as_ref());
+    Ok(Json(RunTimelineResponse {
+        run_id: run_id.to_string(),
+        items,
+    }))
+}
+
+async fn list_run_changes(
+    State(state): State<ApiState>,
+    Path(run_id): Path<String>,
+) -> Result<Json<RunChangeSetListResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    if !stored_run_exists(&state.store, &run_id)? {
+        return Err(ApiError::not_found(format!(
+            "run '{}' was not found",
+            run_id.as_str()
+        )));
+    }
+    let change_set = build_current_change_set(&state.store, &run_id)?;
+    Ok(Json(RunChangeSetListResponse {
+        run_id: run_id.to_string(),
+        changes: change_set.into_iter().collect(),
+    }))
+}
+
+async fn get_change_diff(
+    State(state): State<ApiState>,
+    Path((run_id, change_set_id)): Path<(String, String)>,
+) -> Result<Json<ChangeSetDiffResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    let change_set = read_change_set(&state.store, &run_id, &change_set_id)?;
+    Ok(Json(ChangeSetDiffResponse {
+        run_id: run_id.to_string(),
+        change_set_id,
+        diff: change_set.after_diff,
+        truncated: change_set.diff_truncated,
+    }))
+}
+
+async fn accept_change_set(
+    State(state): State<ApiState>,
+    Path((run_id, change_set_id)): Path<(String, String)>,
+) -> Result<Json<ChangeSetActionResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    let mut change_set = read_change_set(&state.store, &run_id, &change_set_id)?;
+    change_set.status = ChangeSetStatus::Accepted;
+    write_change_set(&state.store, &run_id, &change_set)?;
+    append_change_set_event(
+        &state.store,
+        &run_id,
+        "changeset.accepted",
+        &change_set.change_set_id,
+        json!({"changed_files": &change_set.changed_files}),
+    )?;
+    Ok(Json(ChangeSetActionResponse {
+        run_id: run_id.to_string(),
+        change_set,
+        status: "accepted".to_owned(),
+        message: "Change set accepted.".to_owned(),
+    }))
+}
+
+async fn undo_change_set(
+    State(state): State<ApiState>,
+    Path((run_id, change_set_id)): Path<(String, String)>,
+) -> Result<Json<ChangeSetActionResponse>, ApiError> {
+    let run_id = RunId::from_string(run_id);
+    let mut change_set = read_change_set(&state.store, &run_id, &change_set_id)?;
+    append_change_set_event(
+        &state.store,
+        &run_id,
+        "changeset.undo.started",
+        &change_set.change_set_id,
+        json!({}),
+    )?;
+    let current_diff = git_diff(&change_set.repo_root, usize::MAX)?.preview;
+    if current_diff != change_set.after_diff {
+        change_set.status = ChangeSetStatus::FailedToUndo;
+        write_change_set(&state.store, &run_id, &change_set)?;
+        append_change_set_event(
+            &state.store,
+            &run_id,
+            "changeset.undo.failed",
+            &change_set.change_set_id,
+            json!({"reason": "current diff differs from recorded review diff"}),
+        )?;
+        return Err(ApiError::conflict(
+            "current working tree diff differs from the recorded change set; refusing to undo",
+        ));
+    }
+    apply_reverse_diff(&change_set.repo_root, &change_set.after_diff)?;
+    change_set.status = ChangeSetStatus::Undone;
+    write_change_set(&state.store, &run_id, &change_set)?;
+    append_change_set_event(
+        &state.store,
+        &run_id,
+        "changeset.undo.completed",
+        &change_set.change_set_id,
+        json!({"changed_files": &change_set.changed_files}),
+    )?;
+    Ok(Json(ChangeSetActionResponse {
+        run_id: run_id.to_string(),
+        change_set,
+        status: "undone".to_owned(),
+        message: "Change set undone with reverse patch.".to_owned(),
+    }))
+}
+
 async fn list_runs(State(state): State<ApiState>) -> Result<Json<RunListResponse>, ApiError> {
     Ok(Json(RunListResponse {
         runs: state.store.list_run_summaries()?,
@@ -2253,6 +2803,31 @@ pub struct PlannerChatTurnResponse {
     pub events: Vec<Value>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PlannerStartWorkRequest {
+    pub repo: Option<String>,
+    pub workflow_id: Option<String>,
+    pub planner_agent_id: Option<String>,
+    pub config: Option<ProjectConfig>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default)]
+    pub skill_pack_ids: Vec<String>,
+    #[serde(default)]
+    pub knowledge_pack_ids: Vec<String>,
+    #[serde(default)]
+    pub memory_pack_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PlannerStartWorkResponse {
+    pub session: PlannerChatSession,
+    pub assistant_message: Option<String>,
+    pub run_id: Option<String>,
+    pub status: String,
+    pub events_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlannerReadiness {
@@ -2541,6 +3116,141 @@ struct InstalledSkillRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginMarketplace {
+    pub name: String,
+    pub url: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PluginMarketplaceRequest {
+    pub name: String,
+    pub url: String,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginMarketplaceListResponse {
+    pub marketplaces: Vec<PluginMarketplace>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginMarketplaceActionResponse {
+    pub status: String,
+    pub marketplace: PluginMarketplace,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginMarketplaceRemoveResponse {
+    pub name: String,
+    pub removed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginMarketplaceUpgradeResponse {
+    pub name: String,
+    pub status: String,
+    pub updated_plugins: Vec<PluginManifest>,
+    pub updated_skills: Vec<RemoteSkillEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginListResponse {
+    pub plugins: Vec<PluginManifest>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginReadResponse {
+    pub plugin: PluginManifest,
+    pub skills: Vec<RemoteSkillEntry>,
+    pub mcp_dependencies: Vec<Value>,
+    pub hooks: Vec<HookSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PluginSkillReadResponse {
+    pub plugin_id: String,
+    pub skill: RemoteSkillEntry,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillExtraRoot {
+    pub path: String,
+    pub scope: String,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SkillExtraRootRequest {
+    pub path: String,
+    pub scope: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SkillExtraRootsResponse {
+    pub roots: Vec<SkillExtraRoot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HookSummary {
+    pub id: String,
+    pub trigger: String,
+    pub enabled: bool,
+    pub description: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HooksResponse {
+    pub hooks: Vec<HookSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CacheBucketStatus {
+    pub entries: usize,
+    pub bytes: u64,
+    pub stale: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CacheStatusResponse {
+    pub repo_index: CacheBucketStatus,
+    pub plugin_cache: CacheBucketStatus,
+    pub skill_cache: CacheBucketStatus,
+    pub blob_store: CacheBucketStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CacheActionResponse {
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CacheTaskSummary {
+    pub task_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CacheTaskResponse {
+    pub task_id: String,
+    pub status: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CacheTasksResponse {
+    pub tasks: Vec<CacheTaskSummary>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CacheTaskCancelResponse {
+    pub task_id: String,
+    pub cancelled: bool,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderKeyState {
     pub configured: bool,
     pub source: String,
@@ -2795,6 +3505,195 @@ pub struct RunEventsResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct RunTimelineResponse {
+    pub run_id: String,
+    pub items: Vec<TimelineItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TimelineItem {
+    UserMessage(MessageTimelineItem),
+    PlannerMessage(MessageTimelineItem),
+    ReasoningSummary(ReasoningSummaryItem),
+    PlanUpdate(PlanUpdateItem),
+    ExecutorStep(ExecutorStepItem),
+    ToolCall(ToolCallItem),
+    CommandExecution(CommandExecutionItem),
+    FileChange(FileChangeItem),
+    Approval(ApprovalItem),
+    Verification(VerificationItem),
+    FinalSummary(FinalSummaryItem),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageTimelineItem {
+    pub id: String,
+    pub agent_id: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReasoningSummaryItem {
+    pub id: String,
+    pub agent_id: String,
+    pub summary_text: Vec<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanUpdateItem {
+    pub id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub summary: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExecutorStepItem {
+    pub id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCallItem {
+    pub id: String,
+    pub agent_id: String,
+    pub tool_name: String,
+    pub status: String,
+    pub summary: Option<String>,
+    pub evidence_ref: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CommandExecutionItem {
+    pub id: String,
+    pub agent_id: String,
+    pub command: Vec<String>,
+    pub cwd: String,
+    pub status: String,
+    pub stdout_preview: Option<String>,
+    pub stderr_preview: Option<String>,
+    pub exit_code: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub evidence_ref: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileChangeItem {
+    pub id: String,
+    pub agent_id: String,
+    pub path: String,
+    pub change_type: String,
+    pub diff_ref: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ApprovalItem {
+    pub id: String,
+    pub agent_id: String,
+    pub risk_level: String,
+    pub action_type: String,
+    pub summary: String,
+    pub status: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct VerificationItem {
+    pub id: String,
+    pub agent_id: String,
+    pub status: String,
+    pub summary: String,
+    pub evidence_ref: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FinalSummaryItem {
+    pub id: String,
+    pub agent_id: String,
+    pub summary: String,
+    pub changed_files: Vec<String>,
+    pub checks: Vec<String>,
+    pub evidence_refs: Vec<coder_core::EvidenceRef>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunChangeSetListResponse {
+    pub run_id: String,
+    pub changes: Vec<ChangeSet>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeSet {
+    pub change_set_id: String,
+    pub run_id: String,
+    pub repo_root: String,
+    pub status: ChangeSetStatus,
+    pub created_at: String,
+    pub base_git_head: Option<String>,
+    pub before_checkpoint_ref: Option<String>,
+    pub after_diff_ref: Option<String>,
+    pub reverse_patch_ref: Option<String>,
+    pub changed_files: Vec<ChangedFileSummary>,
+    pub command_checks: Vec<CommandCheckSummary>,
+    pub evidence_refs: Vec<coder_core::EvidenceRef>,
+    pub after_diff: String,
+    pub diff_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeSetStatus {
+    PendingReview,
+    Accepted,
+    Undone,
+    FailedToUndo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangedFileSummary {
+    pub path: String,
+    pub change_type: String,
+    pub additions: Option<usize>,
+    pub deletions: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandCheckSummary {
+    pub command: String,
+    pub status: String,
+    pub exit_code: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChangeSetDiffResponse {
+    pub run_id: String,
+    pub change_set_id: String,
+    pub diff: String,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ChangeSetActionResponse {
+    pub run_id: String,
+    pub change_set: ChangeSet,
+    pub status: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct RunListResponse {
     pub runs: Vec<StoredRunSummary>,
 }
@@ -3020,6 +3919,578 @@ fn auto_update_allowed(record: &InstalledSkillRecord) -> bool {
         && record.summary.risk_level == coder_extensions::SkillRiskLevel::Low
         && !record.summary.external_effect
         && record.pinned_version.is_none()
+}
+
+fn project_timeline_items(
+    run_id: &RunId,
+    events: &[coder_events::CoderEvent],
+    report: Option<&FinalReport>,
+) -> Vec<TimelineItem> {
+    let mut items = Vec::new();
+    for event in events {
+        let created_at = event.timestamp.to_string();
+        match event.kind.as_str() {
+            "run.started" => {
+                let task = payload_string(&event.payload, "task")
+                    .unwrap_or_else(|| "Workflow started.".to_owned());
+                items.push(TimelineItem::PlanUpdate(PlanUpdateItem {
+                    id: timeline_id(event, "plan"),
+                    agent_id: "planner".to_owned(),
+                    title: "Work started".to_owned(),
+                    summary: public_preview(&task, 800),
+                    created_at,
+                }));
+            }
+            "planner.message.completed" => {
+                let summary = payload_string(&event.payload, "summary")
+                    .or_else(|| payload_string(&event.payload, "message"))
+                    .unwrap_or_else(|| "Planner updated the run.".to_owned());
+                items.push(TimelineItem::PlannerMessage(MessageTimelineItem {
+                    id: timeline_id(event, "planner-message"),
+                    agent_id: payload_string(&event.payload, "agent_id")
+                        .unwrap_or_else(|| "planner".to_owned()),
+                    content: public_preview(&summary, 800),
+                    created_at,
+                }));
+            }
+            "planner.plan.updated" => {
+                items.push(TimelineItem::PlanUpdate(PlanUpdateItem {
+                    id: timeline_id(event, "plan-update"),
+                    agent_id: "planner".to_owned(),
+                    title: "Plan updated".to_owned(),
+                    summary: event
+                        .payload
+                        .get("acceptance_criteria")
+                        .and_then(|value| value.as_array())
+                        .map(|items| format!("{} acceptance criteria", items.len()))
+                        .unwrap_or_else(|| "Planner updated execution context.".to_owned()),
+                    created_at,
+                }));
+            }
+            "planner.readiness.changed" | "reasoning.summary" => {
+                let summary = payload_string(&event.payload, "summary")
+                    .or_else(|| payload_string(&event.payload, "readiness"))
+                    .unwrap_or_else(|| "Planner checked readiness.".to_owned());
+                items.push(TimelineItem::ReasoningSummary(ReasoningSummaryItem {
+                    id: timeline_id(event, "reasoning"),
+                    agent_id: "planner".to_owned(),
+                    summary_text: vec![public_preview(&summary, 500)],
+                    created_at,
+                }));
+            }
+            "node.started" | "node.completed" | "agent.called" | "agent.completed"
+            | "workflow.started" | "round.started" | "run.completed" | "run.failed"
+            | "run.blocked" | "run.cancelled" => {
+                items.push(TimelineItem::ExecutorStep(ExecutorStepItem {
+                    id: timeline_id(event, "step"),
+                    agent_id: payload_string(&event.payload, "agent_id")
+                        .or_else(|| payload_string(&event.payload, "node_id"))
+                        .unwrap_or_else(|| "executor".to_owned()),
+                    title: event.kind.replace('.', " "),
+                    status: status_from_event_kind(&event.kind),
+                    summary: payload_string(&event.payload, "summary")
+                        .or_else(|| payload_string(&event.payload, "message"))
+                        .map(|value| public_preview(&value, 500)),
+                    created_at,
+                }));
+            }
+            "tool.called" | "tool.result" | "mcp.tool.called" | "mcp.tool.completed" => {
+                items.push(TimelineItem::ToolCall(ToolCallItem {
+                    id: timeline_id(event, "tool"),
+                    agent_id: payload_string(&event.payload, "agent_id")
+                        .unwrap_or_else(|| "executor".to_owned()),
+                    tool_name: payload_string(&event.payload, "tool_name")
+                        .or_else(|| payload_string(&event.payload, "node_id"))
+                        .unwrap_or_else(|| "tool".to_owned()),
+                    status: status_from_event_kind(&event.kind),
+                    summary: payload_string(&event.payload, "result_summary")
+                        .or_else(|| payload_string(&event.payload, "summary"))
+                        .map(|value| public_preview(&value, 500)),
+                    evidence_ref: first_event_ref(event),
+                    created_at,
+                }));
+            }
+            "command.previewed" | "command.completed" | "command.failed" => {
+                items.push(TimelineItem::CommandExecution(CommandExecutionItem {
+                    id: timeline_id(event, "command"),
+                    agent_id: "executor".to_owned(),
+                    command: command_from_payload(&event.payload),
+                    cwd: payload_string(&event.payload, "cwd").unwrap_or_else(|| ".".to_owned()),
+                    status: status_from_event_kind(&event.kind),
+                    stdout_preview: payload_string(&event.payload, "stdout_preview")
+                        .or_else(|| payload_string(&event.payload, "output"))
+                        .map(|value| public_preview(&value, 1000)),
+                    stderr_preview: payload_string(&event.payload, "stderr_preview")
+                        .map(|value| public_preview(&value, 1000)),
+                    exit_code: payload_i64(&event.payload, "returncode")
+                        .or_else(|| payload_i64(&event.payload, "exit_code")),
+                    duration_ms: payload_u64(&event.payload, "duration_ms"),
+                    evidence_ref: first_event_ref(event),
+                    created_at,
+                }));
+            }
+            "patch.previewed" | "patch.applied" | "patch.failed" => {
+                let files = changed_files_from_payload(&event.payload);
+                if files.is_empty() {
+                    items.push(TimelineItem::FileChange(FileChangeItem {
+                        id: timeline_id(event, "file"),
+                        agent_id: "executor".to_owned(),
+                        path: payload_string(&event.payload, "patch_file")
+                            .unwrap_or_else(|| "patch".to_owned()),
+                        change_type: status_from_event_kind(&event.kind),
+                        diff_ref: first_event_ref(event),
+                        created_at,
+                    }));
+                } else {
+                    for (index, file) in files.into_iter().enumerate() {
+                        items.push(TimelineItem::FileChange(FileChangeItem {
+                            id: format!("{}-{index}", timeline_id(event, "file")),
+                            agent_id: "executor".to_owned(),
+                            path: file.path,
+                            change_type: file.change_type,
+                            diff_ref: first_event_ref(event),
+                            created_at: created_at.clone(),
+                        }));
+                    }
+                }
+            }
+            "approval.requested" | "approval.required" | "approval.recorded" => {
+                items.push(TimelineItem::Approval(ApprovalItem {
+                    id: timeline_id(event, "approval"),
+                    agent_id: payload_string(&event.payload, "agent_id")
+                        .unwrap_or_else(|| "executor".to_owned()),
+                    risk_level: payload_string(&event.payload, "risk_level")
+                        .or_else(|| payload_string(&event.payload, "risk"))
+                        .unwrap_or_else(|| "medium".to_owned()),
+                    action_type: payload_string(&event.payload, "action_type")
+                        .or_else(|| payload_string(&event.payload, "approval_type"))
+                        .unwrap_or_else(|| "approval".to_owned()),
+                    summary: payload_string(&event.payload, "summary")
+                        .or_else(|| payload_string(&event.payload, "reason"))
+                        .unwrap_or_else(|| "Approval requested.".to_owned()),
+                    status: status_from_event_kind(&event.kind),
+                    created_at,
+                }));
+            }
+            "verification.started" | "verification.completed" | "verification.failed" => {
+                items.push(TimelineItem::Verification(VerificationItem {
+                    id: timeline_id(event, "verification"),
+                    agent_id: "executor".to_owned(),
+                    status: status_from_event_kind(&event.kind),
+                    summary: payload_string(&event.payload, "summary")
+                        .or_else(|| payload_string(&event.payload, "command"))
+                        .unwrap_or_else(|| "Verification step.".to_owned()),
+                    evidence_ref: first_event_ref(event),
+                    created_at,
+                }));
+            }
+            kind if kind.starts_with("backend.openhands.") => {
+                items.push(TimelineItem::ToolCall(ToolCallItem {
+                    id: timeline_id(event, "openhands"),
+                    agent_id: "executor".to_owned(),
+                    tool_name: "OpenHands".to_owned(),
+                    status: status_from_event_kind(&event.kind),
+                    summary: payload_string(&event.payload, "summary")
+                        .or_else(|| payload_string(&event.payload, "message"))
+                        .map(|value| public_preview(&value, 500)),
+                    evidence_ref: first_event_ref(event),
+                    created_at,
+                }));
+            }
+            _ => {}
+        }
+    }
+    if let Some(report) = report {
+        items.push(TimelineItem::FinalSummary(FinalSummaryItem {
+            id: format!("timeline-final-{}", run_id.as_str()),
+            agent_id: "planner".to_owned(),
+            summary: public_preview(&report.summary, 1200),
+            changed_files: report.changed_files.clone(),
+            checks: report.checks.clone(),
+            evidence_refs: report.evidence_refs.clone(),
+            created_at: events
+                .last()
+                .map(|event| event.timestamp.to_string())
+                .unwrap_or_default(),
+        }));
+    }
+    items
+}
+
+fn build_current_change_set(
+    store: &RunStore,
+    run_id: &RunId,
+) -> Result<Option<ChangeSet>, ApiError> {
+    let events = store.read_events(run_id)?;
+    let report = store.read_report(run_id)?.unwrap_or_else(|| {
+        store
+            .build_evidence_report(run_id)
+            .unwrap_or_else(|_| FinalReport::completed("No report available."))
+    });
+    let Some(repo_root) = repo_root_from_events(&events) else {
+        return Ok(None);
+    };
+    let diff = git_diff(&repo_root, 1024 * 1024)?;
+    if diff.preview.trim().is_empty() && report.changed_files.is_empty() {
+        return Ok(None);
+    }
+    let change_set_id = "changeset-current".to_owned();
+    let changed_files = if !report.changed_files.is_empty() {
+        report
+            .changed_files
+            .iter()
+            .map(|path| ChangedFileSummary {
+                path: path.clone(),
+                change_type: "modified".to_owned(),
+                additions: None,
+                deletions: None,
+            })
+            .collect()
+    } else {
+        changed_files_from_diff(&diff.preview)
+    };
+    let command_checks = report
+        .checks
+        .iter()
+        .filter(|check| !check.starts_with("plan_context:") && !check.starts_with("acceptance:"))
+        .map(|check| CommandCheckSummary {
+            command: check.clone(),
+            status: if check.contains("failed") {
+                "failed".to_owned()
+            } else {
+                "completed".to_owned()
+            },
+            exit_code: None,
+        })
+        .collect();
+    let before_checkpoint_ref = store
+        .list_checkpoints(run_id)?
+        .into_iter()
+        .find(|checkpoint| checkpoint.name == "before-run.json")
+        .map(|checkpoint| checkpoint.checkpoint_ref);
+    let after_diff_ref = Some(format!(
+        "artifact://runs/{}/artifacts/{}.json",
+        run_id.as_str(),
+        change_set_id
+    ));
+    let change_set = ChangeSet {
+        change_set_id,
+        run_id: run_id.to_string(),
+        repo_root,
+        status: ChangeSetStatus::PendingReview,
+        created_at: now_timestamp_string(),
+        base_git_head: run_started_payload_string(&events, "git_head"),
+        before_checkpoint_ref,
+        after_diff_ref,
+        reverse_patch_ref: Some("reverse:git-apply-r".to_owned()),
+        changed_files,
+        command_checks,
+        evidence_refs: report.evidence_refs,
+        after_diff: diff.preview,
+        diff_truncated: diff.truncated,
+    };
+    write_change_set(store, run_id, &change_set)?;
+    Ok(Some(change_set))
+}
+
+fn read_change_set(
+    store: &RunStore,
+    run_id: &RunId,
+    change_set_id: &str,
+) -> Result<ChangeSet, ApiError> {
+    match store.read_artifact_json(run_id, &change_set_artifact_name(change_set_id)) {
+        Ok(value) => Ok(serde_json::from_value(value).map_err(|error| {
+            ApiError::internal(format!("stored change set is invalid: {error}"))
+        })?),
+        Err(StoreError::ArtifactNotFound { .. }) => build_current_change_set(store, run_id)?
+            .filter(|change_set| change_set.change_set_id == change_set_id)
+            .ok_or_else(|| {
+                ApiError::not_found(format!("change set '{change_set_id}' was not found"))
+            }),
+        Err(error) => Err(ApiError::from(error)),
+    }
+}
+
+fn write_change_set(
+    store: &RunStore,
+    run_id: &RunId,
+    change_set: &ChangeSet,
+) -> Result<String, ApiError> {
+    Ok(store.write_artifact(
+        run_id,
+        &change_set_artifact_name(&change_set.change_set_id),
+        change_set,
+    )?)
+}
+
+fn append_change_set_event(
+    store: &RunStore,
+    run_id: &RunId,
+    kind: &str,
+    change_set_id: &str,
+    mut payload: Value,
+) -> Result<(), ApiError> {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "change_set_id".to_owned(),
+            Value::String(change_set_id.to_owned()),
+        );
+    }
+    let sequence = store.read_events(run_id)?.len() as u64 + 1;
+    store.append_event(
+        run_id,
+        &coder_events::CoderEvent::new(run_id.clone(), sequence, kind, payload),
+    )?;
+    Ok(())
+}
+
+fn apply_reverse_diff(repo_root: &str, diff: &str) -> Result<(), ApiError> {
+    if diff.trim().is_empty() {
+        return Ok(());
+    }
+    let root = fs::canonicalize(repo_root).map_err(|error| {
+        ApiError::bad_request(format!("repo root '{repo_root}' is invalid: {error}"))
+    })?;
+    if !root.is_dir() {
+        return Err(ApiError::bad_request(format!(
+            "repo root '{}' is not a directory",
+            root.display()
+        )));
+    }
+    run_git_apply_reverse(&root, diff, true)?;
+    run_git_apply_reverse(&root, diff, false)
+}
+
+fn run_git_apply_reverse(root: &FsPath, diff: &str, check: bool) -> Result<(), ApiError> {
+    let mut command = Command::new("git");
+    command.arg("apply").arg("-R");
+    if check {
+        command.arg("--check");
+    }
+    let mut child = command
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| ApiError::internal(format!("failed to run git apply: {error}")))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| ApiError::internal("failed to open git apply stdin"))?
+        .write_all(diff.as_bytes())
+        .map_err(|error| ApiError::internal(format!("failed to write reverse patch: {error}")))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| ApiError::internal(format!("failed to wait for git apply: {error}")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(ApiError::conflict(format!(
+        "reverse patch did not apply cleanly: {}",
+        public_preview(&stderr, 1000)
+    )))
+}
+
+fn change_set_artifact_name(change_set_id: &str) -> String {
+    format!("{change_set_id}.json")
+}
+
+fn repo_root_from_events(events: &[coder_events::CoderEvent]) -> Option<String> {
+    events
+        .iter()
+        .find(|event| event.kind == "run.started")
+        .and_then(|event| payload_string(&event.payload, "repo_root"))
+}
+
+fn run_started_payload_string(events: &[coder_events::CoderEvent], key: &str) -> Option<String> {
+    events
+        .iter()
+        .find(|event| event.kind == "run.started")
+        .and_then(|event| payload_string(&event.payload, key))
+}
+
+fn changed_files_from_payload(payload: &Value) -> Vec<ChangedFileSummary> {
+    payload
+        .get("files")
+        .and_then(|value| value.as_array())
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(|file| {
+                    let path = payload_string(file, "new_path")
+                        .or_else(|| payload_string(file, "path"))
+                        .or_else(|| payload_string(file, "old_path"))?;
+                    Some(ChangedFileSummary {
+                        path,
+                        change_type: payload_string(file, "status")
+                            .or_else(|| payload_string(file, "action"))
+                            .unwrap_or_else(|| "modified".to_owned()),
+                        additions: payload_u64(file, "additions").map(|value| value as usize),
+                        deletions: payload_u64(file, "deletions").map(|value| value as usize),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn changed_files_from_diff(diff: &str) -> Vec<ChangedFileSummary> {
+    let mut files = Vec::new();
+    for line in diff.lines() {
+        let Some(path) = line.strip_prefix("+++ b/") else {
+            continue;
+        };
+        if path == "/dev/null" {
+            continue;
+        }
+        files.push(ChangedFileSummary {
+            path: path.to_owned(),
+            change_type: "modified".to_owned(),
+            additions: None,
+            deletions: None,
+        });
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    files.dedup_by(|left, right| left.path == right.path);
+    files
+}
+
+fn command_from_payload(payload: &Value) -> Vec<String> {
+    payload
+        .get("argv")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| {
+            payload_string(payload, "command")
+                .map(|command| vec![command])
+                .unwrap_or_else(|| vec!["command".to_owned()])
+        })
+}
+
+fn payload_string(payload: &Value, key: &str) -> Option<String> {
+    payload.get(key).and_then(|value| match value {
+        Value::String(value) if !value.is_empty() => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    })
+}
+
+fn payload_i64(payload: &Value, key: &str) -> Option<i64> {
+    payload.get(key).and_then(Value::as_i64)
+}
+
+fn payload_u64(payload: &Value, key: &str) -> Option<u64> {
+    payload.get(key).and_then(Value::as_u64)
+}
+
+fn timeline_id(event: &coder_events::CoderEvent, suffix: &str) -> String {
+    format!("{}-{suffix}", event.event_id)
+}
+
+fn first_event_ref(event: &coder_events::CoderEvent) -> Option<String> {
+    event.refs.first().map(|reference| reference.uri.clone())
+}
+
+fn status_from_event_kind(kind: &str) -> String {
+    if kind.ends_with(".failed") || kind == "run.failed" {
+        "failed".to_owned()
+    } else if kind.ends_with(".completed") || kind == "run.completed" {
+        "completed".to_owned()
+    } else if kind.ends_with(".started") {
+        "running".to_owned()
+    } else if kind.ends_with(".requested") || kind.ends_with(".required") {
+        "pending".to_owned()
+    } else if kind.ends_with(".applied") {
+        "applied".to_owned()
+    } else if kind.ends_with(".previewed") {
+        "previewed".to_owned()
+    } else {
+        "noted".to_owned()
+    }
+}
+
+fn public_preview(text: &str, max_chars: usize) -> String {
+    let mut output = String::new();
+    for ch in text.chars().take(max_chars) {
+        output.push(ch);
+    }
+    if text.chars().count() > max_chars {
+        output.push_str("...");
+    }
+    redact_secret_markers(&output)
+}
+
+fn redact_secret_markers(text: &str) -> String {
+    let mut redacted = text.to_owned();
+    for marker in [
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "password",
+        "private_key",
+        "secret",
+        "token",
+    ] {
+        if redacted.to_ascii_lowercase().contains(marker) {
+            redacted = "[redacted sensitive output]".to_owned();
+            break;
+        }
+    }
+    redacted
+}
+
+fn builtin_hooks() -> Vec<HookSummary> {
+    vec![
+        HookSummary {
+            id: "approval.guardian".to_owned(),
+            trigger: "approval.requested".to_owned(),
+            enabled: true,
+            description: "Routes risky executor actions through human approval.".to_owned(),
+        },
+        HookSummary {
+            id: "final-summary".to_owned(),
+            trigger: "run.finalizing".to_owned(),
+            enabled: true,
+            description: "Builds the evidence-backed final summary.".to_owned(),
+        },
+    ]
+}
+
+fn now_timestamp_string() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| format!("unix:{}", duration.as_secs()))
+        .unwrap_or_else(|_| "unix:0".to_owned())
+}
+
+fn store_dir_size(path: &FsPath) -> u64 {
+    let Ok(metadata) = fs::metadata(path) else {
+        return 0;
+    };
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+    fs::read_dir(path)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| store_dir_size(&entry.path()))
+                .sum()
+        })
+        .unwrap_or(0)
 }
 
 fn set_skill_enabled(
@@ -4086,6 +5557,13 @@ impl ApiError {
         }
     }
 
+    fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: message.into(),
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -4173,7 +5651,7 @@ impl From<MemoryError> for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{fs, path::PathBuf, process::Command};
 
     use axum::{
         body::{to_bytes, Body},
@@ -6393,6 +7871,253 @@ diff --git a/tracked.txt b/tracked.txt
         let _ = fs::remove_dir_all(root);
     }
 
+    #[tokio::test]
+    async fn planner_chat_turn_does_not_start_run_and_start_work_does() {
+        let root = temp_root();
+        let app = router(ApiState::new(RunStore::new(&root)));
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "planner_agent_id": "planner",
+                "config": example_config(),
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        assert_eq!(create_response.status(), StatusCode::OK);
+        let create_body = response_json(create_response).await;
+        let session_id = create_body["session"]["session_id"].as_str().unwrap();
+
+        let turn_response = post_json(
+            app.clone(),
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "Update README.md\nAcceptance: build passes.",
+                "confirmed": true,
+                "mode": "discuss",
+                "planner_agent_id": "planner",
+                "config": example_config()
+            }),
+        )
+        .await;
+        assert_eq!(turn_response.status(), StatusCode::OK);
+        let turn_body = response_json(turn_response).await;
+        assert_eq!(turn_body["ready"], true);
+        assert!(RunStore::new(&root)
+            .list_run_summaries()
+            .unwrap()
+            .is_empty());
+
+        let start_response = post_json(
+            app.clone(),
+            &format!("/api/v3/planner-chat/sessions/{session_id}/start-work"),
+            json!({
+                "repo": ".",
+                "workflow_id": "planner-led",
+                "planner_agent_id": "planner",
+                "config": example_config(),
+                "scopes": ["README.md"]
+            }),
+        )
+        .await;
+        assert_eq!(start_response.status(), StatusCode::OK);
+        let start_body = response_json(start_response).await;
+        let run_id = start_body["run_id"].as_str().unwrap();
+        let events = RunStore::new(&root)
+            .read_events(&RunId::from_string(run_id))
+            .unwrap();
+        assert_eq!(events[0].kind, "run.started");
+        assert!(events[0].payload.get("plan_context").is_some());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn timeline_projects_public_items_without_raw_payloads() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "run.started",
+                    json!({"task": "Update README.md", "repo_root": "."}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    2,
+                    "command.completed",
+                    json!({"command": "cargo test", "returncode": 0, "output": "ok"}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    3,
+                    "patch.applied",
+                    json!({"files": [{"new_path": "README.md", "status": "modified"}]}),
+                ),
+            )
+            .unwrap();
+        store
+            .write_report(
+                &run_id,
+                &FinalReport::completed("Done").with_check("cargo test: completed exit 0"),
+            )
+            .unwrap();
+        let app = router(ApiState::new(store));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/timeline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let items = body["items"].as_array().unwrap();
+        assert!(items.iter().any(|item| item["type"] == "command_execution"));
+        assert!(items.iter().any(|item| item["type"] == "file_change"));
+        assert!(items.iter().any(|item| item["type"] == "final_summary"));
+        assert!(items.iter().all(|item| item.get("payload").is_none()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn changeset_review_diff_accept_and_undo_roundtrip() {
+        let repo = temp_root();
+        let store_root = temp_root();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("tracked.txt"), "base\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "coder@example.test"]);
+        run_git(&repo, &["config", "user.name", "Coder Test"]);
+        run_git(&repo, &["add", "tracked.txt"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        fs::write(repo.join("tracked.txt"), "changed\n").unwrap();
+
+        let store = RunStore::new(&store_root);
+        let run_id = RunId::from_string("run-1");
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "run.started",
+                    json!({"repo_root": repo.display().to_string(), "task": "change file"}),
+                ),
+            )
+            .unwrap();
+        store
+            .write_report(
+                &run_id,
+                &FinalReport {
+                    changed_files: vec!["tracked.txt".to_owned()],
+                    ..FinalReport::completed("Changed tracked.txt")
+                },
+            )
+            .unwrap();
+        let app = router(ApiState::new(store));
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/changes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body = response_json(list_response).await;
+        let change_set_id = list_body["changes"][0]["change_set_id"].as_str().unwrap();
+
+        let diff_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v3/runs/run-1/changes/{change_set_id}/diff"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(diff_response.status(), StatusCode::OK);
+        let diff_body = response_json(diff_response).await;
+        assert!(diff_body["diff"].as_str().unwrap().contains("-base"));
+
+        let accept_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v3/runs/run-1/changes/{change_set_id}/accept"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(accept_response.status(), StatusCode::OK);
+
+        let undo_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v3/runs/run-1/changes/{change_set_id}/undo"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(undo_response.status(), StatusCode::OK);
+        assert_eq!(
+            fs::read_to_string(repo.join("tracked.txt"))
+                .unwrap()
+                .replace("\r\n", "\n"),
+            "base\n"
+        );
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn plugin_and_cache_codex_surfaces_are_available() {
+        let app = test_router();
+        for uri in [
+            "/api/v3/plugins/marketplaces",
+            "/api/v3/plugins",
+            "/api/v3/plugins/installed",
+            "/api/v3/skills/extra-roots",
+            "/api/v3/hooks",
+            "/api/v3/cache/status",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+        }
+    }
+
     fn test_router() -> Router {
         router(ApiState::new(RunStore::new(temp_root())))
     }
@@ -6425,6 +8150,20 @@ diff --git a/tracked.txt b/tracked.txt
         static NEXT_TEMP_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = NEXT_TEMP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!("coder-server-{}-{}", std::process::id(), id))
+    }
+
+    fn run_git(repo: &PathBuf, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn platform_echo_args(text: &str) -> Vec<String> {

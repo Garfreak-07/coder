@@ -246,7 +246,7 @@ export function validateWorkflowSpec(config: RustProjectConfig, workflowId: stri
       issues.push(issue("error", "workflow_node_agent_not_found", `Agent '${node.agent}' does not exist.`, "node", node.id));
     }
     if (!config.harnesses[node.harness]) {
-      issues.push(issue("error", "workflow_node_harness_not_found", `Work mode '${node.harness}' does not exist.`, "node", node.id));
+      issues.push(issue("error", "workflow_node_harness_not_found", `Harness '${node.harness}' does not exist.`, "node", node.id));
     }
   }
 

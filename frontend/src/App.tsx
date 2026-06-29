@@ -9,19 +9,23 @@ import {
   type NodeChange
 } from "@xyflow/react";
 import {
-  confirmPlannerChatDraft,
-  createPlannerChatDraft,
+  acceptChangeSet,
   createPlannerChatSession,
   deleteRun,
   getAgentWorkflow,
   getDefaultAgentWorkflow,
   getLibrary,
   getRun,
+  getChangeSetDiff,
+  getRunChangeSets,
   getRunEvents,
+  getRunTimeline,
   getToolResult,
   rollbackPatch,
   saveAgentWorkflow,
   sendPlannerChatTurn,
+  startPlannerSessionWork,
+  undoChangeSet,
   validateAgentWorkflow
 } from "./api";
 import { defaultPlannerLedAgentWorkflow } from "./examples";
@@ -33,7 +37,7 @@ import {
   type PlannerChatWorkflowSummary,
   type PlannerStrength
 } from "./features/planner-chat/PlannerChatPage";
-import { SkillsPanel } from "./features/skills/SkillsPanel";
+import { PluginsPage } from "./features/plugins/PluginsPage";
 import { useProviderSettings } from "./hooks/useProviderSettings";
 import { useRuntimeInfo } from "./hooks/useRuntimeInfo";
 import { enUS } from "./i18n";
@@ -63,12 +67,12 @@ import type {
   AgentWorkflowAgent,
   AgentWorkflowValidationResult,
   AgentWorkflowSpec,
+  ChangeSet,
   LibraryIndex,
   LiveRunDetail,
-  PlannerChatDraft,
   PlannerChatSession,
-  PlannerInteractionMode,
   RunEvent,
+  TimelineItem,
   StoredRunDetail
 } from "./types";
 
@@ -94,12 +98,11 @@ export function App() {
   const [eventHasMore, setEventHasMore] = useState(false);
   const [eventsLoadingMore, setEventsLoadingMore] = useState(false);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [plannerDraft, setPlannerDraft] = useState<PlannerChatDraft | null>(null);
   const [plannerSession, setPlannerSession] = useState<PlannerChatSession | null>(null);
-  const [plannerInteractionMode, setPlannerInteractionMode] = useState<PlannerInteractionMode>("discuss");
-  const [draftRequestText, setDraftRequestText] = useState("");
-  const [draftScopesText, setDraftScopesText] = useState("");
-  const [draftSuccessCriteriaText, setDraftSuccessCriteriaText] = useState("");
+  const [timelineItems, setTimelineItems] = useState<TimelineItem[]>([]);
+  const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
+  const [diffByChangeSetId, setDiffByChangeSetId] = useState<Record<string, string>>({});
+  const [loadingChangeSetId, setLoadingChangeSetId] = useState<string | null>(null);
   const [newAgentRoleCard, setNewAgentRoleCard] = useState("executor");
   const [connectionFrom, setConnectionFrom] = useState("planner");
   const [connectionTo, setConnectionTo] = useState("executor");
@@ -151,11 +154,23 @@ export function App() {
       .catch((error) => setStatus(`Failed to load library: ${error.message}`));
   }
 
+  async function loadRunReviewState(runId: string) {
+    const [timeline, changes] = await Promise.all([
+      getRunTimeline(runId),
+      getRunChangeSets(runId)
+    ]);
+    setTimelineItems(timeline.items);
+    setChangeSets(changes.changes);
+    setDiffByChangeSetId({});
+    setLoadingChangeSetId(null);
+  }
+
   async function openStoredRun(runId: string) {
     setStatus("Loading stored result...");
     try {
       const detail = await getRun(runId, false);
       const eventPage = await getRunEvents(runId);
+      await loadRunReviewState(runId);
       const hydrated = {
         ...detail,
         result: {
@@ -551,59 +566,6 @@ export function App() {
     setStatus(`Deleted connection ${agentDisplayName(agentWorkflow, edge.from)} -> ${agentDisplayName(agentWorkflow, edge.to)}.`);
   }
 
-  async function runWorkflow() {
-    const requestText = request.trim();
-    if (!requestText) return;
-    setRunLoading(true);
-    setStatus("Validating Agent workflow...");
-    try {
-      const workflow = normalizeAgentWorkflow(agentWorkflow);
-      const validation = await validateAgentWorkflow(workflow);
-      setAgentWorkflowValidation(validation);
-      setCurrentAgentWorkflow(workflow);
-      if (validation.status === "error") {
-        setStatus("Run blocked by Agent workflow validation errors.");
-        return;
-      }
-      const scopes = linesToList(scopesText);
-      setEvents([]);
-      setEventCursor(0);
-      setEventHasMore(false);
-      setEventsLoadingMore(false);
-      setActiveRunId(null);
-      setSelectedRunDetail(null);
-      setSelectedRunKind(null);
-      setPlannerSession(null);
-      setPlannerDraft(null);
-      setDraftRequestText("");
-      setDraftScopesText("");
-      setDraftSuccessCriteriaText("");
-      setStatus("Drafting plan...");
-      const draft = await createPlannerChatDraft({
-        repo,
-        request: requestText,
-        workflow_id: workflow.id,
-        planner_agent_id: workflow.primary_planner_id,
-        agent_workflow: workflow,
-        scopes,
-        skill_pack_ids: plannerChatWorkflowSummary.skillPackIds,
-        knowledge_pack_ids: plannerChatWorkflowSummary.knowledgePackIds,
-        memory_pack_ids: plannerChatWorkflowSummary.memoryPackIds
-      });
-      setPlannerDraft(draft);
-      setDraftRequestText(requestText);
-      setDraftScopesText((draft.proposed_scope.length > 0 ? draft.proposed_scope : scopes).join("\n"));
-      setDraftSuccessCriteriaText(draft.success_criteria.join("\n"));
-      setSubmittedRequest(requestText);
-      setRequest("");
-      setStatus("Plan draft ready for confirmation.");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRunLoading(false);
-    }
-  }
-
   async function sendPlannerTurn() {
     const requestText = request.trim();
     if (!requestText) return;
@@ -630,14 +592,14 @@ export function App() {
           skill_pack_ids: plannerChatWorkflowSummary.skillPackIds,
           knowledge_pack_ids: plannerChatWorkflowSummary.knowledgePackIds,
           memory_pack_ids: plannerChatWorkflowSummary.memoryPackIds,
-          interaction_mode: plannerInteractionMode
+          interaction_mode: "discuss"
         });
       }
       const response = await sendPlannerChatTurn({
         session_id: session.session_id,
         message: requestText,
-        interaction_mode: plannerInteractionMode,
-        start_if_ready: true,
+        interaction_mode: "discuss",
+        start_if_ready: false,
         repo,
         workflow_id: workflow.id,
         planner_agent_id: workflow.primary_planner_id,
@@ -648,89 +610,50 @@ export function App() {
         memory_pack_ids: plannerChatWorkflowSummary.memoryPackIds
       });
       setPlannerSession(response.session);
-      setPlannerDraft(null);
-      setDraftRequestText("");
-      setDraftScopesText("");
-      setDraftSuccessCriteriaText("");
       setSubmittedRequest(requestText);
       setRequest("");
+      setStatus(`Planner ${response.turn.decision.replaceAll("_", " ")}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRunLoading(false);
+    }
+  }
+
+  async function startWorkFromPlannerSession() {
+    if (!plannerSession) return;
+    setRunLoading(true);
+    setStatus("Starting work...");
+    try {
+      const workflow = normalizeAgentWorkflow(agentWorkflow);
+      const validation = await validateAgentWorkflow(workflow);
+      setAgentWorkflowValidation(validation);
+      setCurrentAgentWorkflow(workflow);
+      if (validation.status === "error") {
+        setStatus("Start Work blocked by Agent workflow validation errors.");
+        return;
+      }
+      const scopes = linesToList(scopesText);
+      const response = await startPlannerSessionWork({
+        session_id: plannerSession.session_id,
+        repo,
+        workflow_id: workflow.id,
+        planner_agent_id: workflow.primary_planner_id,
+        agent_workflow: workflow,
+        scopes,
+        skill_pack_ids: plannerChatWorkflowSummary.skillPackIds,
+        knowledge_pack_ids: plannerChatWorkflowSummary.knowledgePackIds,
+        memory_pack_ids: plannerChatWorkflowSummary.memoryPackIds
+      });
+      setPlannerSession(response.session);
       if (response.run_id) {
+        setActiveRunId(response.run_id);
         await openStoredRun(response.run_id);
-        setStatus(`Run ${response.status}.`);
+        setStatus(`Work ${response.status}.`);
         refreshRuntimeInfo();
       } else {
-        setStatus(`Planner ${response.turn.decision.replaceAll("_", " ")}.`);
+        setStatus(response.assistant_message ?? "Planner needs more information.");
       }
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRunLoading(false);
-    }
-  }
-
-  async function confirmDraft() {
-    if (!plannerDraft) return;
-    const confirmedRequest = (draftRequestText.trim() || submittedRequest).trim();
-    const confirmedScopes = linesToList(draftScopesText);
-    const confirmedSuccessCriteria = linesToList(draftSuccessCriteriaText);
-    if (!confirmedRequest) return;
-    setRunLoading(true);
-    setStatus("Starting confirmed run...");
-    try {
-      const run = await confirmPlannerChatDraft({
-        draft_id: plannerDraft.draft_id,
-        approved: true,
-        repo,
-        scopes: confirmedScopes,
-        edits: {
-          request: confirmedRequest,
-          proposed_scope: confirmedScopes,
-          success_criteria: confirmedSuccessCriteria
-        },
-        initial_data: {
-          request: confirmedRequest,
-          success_criteria: confirmedSuccessCriteria,
-          selected_skill_pack_ids: plannerChatWorkflowSummary.skillPackIds,
-          selected_knowledge_pack_ids: plannerChatWorkflowSummary.knowledgePackIds,
-          selected_memory_pack_ids: plannerChatWorkflowSummary.memoryPackIds
-        }
-      });
-      if (!run.run_id) {
-        throw new Error("Draft confirmation did not start a run.");
-      }
-      setPlannerDraft(null);
-      setDraftRequestText("");
-      setDraftScopesText("");
-      setDraftSuccessCriteriaText("");
-      setSubmittedRequest(confirmedRequest);
-      setScopesText(confirmedScopes.join("\n"));
-      setActiveRunId(run.run_id);
-      await openStoredRun(run.run_id);
-      setStatus(`Run ${run.status}.`);
-      refreshRuntimeInfo();
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRunLoading(false);
-    }
-  }
-
-  async function cancelDraft() {
-    if (!plannerDraft) return;
-    setRunLoading(true);
-    setStatus("Discarding plan draft...");
-    try {
-      await confirmPlannerChatDraft({
-        draft_id: plannerDraft.draft_id,
-        approved: false
-      });
-      setPlannerDraft(null);
-      setDraftRequestText("");
-      setDraftScopesText("");
-      setDraftSuccessCriteriaText("");
-      setRequest(submittedRequest);
-      setSubmittedRequest("");
-      setStatus("Plan draft discarded.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -750,10 +673,60 @@ export function App() {
       setEvents([]);
       setEventCursor(0);
       setEventHasMore(false);
+      setTimelineItems([]);
+      setChangeSets([]);
+      setDiffByChangeSetId({});
+      setLoadingChangeSetId(null);
       refreshRuntimeInfo();
       setStatus(`Deleted ${result.run_id}; removed ${result.orphan_blobs_removed} orphan blob(s).`);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function loadChangeSetDiff(changeSetId: string) {
+    const runId = selectedRunDetail?.id ?? activeRunId;
+    if (!runId) return;
+    setLoadingChangeSetId(changeSetId);
+    setStatus(`Loading diff for ${changeSetId}...`);
+    try {
+      const response = await getChangeSetDiff(runId, changeSetId);
+      setDiffByChangeSetId((current) => ({
+        ...current,
+        [changeSetId]: response.diff
+      }));
+      setStatus(response.truncated ? "Diff loaded; output is truncated." : "Diff loaded.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    } finally {
+      setLoadingChangeSetId(null);
+    }
+  }
+
+  async function acceptReviewedChangeSet(changeSetId: string) {
+    const runId = selectedRunDetail?.id ?? activeRunId;
+    if (!runId) return;
+    setStatus(`Accepting ${changeSetId}...`);
+    try {
+      await acceptChangeSet(runId, changeSetId);
+      await loadRunReviewState(runId);
+      setStatus(`Accepted ${changeSetId}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function undoReviewedChangeSet(changeSetId: string) {
+    const runId = selectedRunDetail?.id ?? activeRunId;
+    if (!runId) return;
+    setStatus(`Undoing ${changeSetId}...`);
+    try {
+      await undoChangeSet(runId, changeSetId);
+      await loadRunReviewState(runId);
+      setStatus(`Undid ${changeSetId}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+      await loadRunReviewState(runId).catch(() => undefined);
     }
   }
 
@@ -770,10 +743,10 @@ export function App() {
     );
   }, []);
   const plannerStrength = plannerStrengthFromTier(primaryPlannerAgent?.model_tier ?? "best");
-  const chatEvidence = (
+  const debugEvidence = debugUiEnabled ? (
     <div className="chat-evidence-stack">
       <RunFinalReport detail={selectedRunDetail} events={events} />
-      {debugUiEnabled && <RunSummary events={events} />}
+      <RunSummary events={events} />
       <RunEvidenceCards events={events} />
       <PatchPanel
         events={events}
@@ -782,7 +755,7 @@ export function App() {
         scopes={linesToList(scopesText)}
         onStatus={setStatus}
       />
-      {debugUiEnabled && events.length > 0 && (
+      {events.length > 0 && (
         <details className="event-log-details">
           <summary>Advanced debug: event log</summary>
           <EventReplayList
@@ -791,7 +764,7 @@ export function App() {
           />
         </details>
       )}
-      {debugUiEnabled && selectedRunDetail && (
+      {selectedRunDetail && (
         <details className="event-log-details">
           <summary>Advanced debug: export</summary>
           <button onClick={() => exportRunDebug(selectedRunDetail, selectedRunKind, events)}>
@@ -800,7 +773,7 @@ export function App() {
         </details>
       )}
     </div>
-  );
+  ) : null;
 
   return (
     <div className="app-shell">
@@ -808,34 +781,29 @@ export function App() {
 
       {activeSection === "chat" ? (
         <PlannerChatPage
-          activeRunId={activeRunId}
-          draftRequestText={draftRequestText}
-          draftScopesText={draftScopesText}
-          draftSuccessCriteriaText={draftSuccessCriteriaText}
-          evidence={chatEvidence}
+          activeRunId={selectedRunDetail?.id ?? activeRunId}
+          changeSets={changeSets}
+          debugEvidence={debugEvidence}
+          diffByChangeSetId={diffByChangeSetId}
+          loadingChangeSetId={loadingChangeSetId}
           repo={repo}
           request={request}
           runLoading={runLoading}
           runStatus={chatRunStatus}
           scopesText={scopesText}
           submittedRequest={submittedRequest}
-          planDraft={plannerDraft}
-          plannerInteractionMode={plannerInteractionMode}
+          timelineItems={timelineItems}
           plannerSession={plannerSession}
           plannerStrength={plannerStrength}
-          workflowSummary={plannerChatWorkflowSummary}
-          onCancelDraft={cancelDraft}
-          onConfirmDraft={confirmDraft}
-          onDraftPlan={runWorkflow}
-          onDraftRequestTextChange={setDraftRequestText}
-          onDraftScopesTextChange={setDraftScopesText}
-          onDraftSuccessCriteriaTextChange={setDraftSuccessCriteriaText}
-          onPlannerInteractionModeChange={setPlannerInteractionMode}
+          onAcceptChangeSet={acceptReviewedChangeSet}
+          onLoadChangeSetDiff={loadChangeSetDiff}
           onRepoChange={setRepo}
           onRequestChange={setRequest}
           onScopesTextChange={setScopesText}
           onPlannerStrengthChange={updatePlannerStrength}
+          onStartWork={startWorkFromPlannerSession}
           onSubmitRequest={sendPlannerTurn}
+          onUndoChangeSet={undoReviewedChangeSet}
         />
       ) : activeSection === "workflow" ? (
         <AgentWorkflowPage
@@ -885,9 +853,7 @@ export function App() {
           onWorkflowNameChange={(name) => updateAgentWorkflow((current) => ({ ...current, name }))}
         />
       ) : activeSection === "extensions" ? (
-        <main className="page-main">
-          <SkillsPanel onStatus={setStatus} />
-        </main>
+        <PluginsPage onStatus={setStatus} />
       ) : (
         <main className="page-main page-grid">
           <section className="panel">

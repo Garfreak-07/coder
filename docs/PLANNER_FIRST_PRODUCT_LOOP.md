@@ -5,20 +5,21 @@ enters execution.
 
 ```text
 User
--> Planner Chat in Discuss mode
--> structured PlanDraft and readiness
--> Work mode confirmation
+-> Planner Chat
+-> internal PlanDraft/readiness
+-> explicit Start Work action
 -> WorkflowRunner
 -> role-specific HarnessSpec
 -> planner-model, native Rust, or OpenHands backend
--> events, approvals, evidence, patches, checks
+-> Codex-style timeline, approvals, evidence, file changes, checks
+-> review changes / undo
 -> evidence-backed final report
 -> Planner-facing result summary
 ```
 
-## Discuss Mode
+## Planner Chat
 
-Discuss mode is conversational and side-effect free.
+Planner Chat is conversational and side-effect free.
 
 It can:
 
@@ -43,6 +44,7 @@ Backend contract:
 - `PlannerConversationRequest`
 - `PlannerConversationResponse`
 - `PlanDraft`
+- `POST /api/v3/planner-chat/sessions/{id}/turn` never starts a run
 
 Planner Chat resolves runtime from the workflow:
 
@@ -70,13 +72,17 @@ default execution agents and execution harnesses are also config-limited to
 through tool events, evidence refs, and plan context rather than durable
 project/global memory reads.
 
-## Work Mode
+## Start Work
 
-Work mode validates the current or newly generated plan. It blocks when open
-questions remain. It starts execution only when readiness is `ready` and the
-turn is explicitly confirmed.
+Start Work validates the current Planner session. It blocks when no plan exists
+or open questions remain. It starts execution only when readiness is `ready` and
+the user explicitly invokes:
 
-The Work-mode run request carries:
+```text
+POST /api/v3/planner-chat/sessions/{id}/start-work
+```
+
+The Start Work run request carries:
 
 - `original_user_request`
 - `planner_conversation_summary`
@@ -89,6 +95,30 @@ The Work-mode run request carries:
 `WorkflowRunner` records this plan context in run events, passes it into
 harness backend context, projects it into OpenHands payloads, and includes plan
 summary and acceptance criteria in the final report checks.
+
+## Timeline And Review
+
+Run events are projected through:
+
+```text
+GET /api/v3/runs/{run_id}/timeline
+```
+
+The timeline emits public items such as plan updates, executor steps, tool
+calls, command execution, file changes, approvals, verification, and final
+summary. It does not expose raw chain-of-thought or raw backend JSON by default.
+
+Code changes are reviewed through:
+
+```text
+GET  /api/v3/runs/{run_id}/changes
+GET  /api/v3/runs/{run_id}/changes/{change_set_id}/diff
+POST /api/v3/runs/{run_id}/changes/{change_set_id}/accept
+POST /api/v3/runs/{run_id}/changes/{change_set_id}/undo
+```
+
+Undo applies a reverse patch only when the current diff still matches the
+recorded review diff.
 
 ## Important Files
 

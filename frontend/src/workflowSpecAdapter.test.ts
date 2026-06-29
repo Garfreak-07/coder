@@ -214,9 +214,12 @@ test("run summary recognizes backend approval request events", () => {
   assert.ok(appSource.includes("isApprovalRequestEvent"));
 });
 
-test("Planner Chat page renders memory proposal review surface", () => {
+test("Planner Chat page uses Start Work timeline and hides legacy draft controls", () => {
   const source = readFileSync("src/features/planner-chat/PlannerChatPage.tsx", "utf8");
 
-  assert.ok(source.includes("Memory proposals"));
-  assert.ok(source.includes("memory_proposals"));
+  assert.ok(source.includes("Start Work"));
+  assert.ok(source.includes("WorkTimeline"));
+  assert.ok(source.includes("ReviewChangesCard"));
+  assert.ok(!source.includes("Draft plan"));
+  assert.ok(!source.includes("plannerInteractionMode"));
 });

@@ -9,30 +9,31 @@ Planner Chat:
 
 - `frontend/src/features/planner-chat/PlannerChatPage.tsx`
 - shows user and Planner messages
-- supports Discuss and Work mode
-- displays readiness, goal, open questions, acceptance criteria, risks, and
-  plan draft confirmation
+- keeps a single chat composer
+- exposes Start Work only when the Planner session is ready
+- does not show plan draft forms or readiness cards by default
 
 API adapter:
 
 - `frontend/src/api.ts`
 - calls Rust API v3 directly
 - maps backend Planner sessions and turns into frontend task state
-- sends plan context into `/api/v3/runs`
+- sends chat turns to `/planner-chat/sessions/{id}/turn`
+- starts execution only through `/planner-chat/sessions/{id}/start-work`
 - contains no v2/Python runtime switch
 
-Run timeline and evidence:
+Work timeline and review:
 
-- `frontend/src/runEvents.tsx`
-- renders events, artifacts, tool results, blob-backed output, and final report
-  artifacts
+- `frontend/src/features/work-timeline/WorkTimeline.tsx`
+- `frontend/src/features/review-changes/ReviewChangesCard.tsx`
+- renders public timeline items, final summary, changed files, diff, checks,
+  accept, and undo
 
-Run summary and approval prompts:
+Debug evidence:
 
 - `frontend/src/App.tsx`
-- recognizes `approval.requested` and `approval.required`
-- shows blocked run state, approval type, command preview when present, and
-  run details
+- keeps raw event replay, run evidence cards, and patch panel behind
+  `?debug=1` or `coder_debug_ui=1`
 
 Workflow canvas:
 
@@ -47,7 +48,9 @@ Ordinary UI should show user-language concepts:
 
 - Planner
 - Executor
-- Work mode
+- Start Work
+- Work timeline
+- Review Changes
 - permissions summary
 - readiness
 - evidence

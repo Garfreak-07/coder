@@ -833,6 +833,175 @@ export interface PlannerChatTurnResponse {
   session: PlannerChatSession;
 }
 
+export interface PlannerStartWorkResponse {
+  session: PlannerChatSession;
+  assistant_message?: string | null;
+  run_id?: string | null;
+  status: string;
+  events_url?: string | null;
+}
+
+export type TimelineItem =
+  | ({ type: "user_message" | "planner_message" } & MessageTimelineItem)
+  | ({ type: "reasoning_summary" } & ReasoningSummaryItem)
+  | ({ type: "plan_update" } & PlanUpdateItem)
+  | ({ type: "executor_step" } & ExecutorStepItem)
+  | ({ type: "tool_call" } & ToolCallItem)
+  | ({ type: "command_execution" } & CommandExecutionItem)
+  | ({ type: "file_change" } & FileChangeItem)
+  | ({ type: "approval" } & ApprovalItem)
+  | ({ type: "verification" } & VerificationItem)
+  | ({ type: "final_summary" } & FinalSummaryItem);
+
+export interface MessageTimelineItem {
+  id: string;
+  agent_id: string;
+  content: string;
+  created_at: string;
+}
+
+export interface ReasoningSummaryItem {
+  id: string;
+  agent_id: string;
+  summary_text: string[];
+  created_at: string;
+}
+
+export interface PlanUpdateItem {
+  id: string;
+  agent_id: string;
+  title: string;
+  summary: string;
+  created_at: string;
+}
+
+export interface ExecutorStepItem {
+  id: string;
+  agent_id: string;
+  title: string;
+  status: string;
+  summary?: string | null;
+  created_at: string;
+}
+
+export interface ToolCallItem {
+  id: string;
+  agent_id: string;
+  tool_name: string;
+  status: string;
+  summary?: string | null;
+  evidence_ref?: string | null;
+  created_at: string;
+}
+
+export interface CommandExecutionItem {
+  id: string;
+  agent_id: string;
+  command: string[];
+  cwd: string;
+  status: string;
+  stdout_preview?: string | null;
+  stderr_preview?: string | null;
+  exit_code?: number | null;
+  duration_ms?: number | null;
+  evidence_ref?: string | null;
+  created_at: string;
+}
+
+export interface FileChangeItem {
+  id: string;
+  agent_id: string;
+  path: string;
+  change_type: string;
+  diff_ref?: string | null;
+  created_at: string;
+}
+
+export interface ApprovalItem {
+  id: string;
+  agent_id: string;
+  risk_level: string;
+  action_type: string;
+  summary: string;
+  status: string;
+  created_at: string;
+}
+
+export interface VerificationItem {
+  id: string;
+  agent_id: string;
+  status: string;
+  summary: string;
+  evidence_ref?: string | null;
+  created_at: string;
+}
+
+export interface FinalSummaryItem {
+  id: string;
+  agent_id: string;
+  summary: string;
+  changed_files: string[];
+  checks: string[];
+  evidence_refs: RustEvidenceRef[];
+  created_at: string;
+}
+
+export interface RunTimelineResponse {
+  run_id: string;
+  items: TimelineItem[];
+}
+
+export type ChangeSetStatus = "pending_review" | "accepted" | "undone" | "failed_to_undo" | string;
+
+export interface ChangedFileSummary {
+  path: string;
+  change_type: string;
+  additions?: number | null;
+  deletions?: number | null;
+}
+
+export interface CommandCheckSummary {
+  command: string;
+  status: string;
+  exit_code?: number | null;
+}
+
+export interface ChangeSet {
+  change_set_id: string;
+  run_id: string;
+  repo_root: string;
+  status: ChangeSetStatus;
+  created_at: string;
+  base_git_head?: string | null;
+  before_checkpoint_ref?: string | null;
+  after_diff_ref?: string | null;
+  reverse_patch_ref?: string | null;
+  changed_files: ChangedFileSummary[];
+  command_checks: CommandCheckSummary[];
+  evidence_refs: RustEvidenceRef[];
+  after_diff: string;
+  diff_truncated: boolean;
+}
+
+export interface RunChangeSetListResponse {
+  run_id: string;
+  changes: ChangeSet[];
+}
+
+export interface ChangeSetDiffResponse {
+  run_id: string;
+  change_set_id: string;
+  diff: string;
+  truncated: boolean;
+}
+
+export interface ChangeSetActionResponse {
+  run_id: string;
+  change_set: ChangeSet;
+  status: string;
+  message: string;
+}
+
 export interface WorkflowActivityStep {
   id: string;
   label: string;
@@ -1139,4 +1308,51 @@ export interface PluginManifest extends ExtensionManifest {
   operations: string[];
   external_effect: boolean;
   requires_preview: boolean;
+}
+
+export interface PluginMarketplace {
+  name: string;
+  url: string;
+  enabled: boolean;
+}
+
+export interface PluginMarketplaceListResponse {
+  marketplaces: PluginMarketplace[];
+}
+
+export interface HookSummary {
+  id: string;
+  trigger: string;
+  enabled: boolean;
+  description: string;
+}
+
+export interface PluginReadResponse {
+  plugin: PluginManifest;
+  skills: RemoteSkillEntry[];
+  mcp_dependencies: unknown[];
+  hooks: HookSummary[];
+}
+
+export interface SkillExtraRoot {
+  path: string;
+  scope: string;
+  enabled: boolean;
+}
+
+export interface SkillExtraRootsResponse {
+  roots: SkillExtraRoot[];
+}
+
+export interface CacheBucketStatus {
+  entries: number;
+  bytes: number;
+  stale: boolean;
+}
+
+export interface CacheStatusResponse {
+  repo_index: CacheBucketStatus;
+  plugin_cache: CacheBucketStatus;
+  skill_cache: CacheBucketStatus;
+  blob_store: CacheBucketStatus;
 }

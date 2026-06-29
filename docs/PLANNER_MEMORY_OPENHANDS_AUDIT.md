@@ -21,9 +21,10 @@ boundary.
 - Product mode does not silently fake intelligence when the provider is missing.
   `planner_chat_product_mode_requires_configured_model_provider` proves the
   configuration-required error.
-- Discuss mode is side-effect free and cannot start work.
-  `planner_chat_discuss_mode_never_allows_execution` proves no workflow run is
-  started from Discuss mode.
+- Planner Chat turns are side-effect free and cannot start work.
+  `planner_chat_discuss_mode_never_allows_execution` and
+  `planner_chat_turn_does_not_start_run_and_start_work_does` prove no workflow
+  run is started from chat turns.
 
 ## Planner Memory Boundary Evidence
 
@@ -51,12 +52,12 @@ boundary.
   `execution_harnesses_cannot_request_long_term_memory_scopes` prevent
   reintroducing long-term scopes into non-Planner execution paths.
 
-## Work Mode Evidence
+## Start Work Evidence
 
-- Work mode is blocked until a structured `PlanDraft` is ready, open questions
-  are resolved, and the user confirms. Test
-  `planner_chat_work_mode_requires_ready_and_confirmation` covers unready,
-  ready-but-unconfirmed, and confirmed paths.
+- Start Work is blocked until a structured `PlanDraft` is ready and open
+  questions are resolved. Test
+  `planner_chat_turn_does_not_start_run_and_start_work_does` covers the split
+  between chat turn and explicit execution action.
 - The run endpoint passes `plan_context` into `WorkflowRunner`;
   `run_endpoint_uses_workflow_runner_and_plan_context` covers the server
   endpoint.
@@ -92,11 +93,11 @@ boundary.
 - React sends the current workflow config to Planner Chat through
   `createRustPlannerChatSession` and per-turn config updates through
   `sendRustPlannerChatTurn`.
-- React displays Planner transcript, PlanDraft state, open questions,
-  acceptance criteria, risks, memory proposals, run events, approval request
-  events, evidence, and final report surfaces. Covered by the frontend source
-  tests and the Vite build.
-- A local API-level Planner loop smoke covered Discuss, Work confirmation,
+- React displays Planner transcript, Start Work, Codex-style timeline, Review
+  Changes, approval request events, evidence-backed final summaries, and debug
+  event details only behind the debug UI. Covered by the frontend source tests
+  and the Vite build.
+- A local API-level Planner loop smoke covered Planner Chat, Start Work,
   run events, and report preview plan-context evidence against a real
   `coder-rust server` process.
 

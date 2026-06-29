@@ -596,6 +596,257 @@ label {
   max-width: 180px;
 }
 
+.work-timeline,
+.review-changes-card {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 12px;
+  display: grid;
+  gap: 12px;
+  max-width: 980px;
+  padding: 12px;
+  width: 100%;
+}
+
+.timeline-header,
+.review-header,
+.change-set-title {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.timeline-header span,
+.review-header span {
+  color: #93c5fd;
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.timeline-list {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timeline-item {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 12px minmax(0, 1fr);
+}
+
+.timeline-marker {
+  background: #38bdf8;
+  border-radius: 999px;
+  height: 10px;
+  margin-top: 14px;
+  width: 10px;
+}
+
+.timeline-body,
+.change-set-card,
+.plugin-section {
+  background: #151c27;
+  border: 1px solid #263244;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.timeline-title-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.timeline-title-row strong,
+.change-set-title strong,
+.plugin-card strong,
+.plugin-row strong,
+.plugin-detail-heading strong {
+  color: #f8fafc;
+}
+
+.timeline-title-row span,
+.change-set-title code {
+  background: #0b1220;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  color: #cbd5e1;
+  font-size: 11px;
+  padding: 3px 7px;
+}
+
+.timeline-body p,
+.final-summary-card p,
+.plugin-card p {
+  color: #d1d5db;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.timeline-body pre,
+.review-diff,
+.plugin-section pre {
+  background: #07111f;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  color: #dbeafe;
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.timeline-meta,
+.timeline-inline-list,
+.change-file-list,
+.change-check-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.timeline-meta span,
+.timeline-inline-list code,
+.change-file-list span,
+.change-check-list code,
+.plugin-card code,
+.plugin-row code,
+.cache-bucket code {
+  background: #0b1220;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  color: #cbd5e1;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+.timeline-inline-list {
+  display: grid;
+  gap: 6px;
+}
+
+.timeline-inline-list > span {
+  color: #93c5fd;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.change-file-list span {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.change-file-list small {
+  color: #93a4b8;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.plugins-page {
+  align-content: start;
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.plugin-marketplace-list {
+  display: grid;
+  gap: 8px;
+}
+
+.plugin-row {
+  align-items: center;
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr) auto;
+  padding: 8px;
+}
+
+.plugin-row span {
+  color: #aeb8c7;
+  overflow-wrap: anywhere;
+}
+
+.plugin-card-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.plugin-card {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 8px;
+  color: #d1d5db;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  text-align: left;
+}
+
+.plugin-card > div,
+.plugin-detail-heading {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.plugin-card-button {
+  cursor: pointer;
+}
+
+.cache-status-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.cache-bucket {
+  background: #101826;
+  border: 1px solid #263244;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+}
+
+.cache-bucket span {
+  color: #93c5fd;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.cache-bucket strong {
+  color: #f8fafc;
+}
+
 .workflow-page {
   display: grid;
   gap: 12px;
