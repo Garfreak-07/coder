@@ -101,6 +101,21 @@ The future desktop packaging path is documented in
 [`docs/DESKTOP_APP_PLAN.md`](docs/DESKTOP_APP_PLAN.md). Current development
 mode stays as the Rust API server plus Vite frontend.
 
+## Desktop Proof Of Concept
+
+The desktop path is an opt-in Tauri skeleton and is not part of the main CI
+release gate yet. It keeps the existing web/dev workflow intact.
+
+```powershell
+npm run desktop:dev
+npm run desktop:build
+```
+
+Desktop dev mode opens the React app through Vite. Start the Rust API server on
+`127.0.0.1:8876` as shown above before using the product flow. Static desktop
+builds default API calls to `http://127.0.0.1:8876` unless
+`VITE_CODER_API_BASE_URL` or `window.CODER_API_BASE_URL` is set.
+
 ## Test
 
 Rust:

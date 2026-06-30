@@ -101,6 +101,14 @@ const jsonHeaders = {
   "Content-Type": "application/json"
 };
 
+const defaultDesktopApiBaseUrl = "http://127.0.0.1:8876";
+
+declare global {
+  interface Window {
+    CODER_API_BASE_URL?: string;
+  }
+}
+
 interface RustPlannerChatSession {
   session_id: string;
   workflow_id: string;
@@ -183,8 +191,28 @@ interface PlannerSessionContext {
 
 const rustPlannerSessionContexts = new Map<string, PlannerSessionContext>();
 
+export function resolveApiUrl(url: string): string {
+  if (/^https?:\/\//i.test(url)) return url;
+  const baseUrl = configuredApiBaseUrl() || inferredDesktopApiBaseUrl();
+  return baseUrl ? `${baseUrl}${url}` : url;
+}
+
+function configuredApiBaseUrl(): string {
+  const viteEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env;
+  const windowApiBaseUrl = typeof window === "undefined" ? "" : window.CODER_API_BASE_URL ?? "";
+  const value = viteEnv?.VITE_CODER_API_BASE_URL ?? windowApiBaseUrl;
+  return value.trim().replace(/\/+$/, "");
+}
+
+function inferredDesktopApiBaseUrl(): string {
+  if (typeof window === "undefined") return "";
+  const protocol = window.location.protocol;
+  if (protocol === "http:" || protocol === "https:") return "";
+  return defaultDesktopApiBaseUrl;
+}
+
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const response = await fetch(resolveApiUrl(url), init);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${detail}`);
@@ -193,7 +221,7 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 async function requestBlob(url: string, init?: RequestInit): Promise<Blob> {
-  const response = await fetch(url, init);
+  const response = await fetch(resolveApiUrl(url), init);
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${detail}`);

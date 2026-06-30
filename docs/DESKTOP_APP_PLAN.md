@@ -153,6 +153,16 @@ The package should include React assets, the Rust runtime, license metadata,
 and default configuration. It must not package local `.coder/` state, API keys,
 workspace files, debug logs, or OpenHands secrets.
 
+The current proof-of-concept commands are:
+
+```powershell
+npm run desktop:dev
+npm run desktop:build
+```
+
+These commands use the root `package.json` and Tauri CLI. They are opt-in and
+do not replace the existing Rust server plus Vite workflow.
+
 ## What Not To Do Yet
 
 In scope for the first desktop path:

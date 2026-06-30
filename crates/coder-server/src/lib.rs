@@ -59,6 +59,7 @@ use coder_workflow::{MockWorkflowRunner, WorkflowError, WorkflowRunOptions, Work
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tower_http::cors::CorsLayer;
 
 const MCP_OUTPUT_INLINE_LIMIT: usize = 1024;
 
@@ -299,6 +300,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v3/blobs/sha256/{digest}", get(get_blob_sha256))
         .route("/api/v3/repo-evidence/{ref_id}", get(get_repo_evidence))
         .with_state(state)
+        .layer(CorsLayer::permissive())
 }
 
 pub async fn serve(addr: SocketAddr, state: ApiState) -> std::io::Result<()> {

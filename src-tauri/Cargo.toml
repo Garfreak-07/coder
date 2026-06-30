@@ -1,0 +1,12 @@
+[package]
+name = "coder-desktop"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tauri shell for the Coder workbench."
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

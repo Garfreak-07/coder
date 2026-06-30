@@ -334,6 +334,7 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "tower",
+ "tower-http",
 ]
 
 [[package]]

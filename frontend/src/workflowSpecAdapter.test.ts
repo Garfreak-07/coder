@@ -211,6 +211,29 @@ test("frontend API client stays on Rust v3 without Python switch", () => {
   assert.ok(apiSource.includes("legacyCanvasToWorkflowSpec(input.agent_workflow)"));
 });
 
+test("desktop skeleton keeps API fallback and desktop scripts opt-in", () => {
+  const apiSource = readFileSync("src/api.ts", "utf8");
+  const rootPackage = readFileSync("../package.json", "utf8");
+  const tauriConfig = readFileSync("../src-tauri/tauri.conf.json", "utf8");
+  const rootCargo = readFileSync("../Cargo.toml", "utf8");
+  const serverSource = readFileSync("../crates/coder-server/src/lib.rs", "utf8");
+  const docs = readFileSync("../docs/DESKTOP_APP_PLAN.md", "utf8");
+
+  assert.ok(apiSource.includes("VITE_CODER_API_BASE_URL"));
+  assert.ok(apiSource.includes("window.CODER_API_BASE_URL"));
+  assert.ok(apiSource.includes("http://127.0.0.1:8876"));
+  assert.ok(apiSource.includes("resolveApiUrl"));
+  assert.ok(rootPackage.includes("desktop:dev"));
+  assert.ok(rootPackage.includes("desktop:build"));
+  assert.ok(rootPackage.includes("@tauri-apps/cli@2"));
+  assert.ok(tauriConfig.includes("\"devUrl\": \"http://127.0.0.1:5173\""));
+  assert.ok(tauriConfig.includes("\"frontendDist\": \"../frontend/dist\""));
+  assert.ok(rootCargo.includes("exclude = [\"src-tauri\"]"));
+  assert.ok(serverSource.includes("CorsLayer::permissive()"));
+  assert.ok(docs.includes("npm run desktop:dev"));
+  assert.ok(docs.includes("npm run desktop:build"));
+});
+
 test("run summary recognizes backend approval request events", () => {
   const appSource = readFileSync("src/App.tsx", "utf8");
 

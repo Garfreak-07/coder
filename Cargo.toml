@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["src-tauri"]
 members = [
   "crates/coder-cli",
   "crates/coder-config",
@@ -35,6 +36,7 @@ thiserror = "2"
 time = { version = "0.3", features = ["formatting", "macros", "parsing", "serde"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [workspace.dependencies.coder-config]
