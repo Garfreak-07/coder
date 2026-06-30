@@ -3341,7 +3341,7 @@ impl Default for ProviderSettings {
                 "https://api.deepseek.com".to_owned(),
             )]),
             api_keys: BTreeMap::new(),
-            mock_mode: true,
+            mock_mode: false,
         }
     }
 }
@@ -6426,7 +6426,7 @@ mod tests {
             .to_owned();
 
         let turn_response = post_json(
-            app,
+            app.clone(),
             &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
             json!({
                 "message": "hello planner"
@@ -6439,6 +6439,24 @@ mod tests {
         assert_eq!(turn_status, StatusCode::OK, "{body}");
         assert_eq!(body["assistant_message"], "Live provider response.");
         assert_eq!(body["should_start_workflow"], false);
+        assert_eq!(body["execution_allowed"], false);
+
+        let second_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "second provider-backed turn"
+            }),
+        )
+        .await;
+
+        let second_status = second_response.status();
+        let second_body = response_json(second_response).await;
+        assert_eq!(second_status, StatusCode::OK, "{second_body}");
+        assert_eq!(second_body["assistant_message"], "Live provider response.");
+        assert_eq!(second_body["should_start_workflow"], false);
+        assert_eq!(second_body["execution_allowed"], false);
+        assert_eq!(second_body["session"]["turns"].as_array().unwrap().len(), 4);
         let _ = fs::remove_dir_all(store_root);
     }
 
@@ -7366,7 +7384,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_settings_endpoints_store_secret_refs_without_returning_keys() {
-        let app = test_router();
+        let app = router(ApiState::new(RunStore::new(temp_root())));
         let initial = app
             .clone()
             .oneshot(
@@ -7386,6 +7404,7 @@ mod tests {
             initial_body["settings"]["default_model"],
             "deepseek-v4-flash"
         );
+        assert_eq!(initial_body["settings"]["mock_mode"], false);
 
         let save = post_json(
             app.clone(),
@@ -8347,7 +8366,9 @@ diff --git a/tracked.txt b/tracked.txt
     async fn planner_chat_turn_does_not_start_run_and_start_work_does() {
         let root = temp_root();
         let store = RunStore::new(&root);
-        let app = router(ApiState::new(store.clone()));
+        let state = ApiState::new(store.clone());
+        state.provider_settings.lock().unwrap().mock_mode = true;
+        let app = router(state);
         let create_response = post_json(
             app.clone(),
             "/api/v3/planner-chat/sessions",
@@ -8472,6 +8493,7 @@ diff --git a/tracked.txt b/tracked.txt
         let root = temp_root();
         let store = RunStore::new(&root);
         let state = ApiState::new(store.clone());
+        state.provider_settings.lock().unwrap().mock_mode = true;
         let app = router(state.clone());
         let create_response = post_json(
             app.clone(),
@@ -8911,7 +8933,9 @@ diff --git a/tracked.txt b/tracked.txt
     }
 
     fn test_router() -> Router {
-        router(ApiState::new(RunStore::new(temp_root())))
+        let state = ApiState::new(RunStore::new(temp_root()));
+        state.provider_settings.lock().unwrap().mock_mode = true;
+        router(state)
     }
 
     async fn spawn_openai_compatible_test_server() -> String {

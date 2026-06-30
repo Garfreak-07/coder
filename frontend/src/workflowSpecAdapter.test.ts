@@ -400,6 +400,7 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(panelSource.includes("DeepSeek preset"));
   assert.ok(panelSource.includes("Test Provider"));
   assert.ok(panelSource.includes("Clear API Key"));
+  assert.ok(panelSource.includes("showMockMode"));
   assert.ok(panelSource.includes("Test succeeded"));
   assert.ok(panelSource.includes("Test failed"));
   assert.ok(panelSource.includes("openai-compatible"));
@@ -408,6 +409,7 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(hookSource.includes("https://api.deepseek.com"));
   assert.ok(hookSource.includes("api_keys: { [provider]: null }"));
   assert.ok(hookSource.includes("mock_mode: false"));
+  assert.ok(readFileSync("src/App.tsx", "utf8").includes("showMockMode={debugUiEnabled}"));
 });
 
 test("Planner Chat shows provider setup before chat when credentials are missing", () => {

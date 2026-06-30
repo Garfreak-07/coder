@@ -870,6 +870,7 @@ export function App() {
             <div className="panel-title">Provider Settings</div>
             <ProviderSettingsPanel
               form={providerForm}
+              showMockMode={debugUiEnabled}
               settings={providerSettings}
               status={providerStatus}
               testResult={providerTestResult}

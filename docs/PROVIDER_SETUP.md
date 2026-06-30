@@ -22,6 +22,9 @@ Planner Chat uses the configured provider in product mode. If provider
 credentials are missing, the Planner returns a setup-required assistant message
 instead of using a fake product response.
 
+Mock mode is for CI and developer debugging only. It is hidden from the normal
+Settings path and is not product-mode Planner behavior.
+
 API keys are accepted by the Rust server and kept in server memory for this MVP.
 The settings response only returns whether a key is configured and where it came
 from. Plaintext keys must not be written into repository files, run events,

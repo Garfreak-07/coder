@@ -6,6 +6,8 @@
 - Planner Chat is side-effect free; chat turns cannot start execution.
 - Planner Chat is LLM-backed in product mode and returns setup-required text
   instead of pretending to plan when provider credentials are missing.
+- Product-mode provider settings default to live mode; mock mode is explicit
+  CI/developer plumbing, not normal user behavior.
 - Start Work is an explicit execution action.
 - Executor work follows a public Reason -> Act -> Observe lifecycle through a
   harness; OpenHands is preferred when configured.

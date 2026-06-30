@@ -3,6 +3,7 @@ import type { ProviderFormState, ProviderSettings, ProviderStatus, ProviderTestR
 
 interface ProviderSettingsPanelProps {
   form: ProviderFormState;
+  showMockMode?: boolean;
   settings: ProviderSettings | null;
   status: ProviderStatus | null;
   testResult: ProviderTestResult | null;
@@ -15,6 +16,7 @@ interface ProviderSettingsPanelProps {
 
 export function ProviderSettingsPanel({
   form,
+  showMockMode = false,
   settings,
   status,
   testResult,
@@ -64,14 +66,16 @@ export function ProviderSettingsPanel({
           onChange={(event) => onChange({ api_key: event.target.value })}
         />
       </label>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={form.mock_mode}
-          onChange={(event) => onChange({ mock_mode: event.target.checked })}
-        />
-        Use mock output when credentials are missing
-      </label>
+      {showMockMode && (
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={form.mock_mode}
+            onChange={(event) => onChange({ mock_mode: event.target.checked })}
+          />
+          Use mock output when credentials are missing
+        </label>
+      )}
       {currentStatus && (
         <div className="summary-grid provider-summary">
           <span>{currentStatus.mode}</span>
