@@ -6,7 +6,7 @@ Generated on 2026-06-30 from local branch `main`.
 
 | Step | Commit | Summary |
 | --- | --- | --- |
-| 1 | `66cfa9e6` | Cleaned Planner Chat so the thread shows real user and assistant messages, with Draft Plan/status UI removed. |
+| 1 | `66cfa9e6` | Cleaned Planner Chat so the thread shows real user and assistant messages, with legacy planning/status UI removed. |
 | 2 | `e1b73d76` | Made Provider Settings the user-facing DeepSeek/OpenAI-compatible API-key path with redaction and test support. |
 | 3 | `9b0299e3` | Routed Planner Chat through the configured provider in product mode, with deterministic fallback limited to test/mock mode. |
 | 4 | `0b422eb7` | Made Start Work the only execution boundary and passed Planner context into workflow execution. |

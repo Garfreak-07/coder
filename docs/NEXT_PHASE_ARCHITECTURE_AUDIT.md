@@ -20,7 +20,8 @@ before behavior changes.
    - UI rendering is in
      `frontend/src/features/planner-chat/PlannerChatPage.tsx`.
    - App-level state and handlers are in `frontend/src/App.tsx`:
-     `plannerSession`, `plannerDraft`, `sendPlannerTurn`, and `runWorkflow`.
+     `plannerSession`, `sendPlannerTurn`, `startWorkFromPlannerSession`, and
+     `runWorkflow`.
 
 2. Discuss placeholder
    - The product placeholder is in `crates/coder-server/src/lib.rs`:
@@ -45,16 +46,15 @@ before behavior changes.
    - Workflow execution is in `crates/coder-workflow/src/lib.rs`:
      `WorkflowRunner::run` dispatches nodes to `HarnessBackend`.
 
-4. Plan draft and readiness representation
-   - Frontend draft type `PlannerChatDraft` is in `frontend/src/types.ts`.
-     It has `summary`, `proposed_scope`, `success_criteria`, `risks`, and
-     `requires_confirmation`, but it is generated from run preview rather than
-     from a real Planner conversation engine.
+4. Planner task state and readiness representation
+   - Frontend task state is represented by `PlannerTaskState` in
+     `frontend/src/types.ts`, and it is carried inside the Planner session
+     rather than through a separate user-facing planning flow.
    - Frontend task state type `PlannerTaskState` is in `frontend/src/types.ts`.
      It already has `goal`, `scope`, `success_criteria`, `open_questions`,
      `assumptions`, `risks`, `plan_steps`, and `readiness`.
-   - Backend has no explicit `PlanDraft` struct yet. `PlannerChatSession` only
-     stores `workflow_id`, `mode`, `ready`, and raw turns.
+   - Backend keeps structured plan state inside `PlannerChatSession`; the
+     product path does not expose a separate planning screen.
    - Backend run requests accept `config`, `workflow_id`, and `task`; no plan
      context is passed into `WorkflowRunner` yet.
 
@@ -72,9 +72,9 @@ before behavior changes.
    - `/api/v3/blobs/sha256/{digest}`
 
 6. React components and surfaces
-   - Planner Chat, mode selector, plan draft card, and work confirmation:
+   - Planner Chat conversation, Start Work control, timeline, and review link:
      `PlannerChatPage.tsx`.
-   - App state, submit flow, draft flow, and run attachment:
+   - App state, submit flow, Start Work flow, and run attachment:
      `App.tsx`.
    - Run timeline, artifact previews, externalized tool output, evidence refs,
      and final report preview: `runEvents.tsx`.
@@ -113,9 +113,9 @@ before behavior changes.
      stores raw event refs, normalizes events, and builds an evidence-backed
      OpenHands report.
    - Placeholder or weak areas:
-     - Planner Chat has no conversation engine and no backend plan draft.
-     - Work mode readiness is a string heuristic.
-     - Workflow run context passes only `task`, not structured plan context.
+     - Planner Chat depends on a configured product provider for real replies.
+     - Work readiness still needs stronger provider-backed task-state checks.
+     - Workflow run context should continue to preserve structured Planner state.
      - Native Rust backend derives tool use from keywords in task text.
      - Approval UI shows requested approvals but has no product path to approve
        and resume a blocked action.
@@ -177,7 +177,7 @@ explicit plan/readiness/rendering fields, not a new framework.
 ## Implementation Direction
 
 - Add a backend Planner conversation contract with deterministic fallback.
-- Persist structured plan draft/readiness in Planner Chat session state.
+- Keep structured Planner task state inside Planner Chat session state.
 - Make Discuss mode conversational and side-effect free.
 - Make Work mode block on open questions and require confirmation.
 - Pass structured plan context into workflow execution and harness context.

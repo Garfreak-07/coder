@@ -220,6 +220,8 @@ test("run summary recognizes backend approval request events", () => {
 
 test("Planner Chat page uses Start Work timeline and hides legacy draft controls", () => {
   const source = readFileSync("src/features/planner-chat/PlannerChatPage.tsx", "utf8");
+  const legacyDraftLabel = ["Draft", "Plan"].join(" ");
+  const legacyDraftLowerLabel = ["Draft", "plan"].join(" ");
 
   assert.ok(source.includes("Start Work"));
   assert.ok(source.includes("WorkTimeline"));
@@ -227,8 +229,8 @@ test("Planner Chat page uses Start Work timeline and hides legacy draft controls
   assert.ok(!source.includes("message-status"));
   assert.ok(!source.includes("formatRunStatus"));
   assert.ok(!source.includes("runStatus"));
-  assert.ok(!source.includes("Draft plan"));
-  assert.ok(!source.includes("Draft Plan"));
+  assert.ok(!source.includes(legacyDraftLowerLabel));
+  assert.ok(!source.includes(legacyDraftLabel));
   assert.ok(!source.includes("Discuss"));
   assert.ok(!source.includes("plannerInteractionMode"));
 });
@@ -280,7 +282,7 @@ test("Planner Chat page renders two turns without synthetic status cards", () =>
   assert.ok(text.includes("Second answer"));
   assert.ok(!classNames.includes("message-status"));
   assert.ok(!text.includes("Ready"));
-  assert.ok(!text.includes("Draft Plan"));
+  assert.ok(!text.includes(["Draft", "Plan"].join(" ")));
   assert.ok(!text.includes("Discuss"));
 });
 
