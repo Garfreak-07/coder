@@ -45,11 +45,14 @@ runs that reload with checkpoint data become `blocked` with
 `status_code="resume_available"`. Queued or running live runs without checkpoint
 data become failed with `interrupted_without_checkpoint`.
 
-Multi-run continuity is metadata, not a parallel session store:
+Multi-run execution continuity is metadata on runs:
 
 - `run_group_id`
 - `parent_run_id`
 - `continued_from_run_id`
 - `turn_index`
 
-Do not add `.coder/sessions/` unless this metadata model is proven insufficient.
+Planner Chat lifecycle continuity is stored separately as append-only,
+metadata-only JSONL under `.coder/sessions/<session_id>.jsonl`. Session JSONL
+links planning turns to runs but does not replace run metadata or store raw
+planner conversation text.

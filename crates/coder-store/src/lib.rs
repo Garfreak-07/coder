@@ -2,7 +2,7 @@ use std::{
     collections::BTreeSet,
     fs::{self, OpenOptions},
     io::{BufRead, BufReader, Write},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use coder_core::{FinalReport, ReportStatus, RunId, RunState, RunStatus};
@@ -25,6 +25,21 @@ const REPO_EVIDENCE_SECRET_MARKERS: &[&str] = &[
     "secret_key",
     "private_key",
 ];
+const LOCAL_STORE_DIRS: &[&str] = &[
+    "sessions",
+    "runs",
+    "timeline",
+    "blobs",
+    "artifacts",
+    "checkpoints",
+    "changesets",
+    "repo-index",
+    "plugin-cache",
+    "skill-cache",
+    "openhands-events",
+    "logs",
+    "tmp",
+];
 
 #[derive(Debug, Clone)]
 pub struct RunStore {
@@ -34,6 +49,18 @@ pub struct RunStore {
 impl RunStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn ensure_local_layout(&self) -> Result<LocalStoreLayout, StoreError> {
+        fs::create_dir_all(&self.root)?;
+        for dir in LOCAL_STORE_DIRS {
+            fs::create_dir_all(self.root.join(dir))?;
+        }
+        Ok(LocalStoreLayout::new(&self.root))
     }
 
     pub fn write_metadata(&self, state: &RunState) -> Result<(), StoreError> {
@@ -106,6 +133,58 @@ impl RunStore {
             }
         }
         Ok(events)
+    }
+
+    pub fn append_session_record(
+        &self,
+        session_id: &str,
+        sequence: u64,
+        kind: impl Into<String>,
+        payload: Value,
+    ) -> Result<(), StoreError> {
+        let session_id = safe_file_name(session_id)?;
+        let kind = kind.into();
+        reject_session_record_secret_like_text(&kind)?;
+        reject_session_record_secret_like_json(&payload)?;
+        let record = SessionJsonlRecord {
+            session_id: session_id.clone(),
+            sequence,
+            kind,
+            created_at: OffsetDateTime::now_utc(),
+            payload,
+        };
+        let path = self
+            .root
+            .join("sessions")
+            .join(format!("{session_id}.jsonl"));
+        ensure_parent(&path)?;
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        writeln!(file, "{}", serde_json::to_string(&record)?)?;
+        Ok(())
+    }
+
+    pub fn read_session_records(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionJsonlRecord>, StoreError> {
+        let session_id = safe_file_name(session_id)?;
+        let path = self
+            .root
+            .join("sessions")
+            .join(format!("{session_id}.jsonl"));
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = fs::File::open(path)?;
+        let reader = BufReader::new(file);
+        let mut records = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if !line.trim().is_empty() {
+                records.push(serde_json::from_str(&line)?);
+            }
+        }
+        Ok(records)
     }
 
     pub fn write_report(&self, run_id: &RunId, report: &FinalReport) -> Result<String, StoreError> {
@@ -543,6 +622,15 @@ impl RunStore {
         self.root.join("runs").join(run_id.as_str())
     }
 
+    pub fn cache_bucket_usage(
+        &self,
+        relative_dir: impl AsRef<Path>,
+    ) -> Result<CacheBucketUsage, StoreError> {
+        let relative_dir = relative_dir.as_ref();
+        ensure_safe_store_relative_path(relative_dir)?;
+        cache_bucket_usage_at(&self.root.join(relative_dir))
+    }
+
     fn safe_run_dir(&self, run_id: &RunId) -> Result<PathBuf, StoreError> {
         let safe_run_id = safe_store_segment(run_id.as_str(), "run_id")?;
         Ok(self.root.join("runs").join(safe_run_id))
@@ -551,6 +639,62 @@ impl RunStore {
     pub fn repo_evidence_count(&self, run_id: &RunId) -> Result<usize, StoreError> {
         Ok(self.list_repo_evidence(run_id)?.len())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalStoreLayout {
+    pub root: PathBuf,
+    pub sessions: PathBuf,
+    pub runs: PathBuf,
+    pub timeline: PathBuf,
+    pub blobs: PathBuf,
+    pub artifacts: PathBuf,
+    pub checkpoints: PathBuf,
+    pub changesets: PathBuf,
+    pub repo_index: PathBuf,
+    pub plugin_cache: PathBuf,
+    pub skill_cache: PathBuf,
+    pub openhands_events: PathBuf,
+    pub logs: PathBuf,
+    pub tmp: PathBuf,
+}
+
+impl LocalStoreLayout {
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            sessions: root.join("sessions"),
+            runs: root.join("runs"),
+            timeline: root.join("timeline"),
+            blobs: root.join("blobs"),
+            artifacts: root.join("artifacts"),
+            checkpoints: root.join("checkpoints"),
+            changesets: root.join("changesets"),
+            repo_index: root.join("repo-index"),
+            plugin_cache: root.join("plugin-cache"),
+            skill_cache: root.join("skill-cache"),
+            openhands_events: root.join("openhands-events"),
+            logs: root.join("logs"),
+            tmp: root.join("tmp"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionJsonlRecord {
+    pub session_id: String,
+    pub sequence: u64,
+    pub kind: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(default)]
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheBucketUsage {
+    pub entries: usize,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -618,6 +762,8 @@ pub enum StoreError {
     InvalidStoreSegment { label: String, value: String },
     #[error("repo evidence payload contains secret-like text")]
     RepoEvidenceSecretLikeText,
+    #[error("session JSONL record contains secret-like text")]
+    SessionRecordSecretLikeText,
     #[error("repo evidence payload is over limit {max_chars} chars")]
     RepoEvidencePayloadTooLarge { max_chars: usize },
     #[error("repo evidence not found: {0}")]
@@ -785,6 +931,35 @@ fn safe_store_segment(value: &str, label: &str) -> Result<String, StoreError> {
     Ok(value.to_owned())
 }
 
+fn ensure_safe_store_relative_path(value: &Path) -> Result<(), StoreError> {
+    if value.as_os_str().is_empty() || value.is_absolute() {
+        return Err(StoreError::InvalidStoreSegment {
+            label: "relative_dir".to_owned(),
+            value: value.display().to_string(),
+        });
+    }
+    for component in value.components() {
+        match component {
+            Component::Normal(segment) => {
+                let Some(segment) = segment.to_str() else {
+                    return Err(StoreError::InvalidStoreSegment {
+                        label: "relative_dir".to_owned(),
+                        value: value.display().to_string(),
+                    });
+                };
+                safe_file_name(segment)?;
+            }
+            _ => {
+                return Err(StoreError::InvalidStoreSegment {
+                    label: "relative_dir".to_owned(),
+                    value: value.display().to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn safe_sha256_digest(value: &str) -> Result<String, StoreError> {
     if value.len() != 64 || !value.chars().all(|item| item.is_ascii_hexdigit()) {
         return Err(StoreError::InvalidBlobDigest(value.to_owned()));
@@ -832,6 +1007,67 @@ fn reject_secret_like_text(value: &str) -> Result<(), StoreError> {
         .any(|marker| lowered.contains(marker))
     {
         return Err(StoreError::RepoEvidenceSecretLikeText);
+    }
+    Ok(())
+}
+
+fn reject_session_record_secret_like_text(value: &str) -> Result<(), StoreError> {
+    let lowered = value.to_ascii_lowercase();
+    if REPO_EVIDENCE_SECRET_MARKERS
+        .iter()
+        .any(|marker| lowered.contains(marker))
+    {
+        return Err(StoreError::SessionRecordSecretLikeText);
+    }
+    Ok(())
+}
+
+fn reject_session_record_secret_like_json(value: &Value) -> Result<(), StoreError> {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                reject_session_record_secret_like_text(key)?;
+                reject_session_record_secret_like_json(value)?;
+            }
+            Ok(())
+        }
+        Value::Array(items) => {
+            for item in items {
+                reject_session_record_secret_like_json(item)?;
+            }
+            Ok(())
+        }
+        Value::String(text) => reject_session_record_secret_like_text(text),
+        _ => Ok(()),
+    }
+}
+
+fn cache_bucket_usage_at(path: &Path) -> Result<CacheBucketUsage, StoreError> {
+    let mut usage = CacheBucketUsage::default();
+    accumulate_cache_bucket_usage(path, &mut usage)?;
+    Ok(usage)
+}
+
+fn accumulate_cache_bucket_usage(
+    path: &Path,
+    usage: &mut CacheBucketUsage,
+) -> Result<(), StoreError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(StoreError::Io(error)),
+    };
+    let file_type = metadata.file_type();
+    if file_type.is_file() {
+        usage.entries += 1;
+        usage.bytes += metadata.len();
+    } else if file_type.is_dir() {
+        for entry in fs::read_dir(path)? {
+            accumulate_cache_bucket_usage(&entry?.path(), usage)?;
+        }
+    } else if file_type.is_symlink() {
+        usage.entries += 1;
+        usage.bytes += metadata.len();
     }
     Ok(())
 }
@@ -885,6 +1121,83 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "run.started");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_layout_creates_required_directories() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+
+        let layout = store.ensure_local_layout().unwrap();
+
+        assert_eq!(layout.root, root);
+        for dir in LOCAL_STORE_DIRS {
+            assert!(root.join(dir).is_dir(), "{dir} should exist");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn session_records_append_jsonl_and_reject_secret_like_payloads() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+
+        store
+            .append_session_record(
+                "session_1",
+                1,
+                "session.created",
+                json!({"workflow_id": "planner-led", "mode": "discuss"}),
+            )
+            .unwrap();
+        store
+            .append_session_record(
+                "session_1",
+                2,
+                "session.turn.completed",
+                json!({"turn_count": 2, "ready": false}),
+            )
+            .unwrap();
+
+        let records = store.read_session_records("session_1").unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].sequence, 1);
+        assert_eq!(records[1].kind, "session.turn.completed");
+        let text = fs::read_to_string(root.join("sessions").join("session_1.jsonl")).unwrap();
+        assert_eq!(text.lines().count(), 2);
+
+        let error = store
+            .append_session_record(
+                "session_1",
+                3,
+                "session.turn.completed",
+                json!({"api_key": "redacted"}),
+            )
+            .unwrap_err();
+        assert!(matches!(error, StoreError::SessionRecordSecretLikeText));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_bucket_usage_counts_real_files_and_bytes() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        store.ensure_local_layout().unwrap();
+
+        store.write_blob(b"abc").unwrap();
+        fs::write(root.join("repo-index").join("index.jsonl"), b"abcd").unwrap();
+
+        let blob_usage = store.cache_bucket_usage("blobs").unwrap();
+        let repo_index_usage = store.cache_bucket_usage("repo-index").unwrap();
+        let missing_usage = store.cache_bucket_usage("logs").unwrap();
+
+        assert_eq!(blob_usage.entries, 1);
+        assert_eq!(blob_usage.bytes, 3);
+        assert_eq!(repo_index_usage.entries, 1);
+        assert_eq!(repo_index_usage.bytes, 4);
+        assert_eq!(missing_usage.entries, 0);
+        assert_eq!(missing_usage.bytes, 0);
         let _ = fs::remove_dir_all(root);
     }
 

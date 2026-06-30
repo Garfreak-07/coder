@@ -45,7 +45,8 @@ use coder_memory::{
     MemoryScope, MemorySensitivity, ProjectMemoryFile, RetrievalBackendKind,
 };
 use coder_store::{
-    RepoEvidenceKind, RepoEvidenceRef, RunCheckpointRef, RunStore, StoreError, StoredRunSummary,
+    CacheBucketUsage, RepoEvidenceKind, RepoEvidenceRef, RunCheckpointRef, RunStore, StoreError,
+    StoredRunSummary,
 };
 use coder_tools::{
     apply_patch_file, find_files, git_diff, git_status, preview_command, preview_patch_file,
@@ -642,6 +643,37 @@ fn planner_turn_events(
     events
 }
 
+fn planner_session_record_payload(session: &PlannerChatSession) -> Value {
+    json!({
+        "workflow_id": session.workflow_id,
+        "mode": session.mode,
+        "ready": session.ready,
+        "readiness": session.readiness,
+        "turn_count": session.turns.len(),
+        "has_plan_draft": session.plan_draft.is_some(),
+        "open_question_count": session.open_questions.len(),
+        "acceptance_criteria_count": session.acceptance_criteria.len(),
+        "risk_count": session.risks.len()
+    })
+}
+
+fn append_planner_session_record(
+    state: &ApiState,
+    session: &PlannerChatSession,
+    kind: &str,
+    extra_payload: Value,
+) -> Result<(), ApiError> {
+    let mut payload = planner_session_record_payload(session);
+    if let (Value::Object(payload), Value::Object(extra_payload)) = (&mut payload, extra_payload) {
+        payload.extend(extra_payload);
+    }
+    let sequence = state.store.read_session_records(&session.session_id)?.len() as u64 + 1;
+    state
+        .store
+        .append_session_record(&session.session_id, sequence, kind, payload)?;
+    Ok(())
+}
+
 fn start_work_clarification(session: &PlannerChatSession) -> String {
     if session.plan_draft.is_none() {
         return "I need to turn this into a concrete plan before starting work.".to_owned();
@@ -802,6 +834,7 @@ async fn create_planner_chat_session(
         .lock()
         .unwrap()
         .insert(session_id.clone(), session.clone());
+    append_planner_session_record(&state, &session, "session.created", json!({}))?;
     Ok(Json(PlannerChatSessionResponse { session }))
 }
 
@@ -898,8 +931,9 @@ async fn planner_chat_turn(
     session.acceptance_criteria = planner_response.acceptance_criteria.clone();
     session.risks = planner_response.risks.clone();
     let events = planner_turn_events(session, &planner_response);
-    Ok(Json(PlannerChatTurnResponse {
-        session: session.clone(),
+    let session_snapshot = session.clone();
+    let response = PlannerChatTurnResponse {
+        session: session_snapshot.clone(),
         assistant_message: planner_response.assistant_message,
         plan_draft: planner_response.plan_draft,
         readiness: planner_response.readiness,
@@ -912,7 +946,18 @@ async fn planner_chat_turn(
         execution_allowed: false,
         run_preview: None,
         events,
-    }))
+    };
+    drop(sessions);
+    append_planner_session_record(
+        &state,
+        &session_snapshot,
+        "session.turn.completed",
+        json!({
+            "should_start_workflow": false,
+            "execution_allowed": false
+        }),
+    )?;
+    Ok(Json(response))
 }
 
 async fn start_planner_chat_work(
@@ -959,14 +1004,21 @@ async fn start_planner_chat_work(
             .lock()
             .unwrap()
             .insert(session_id.clone(), session.clone());
-        return Ok(Json(PlannerStartWorkResponse {
-            session,
+        let response = PlannerStartWorkResponse {
+            session: session.clone(),
             assistant_message: Some(assistant_message),
             run_id: None,
             status: "needs_clarification".to_owned(),
             events_url: None,
             timeline_url: None,
-        }));
+        };
+        append_planner_session_record(
+            &state,
+            &session,
+            "session.work.needs_clarification",
+            json!({"status": response.status.clone()}),
+        )?;
+        return Ok(Json(response));
     }
 
     let provider_settings = state.provider_settings.lock().unwrap().clone();
@@ -988,14 +1040,21 @@ async fn start_planner_chat_work(
             .lock()
             .unwrap()
             .insert(session_id.clone(), session.clone());
-        return Ok(Json(PlannerStartWorkResponse {
-            session,
+        let response = PlannerStartWorkResponse {
+            session: session.clone(),
             assistant_message: Some(planner_response.assistant_message),
             run_id: None,
             status: "blocked".to_owned(),
             events_url: None,
             timeline_url: None,
-        }));
+        };
+        append_planner_session_record(
+            &state,
+            &session,
+            "session.work.blocked",
+            json!({"status": response.status.clone()}),
+        )?;
+        return Ok(Json(response));
     }
 
     let plan = session
@@ -1031,14 +1090,26 @@ async fn start_planner_chat_work(
         .lock()
         .unwrap()
         .insert(session_id, session.clone());
-    Ok(Json(PlannerStartWorkResponse {
-        session,
+    let response = PlannerStartWorkResponse {
+        session: session.clone(),
         assistant_message: None,
         run_id: Some(run_id.clone()),
         status: format!("{:?}", output.report.status).to_lowercase(),
         events_url: Some(format!("/api/v3/runs/{run_id}/events")),
         timeline_url: Some(format!("/api/v3/runs/{run_id}/timeline")),
-    }))
+    };
+    append_planner_session_record(
+        &state,
+        &session,
+        "session.work.completed",
+        json!({
+            "run_id": run_id,
+            "status": response.status.clone(),
+            "events_url": response.events_url.clone(),
+            "timeline_url": response.timeline_url.clone()
+        }),
+    )?;
+    Ok(Json(response))
 }
 
 async fn maybe_polish_final_summary(
@@ -1941,40 +2012,21 @@ async fn list_hooks() -> Json<HooksResponse> {
 async fn cache_status(
     State(state): State<ApiState>,
 ) -> Result<Json<CacheStatusResponse>, ApiError> {
-    let probe_run_dir = state.store.run_dir(&RunId::from_string("__cache_probe__"));
-    let runs_dir = probe_run_dir
-        .parent()
-        .map(FsPath::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("runs"));
-    let store_root = runs_dir
-        .parent()
-        .map(FsPath::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let blob_entries = fs::read_dir(store_root.join("blobs"))
-        .map(|entries| entries.filter_map(Result::ok).count())
-        .unwrap_or(0);
+    state.store.ensure_local_layout()?;
     Ok(Json(CacheStatusResponse {
-        repo_index: CacheBucketStatus {
-            entries: 0,
-            bytes: 0,
-            stale: false,
-        },
-        plugin_cache: CacheBucketStatus {
-            entries: builtin_plugin_manifests().len(),
-            bytes: 0,
-            stale: false,
-        },
-        skill_cache: CacheBucketStatus {
-            entries: installed_skill_summaries(&state).len(),
-            bytes: 0,
-            stale: false,
-        },
-        blob_store: CacheBucketStatus {
-            entries: blob_entries,
-            bytes: store_dir_size(&store_root.join("blobs")),
-            stale: false,
-        },
+        repo_index: cache_bucket_status(state.store.cache_bucket_usage("repo-index")?),
+        plugin_cache: cache_bucket_status(state.store.cache_bucket_usage("plugin-cache")?),
+        skill_cache: cache_bucket_status(state.store.cache_bucket_usage("skill-cache")?),
+        blob_store: cache_bucket_status(state.store.cache_bucket_usage("blobs")?),
     }))
+}
+
+fn cache_bucket_status(usage: CacheBucketUsage) -> CacheBucketStatus {
+    CacheBucketStatus {
+        entries: usage.entries,
+        bytes: usage.bytes,
+        stale: false,
+    }
 }
 
 async fn cache_clear() -> Json<CacheActionResponse> {
@@ -4782,26 +4834,6 @@ fn now_timestamp_string() -> String {
         .unwrap_or_else(|_| "unix:0".to_owned())
 }
 
-fn store_dir_size(path: &FsPath) -> u64 {
-    let Ok(metadata) = fs::metadata(path) else {
-        return 0;
-    };
-    if metadata.is_file() {
-        return metadata.len();
-    }
-    if !metadata.is_dir() {
-        return 0;
-    }
-    fs::read_dir(path)
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .map(|entry| store_dir_size(&entry.path()))
-                .sum()
-        })
-        .unwrap_or(0)
-}
-
 fn set_skill_enabled(
     state: ApiState,
     skill_id: String,
@@ -6127,7 +6159,8 @@ impl From<StoreError> for ApiError {
             | StoreError::BlobNotFound(_) => Self::not_found(error.to_string()),
             StoreError::InvalidStoreSegment { .. }
             | StoreError::InvalidFileName(_)
-            | StoreError::InvalidBlobDigest(_) => Self {
+            | StoreError::InvalidBlobDigest(_)
+            | StoreError::SessionRecordSecretLikeText => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: error.to_string(),
             },
@@ -6383,6 +6416,55 @@ mod tests {
             .unwrap()
             .iter()
             .any(|event| event["type"] == "planner.message.completed"));
+    }
+
+    #[tokio::test]
+    async fn planner_chat_writes_session_jsonl_without_raw_secret_text() {
+        let store_root = temp_root();
+        let store = RunStore::new(&store_root);
+        let state = ApiState::new(store.clone());
+        state.provider_settings.lock().unwrap().mock_mode = true;
+        let app = router(state);
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        assert_eq!(create_response.status(), StatusCode::OK);
+        let create_body = response_json(create_response).await;
+        let session_id = create_body["session"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let turn_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "Do not persist this api_key: sk-secret-value",
+                "confirmed": false
+            }),
+        )
+        .await;
+
+        assert_eq!(turn_response.status(), StatusCode::OK);
+        let records = store.read_session_records(&session_id).unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].kind, "session.created");
+        assert_eq!(records[1].kind, "session.turn.completed");
+        let text = fs::read_to_string(
+            store_root
+                .join("sessions")
+                .join(format!("{session_id}.jsonl")),
+        )
+        .unwrap();
+        assert!(!text.contains("sk-secret-value"));
+        assert!(!text.contains("api_key"));
+        let _ = fs::remove_dir_all(store_root);
     }
 
     #[tokio::test]
@@ -9205,6 +9287,36 @@ diff --git a/tracked.txt b/tracked.txt
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn cache_status_reports_real_store_disk_usage() {
+        let store_root = temp_root();
+        let store = RunStore::new(&store_root);
+        store.ensure_local_layout().unwrap();
+        store.write_blob(b"hello").unwrap();
+        fs::write(store_root.join("repo-index").join("index.jsonl"), b"abc").unwrap();
+        let state = ApiState::new(store);
+        state.provider_settings.lock().unwrap().mock_mode = true;
+        let app = router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/cache/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["blob_store"]["entries"], 1);
+        assert_eq!(body["blob_store"]["bytes"], 5);
+        assert_eq!(body["repo_index"]["entries"], 1);
+        assert_eq!(body["repo_index"]["bytes"], 3);
+        let _ = fs::remove_dir_all(store_root);
     }
 
     fn test_router() -> Router {

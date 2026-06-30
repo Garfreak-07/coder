@@ -24,17 +24,25 @@ Preferred local layout:
   tmp/
 ```
 
+`docs/SESSION_PERSISTENCE.md` defines the durable session/run JSONL model for
+this layout.
+
 Rules:
 
 - Event logs are append-only JSONL.
+- Planner session lifecycle records are append-only JSONL and metadata-only.
 - Large raw backend payloads should be stored as blob refs.
 - Timeline responses should project public summaries, not raw payloads.
 - Patch diffs and reverse-patch data belong to review/change artifacts.
 - Repo index, plugin cache, and skill cache are disposable.
+- Generic cleanup may clear `repo-index/`, `plugin-cache/`, `skill-cache/`,
+  and `tmp/`; it must not remove `sessions/`, `runs/`, `blobs/`, `artifacts/`,
+  `checkpoints/`, `changesets/`, `openhands-events/`, or `logs/`.
 - CPU scans must be bounded by file size, binary detection, and cancellation.
 - Long scans should move to background tasks and report progress.
 - GPU is not part of the core runtime.
 - Provider API keys must not be stored in cache directories.
+- Provider API keys must not be stored in session, run, or timeline JSONL.
 - Environment variables are developer/headless fallback, not the normal user
   path.
 
