@@ -45,6 +45,9 @@ Coder splits Codex into Planner and Executor:
 - Planner talks to the user and owns public summaries.
 - Executor acts through harnesses and never chats directly with the user.
 - Harness specs remain the tool, permission, memory, and backend boundary.
+- External capability boundaries are tracked in
+  `docs/CAPABILITY_BOUNDARY_MATRIX.md`; registered tools declare permission,
+  approval, evidence, and timeline behavior.
 - OpenHands stays the preferred executor backend when configured.
 - Environment variables remain developer/headless fallback; normal users use
   Provider Settings.

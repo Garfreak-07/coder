@@ -2064,6 +2064,19 @@ async fn list_harness_tools(Query(query): Query<ToolRegistryQuery>) -> Json<Tool
     })
 }
 
+fn ensure_tool_boundary(tool_name: &str) -> Result<ToolRegistryEntry, ApiError> {
+    let registry = ToolRegistry::default();
+    let entry = registry
+        .get_tool(tool_name)
+        .ok_or_else(|| ApiError::forbidden(format!("tool '{tool_name}' is not registered")))?;
+    if !entry.enabled_by_default {
+        return Err(ApiError::forbidden(format!(
+            "tool '{tool_name}' is disabled by default"
+        )));
+    }
+    Ok(entry)
+}
+
 async fn get_provider_settings(State(state): State<ApiState>) -> Json<ProviderSettingsResponse> {
     Json(ProviderSettingsResponse {
         settings: state.provider_settings.lock().unwrap().clone(),
@@ -2205,6 +2218,7 @@ async fn preview_run(Json(request): Json<RunPreviewRequest>) -> Json<RunPreviewR
 async fn preview_command_endpoint(
     Json(request): Json<CommandPreviewRequest>,
 ) -> Result<Json<CommandPreview>, ApiError> {
+    ensure_tool_boundary("run_command_sandbox")?;
     let preview = preview_command(
         &request.repo_root,
         request.cwd.unwrap_or_else(|| ".".to_owned()),
@@ -2230,6 +2244,7 @@ async fn run_command_endpoint(
         approved,
         run_id,
     } = request;
+    ensure_tool_boundary("run_command_sandbox")?;
     let output = run_command(
         &repo_root,
         CommandRunRequest {
@@ -2274,6 +2289,7 @@ async fn repo_find_files_endpoint(
     State(state): State<ApiState>,
     Json(request): Json<RepoFindFilesRequest>,
 ) -> Result<Json<RepoFindFilesResponse>, ApiError> {
+    ensure_tool_boundary("search_files")?;
     let files = find_files(
         &request.repo_root,
         request.query.as_deref(),
@@ -2304,6 +2320,7 @@ async fn repo_search_text_endpoint(
     State(state): State<ApiState>,
     Json(request): Json<RepoSearchTextRequest>,
 ) -> Result<Json<RepoSearchTextResponse>, ApiError> {
+    ensure_tool_boundary("search_files")?;
     let matches = search_text(
         &request.repo_root,
         &request.query,
@@ -2339,6 +2356,7 @@ async fn repo_read_file_endpoint(
     State(state): State<ApiState>,
     Json(request): Json<RepoReadFileRequest>,
 ) -> Result<Json<RepoReadFileResponse>, ApiError> {
+    ensure_tool_boundary("read_file")?;
     let file = read_file(
         &request.repo_root,
         PathBuf::from(&request.path),
@@ -2368,6 +2386,7 @@ async fn repo_read_file_range_endpoint(
     State(state): State<ApiState>,
     Json(request): Json<RepoReadFileRangeRequest>,
 ) -> Result<Json<RepoReadFileRangeResponse>, ApiError> {
+    ensure_tool_boundary("read_file")?;
     let snippet = read_file_range(
         &request.repo_root,
         PathBuf::from(&request.path),
@@ -2397,6 +2416,7 @@ async fn git_status_endpoint(
     State(state): State<ApiState>,
     Json(request): Json<GitStatusRequest>,
 ) -> Result<Json<GitStatusResponse>, ApiError> {
+    ensure_tool_boundary("inspect_git_diff")?;
     let status = git_status(&request.repo_root)?;
     let evidence_ref = write_tool_evidence(
         &state.store,
@@ -2420,6 +2440,7 @@ async fn git_diff_endpoint(
     State(state): State<ApiState>,
     Json(request): Json<GitDiffRequest>,
 ) -> Result<Json<GitDiffResponse>, ApiError> {
+    ensure_tool_boundary("inspect_git_diff")?;
     let diff = git_diff(
         &request.repo_root,
         request
@@ -2444,6 +2465,7 @@ async fn git_diff_endpoint(
 async fn preview_patch_endpoint(
     Json(request): Json<PatchPreviewRequest>,
 ) -> Result<Json<PatchPreviewEvidence>, ApiError> {
+    ensure_tool_boundary("propose_patch")?;
     let preview = preview_patch_file(
         &request.repo_root,
         PathBuf::from(&request.patch_file),
@@ -2458,6 +2480,7 @@ async fn apply_patch_endpoint(
     State(state): State<ApiState>,
     Json(request): Json<PatchApplyToolRequest>,
 ) -> Result<Json<PatchApplyResponse>, ApiError> {
+    ensure_tool_boundary("apply_patch_sandbox")?;
     let run_id = request
         .run_id
         .as_deref()
@@ -7673,6 +7696,12 @@ mod tests {
             .find(|tool| tool["capability"]["name"] == "apply_patch_sandbox")
             .unwrap();
         assert_eq!(patch_tool["requires_approval"], true);
+        assert_eq!(patch_tool["required_permission"], "write_files");
+        assert_eq!(
+            patch_tool["evidence_emitted"],
+            "repo_evidence + patch_evidence"
+        );
+        assert_eq!(patch_tool["timeline_item"], "file_change / approval");
     }
 
     #[tokio::test]

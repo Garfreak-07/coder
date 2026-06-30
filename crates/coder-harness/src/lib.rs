@@ -254,6 +254,14 @@ pub struct ToolRegistryEntry {
     pub description: String,
     #[serde(default)]
     pub harness_ids: Vec<String>,
+    #[serde(default)]
+    pub required_permission: String,
+    #[serde(default)]
+    pub approval_behavior: String,
+    #[serde(default)]
+    pub evidence_emitted: String,
+    #[serde(default)]
+    pub timeline_item: String,
     #[serde(default = "default_true")]
     pub enabled_by_default: bool,
     #[serde(default)]
@@ -894,10 +902,63 @@ fn tool_registry_entry(
         );
     ToolRegistryEntry {
         description: format!("{description_prefix}: {}.", capability.name),
+        required_permission: required_permission_for_tool(&capability).to_owned(),
+        approval_behavior: approval_behavior_for_tool(&capability, requires_approval).to_owned(),
+        evidence_emitted: evidence_for_tool(&capability).to_owned(),
+        timeline_item: timeline_item_for_tool(&capability).to_owned(),
         capability,
         harness_ids: harness_ids.iter().map(|id| (*id).to_owned()).collect(),
         enabled_by_default: true,
         requires_approval,
+    }
+}
+
+fn required_permission_for_tool(capability: &ToolCapability) -> &'static str {
+    match capability.name.as_str() {
+        "propose_patch" | "apply_patch_sandbox" => "write_files",
+        "run_command_sandbox" => "run_commands",
+        "inspect_skill_index" | "read_skill_index" => "read_files",
+        name if name.contains("memory") => "memory_policy",
+        name if name.contains("artifact") || name.contains("report") => "run_artifacts",
+        _ if capability.side_effect == SideEffectLevel::Read => "read_files",
+        _ => "none",
+    }
+}
+
+fn approval_behavior_for_tool(
+    capability: &ToolCapability,
+    requires_approval: bool,
+) -> &'static str {
+    if requires_approval {
+        match capability.name.as_str() {
+            "apply_patch_sandbox" => "approval.requested when patch apply is not pre-approved",
+            "run_command_sandbox" => "approval.requested for model or risky commands",
+            _ => "requires explicit approval before side effects",
+        }
+    } else {
+        "allowed without approval inside the assigned harness"
+    }
+}
+
+fn evidence_for_tool(capability: &ToolCapability) -> &'static str {
+    match capability.name.as_str() {
+        "read_file" | "search_files" | "inspect_git_diff" => "repo_evidence",
+        "propose_patch" | "apply_patch_sandbox" => "repo_evidence + patch_evidence",
+        "run_command_sandbox" => "command_evidence",
+        "inspect_artifact" | "build_final_report" | "return_execution_result" => "artifact/report",
+        "inspect_memory" | "search_workflow_memory" | "search_project_memory" => "memory_event",
+        "inspect_skill_index" | "read_skill_index" => "skill_summary",
+        _ => "structured_runtime_event",
+    }
+}
+
+fn timeline_item_for_tool(capability: &ToolCapability) -> &'static str {
+    match capability.name.as_str() {
+        "run_command_sandbox" => "command_execution",
+        "propose_patch" | "apply_patch_sandbox" => "file_change / approval",
+        "read_file" | "search_files" | "inspect_git_diff" => "tool_call",
+        "build_final_report" | "return_execution_result" => "final_summary",
+        _ => "executor_step / tool_call",
     }
 }
 
@@ -1115,6 +1176,12 @@ mod tests {
         assert!(names.contains("run_command_sandbox"));
         assert!(!names.contains("inspect_run_state"));
         assert!(patch_tool.requires_approval);
+        assert_eq!(patch_tool.required_permission, "write_files");
+        assert_eq!(
+            patch_tool.evidence_emitted,
+            "repo_evidence + patch_evidence"
+        );
+        assert_eq!(patch_tool.timeline_item, "file_change / approval");
     }
 
     #[test]
@@ -1124,7 +1191,37 @@ mod tests {
         let inspect_workflow = registry.get_tool("inspect_workflow").unwrap();
 
         assert!(!read_file.requires_approval);
+        assert_eq!(read_file.required_permission, "read_files");
+        assert_eq!(read_file.timeline_item, "tool_call");
         assert!(!inspect_workflow.requires_approval);
+    }
+
+    #[test]
+    fn tool_registry_entries_document_boundary_matrix() {
+        let registry = ToolRegistry::default();
+
+        for entry in registry.list_tools(None) {
+            assert!(
+                !entry.required_permission.trim().is_empty(),
+                "{} missing required permission",
+                entry.capability.name
+            );
+            assert!(
+                !entry.approval_behavior.trim().is_empty(),
+                "{} missing approval behavior",
+                entry.capability.name
+            );
+            assert!(
+                !entry.evidence_emitted.trim().is_empty(),
+                "{} missing evidence mapping",
+                entry.capability.name
+            );
+            assert!(
+                !entry.timeline_item.trim().is_empty(),
+                "{} missing timeline mapping",
+                entry.capability.name
+            );
+        }
     }
 
     #[test]

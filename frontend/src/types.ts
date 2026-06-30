@@ -316,6 +316,10 @@ export interface RustToolRegistryEntry {
   capability: RustToolCapability;
   description: string;
   harness_ids: string[];
+  required_permission: string;
+  approval_behavior: string;
+  evidence_emitted: string;
+  timeline_item: string;
   enabled_by_default: boolean;
   requires_approval: boolean;
 }
