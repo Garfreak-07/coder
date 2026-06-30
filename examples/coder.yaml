@@ -1,9 +1,12 @@
 version: 1
 
 models:
+  # Provider Settings in the app are the normal user path for provider, model,
+  # API key, base URL, and proxy URL. The env fields below are developer or
+  # headless fallback only.
   default:
-    provider: openai-compatible
-    model: gpt-5.5
+    provider: deepseek
+    model: best
     base_url_env: LLM_BASE_URL
     api_key_env: LLM_API_KEY
 

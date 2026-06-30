@@ -19,7 +19,7 @@
 ## Removed Coder Behavior
 
 - Main Planner UI no longer shows a separate planning screen.
-- Main Planner UI no longer exposes Discuss/Work mode toggle.
+- Main Planner UI no longer exposes a separate execution-mode toggle.
 - Chat input is no longer disabled by internal plan state.
 - Structured plan details are no longer rendered as the default chat message card.
 - Raw run event replay is hidden behind debug UI.

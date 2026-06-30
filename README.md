@@ -4,9 +4,9 @@ Coder is a Planner-first coding workbench with a React frontend and a Rust API
 v3 runtime/control plane.
 
 Current `main` is Rust-only. The supported product path is the Rust API v3
-server, the React workflow canvas, Rust workflow/agent/harness execution, run
-evidence, reports, memory/knowledge/RAG baselines, MCP baselines, provider
-settings, release tooling, and installer tooling.
+server, the React Planner UI, Provider Settings, Rust workflow/agent/harness
+execution, run evidence, reports, memory/knowledge/RAG baselines, MCP
+baselines, release tooling, and installer tooling.
 
 The previous Python/FastAPI v2 compatibility implementation was removed from
 `main` after the Rust-only migration. It remains available in git history at
@@ -202,9 +202,10 @@ Without `OPENHANDS_LIVE_SMOKE=1`, the script can be run with
 
 ## Provider Setup
 
-Use the app `Settings` page for DeepSeek or OpenAI-compatible API keys. The
-normal user path does not require `LLM_BASE_URL`, `LLM_API_KEY`, or
-`SESSION_API_KEY`. See [`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md).
+Use the app `Settings` page for DeepSeek or OpenAI-compatible API keys, model
+selection, base URLs, and provider proxy URLs. The normal user path does not
+require `LLM_BASE_URL`, `LLM_API_KEY`, or `SESSION_API_KEY`. See
+[`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md).
 
 For local OpenHands smoke tests and headless development, environment variables
 remain available as fallback. Prefer environment variables rather than committed
