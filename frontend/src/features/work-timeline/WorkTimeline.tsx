@@ -101,6 +101,11 @@ function TimelineItemBody({ item }: { item: TimelineItem }) {
             <InlineList title="Files" values={item.changed_files} />
           )}
           {item.checks.length > 0 && <InlineList title="Checks" values={item.checks} />}
+          {item.blockers.length > 0 && <InlineList title="Remaining risks" values={item.blockers} />}
+          {item.next_steps.length > 0 && <InlineList title="Next steps" values={item.next_steps} />}
+          <div className="timeline-meta">
+            <span>{item.evidence_refs.length} evidence refs</span>
+          </div>
         </div>
       );
     default:

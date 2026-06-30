@@ -172,6 +172,84 @@ impl FinalReport {
         });
         self
     }
+
+    pub fn refresh_planner_style_summary(&mut self, requested: Option<&str>, completed: &[String]) {
+        let requested = requested
+            .map(|value| compact_summary_text(value, 320))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "No explicit user request was recorded.".to_owned());
+        let done = compact_list_or_missing(
+            completed,
+            "No completed work item was recorded in evidence.",
+            4,
+        );
+        let changed_files =
+            compact_list_or_missing(&self.changed_files, "No changed files were recorded.", 6);
+        let checks =
+            compact_list_or_missing(&self.checks, "No verification or check was recorded.", 6);
+        let evidence = evidence_summary(&self.evidence_refs);
+        let risks = compact_list_or_missing(
+            &self.blockers,
+            "No remaining blocker or risk was recorded.",
+            5,
+        );
+        let next_steps = compact_list_or_missing(&self.next_steps, "No next step was recorded.", 5);
+
+        self.summary = format!(
+            "Status: {status}\nRequested: {requested}\nDone: {done}\nChanged files: {changed_files}\nVerification: {checks}\nEvidence: {evidence}\nRemaining risks: {risks}\nNext steps: {next_steps}",
+            status = report_status_label(self.status)
+        );
+    }
+}
+
+fn report_status_label(status: ReportStatus) -> &'static str {
+    match status {
+        ReportStatus::Completed => "completed",
+        ReportStatus::Blocked => "blocked",
+        ReportStatus::Failed => "failed",
+        ReportStatus::Cancelled => "cancelled",
+    }
+}
+
+fn compact_list_or_missing(items: &[String], missing: &str, limit: usize) -> String {
+    if items.is_empty() {
+        return missing.to_owned();
+    }
+    let mut values = items
+        .iter()
+        .take(limit)
+        .map(|item| compact_summary_text(item, 180))
+        .collect::<Vec<_>>();
+    if items.len() > limit {
+        values.push(format!("+{} more", items.len() - limit));
+    }
+    values.join("; ")
+}
+
+fn compact_summary_text(value: &str, max_chars: usize) -> String {
+    let trimmed = value.trim();
+    let mut output = trimmed.chars().take(max_chars).collect::<String>();
+    if trimmed.chars().count() > max_chars {
+        output.push_str("...");
+    }
+    output
+}
+
+fn evidence_summary(evidence_refs: &[EvidenceRef]) -> String {
+    if evidence_refs.is_empty() {
+        return "No evidence refs were recorded.".to_owned();
+    }
+    let mut kinds = evidence_refs
+        .iter()
+        .map(|reference| reference.kind.as_str())
+        .collect::<Vec<_>>();
+    kinds.sort_unstable();
+    kinds.dedup();
+    format!(
+        "{} evidence ref(s) recorded: {}.",
+        evidence_refs.len(),
+        kinds.join(", ")
+    )
 }
 
 #[derive(Debug, Error)]

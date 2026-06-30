@@ -466,10 +466,14 @@ test("Work timeline explains a complete run with compact command output", () => 
       type: "final_summary",
       id: "summary-1",
       agent_id: "planner",
-      summary: "README.md was updated and tests passed.",
+      status: "completed",
+      summary:
+        "Status: completed\nRequested: Update README.md\nDone: Updated README.md\nChanged files: README.md\nVerification: cargo test: completed exit 0\nEvidence: 1 evidence ref(s) recorded: event_log.\nRemaining risks: No remaining blocker or risk was recorded.\nNext steps: No next step was recorded.",
       changed_files: ["README.md"],
       checks: ["cargo test: completed exit 0"],
       evidence_refs: [{ kind: "openhands_raw_event", reference: "blob://sha256/raw-final" }],
+      blockers: [],
+      next_steps: [],
       created_at: "2026-01-01T00:00:10Z"
     }
   ];
@@ -499,7 +503,11 @@ test("Work timeline explains a complete run with compact command output", () => 
   assert.ok(text.includes("Blocked"));
   assert.ok(text.includes("Verification"));
   assert.ok(text.includes("Final summary"));
+  assert.ok(text.includes("Requested: Update README.md"));
+  assert.ok(text.includes("Remaining risks: No remaining blocker or risk was recorded."));
+  assert.ok(text.includes("Next steps: No next step was recorded."));
   assert.ok(text.includes("cargo test: completed exit 0"));
+  assert.ok(text.includes("1 evidence refs"));
   assert.ok(classNames.includes("timeline-command-output"));
   assert.ok(classNames.includes("timeline-tone-success"));
   assert.ok(classNames.includes("timeline-tone-warning"));

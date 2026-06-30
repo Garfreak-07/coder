@@ -262,7 +262,7 @@ fn report_for_mock_run(
     let summary = format!(
         "Mock workflow '{workflow_id}' accepted task '{task}' and visited {visited_nodes} node(s) across {rounds} round(s)."
     );
-    let report = match outcome {
+    let mut report = match outcome {
         MockRunOutcome::Completed => FinalReport::completed(summary),
         MockRunOutcome::Blocked => FinalReport::blocked(
             summary,
@@ -274,12 +274,19 @@ fn report_for_mock_run(
         ),
         MockRunOutcome::Failed => FinalReport::failed(summary, "mock run requested failed outcome"),
     };
-    report
+    report = report
         .with_check(format!("mock node visits: {visited_nodes}"))
         .with_evidence(
             "event_log",
             format!("eventlog://runs/{}/events.jsonl", run_id.as_str()),
-        )
+        );
+    report.refresh_planner_style_summary(
+        Some(task),
+        &[format!(
+            "Visited {visited_nodes} node(s) across {rounds} round(s)."
+        )],
+    );
+    report
 }
 
 pub struct WorkflowRunner {
@@ -627,6 +634,7 @@ impl WorkflowRunner {
         let report = workflow_run_report(WorkflowReportInput {
             run_id: &run_id,
             workflow_id: &options.workflow_id,
+            request: &options.task,
             status: terminal_status,
             reason: terminal_reason.as_deref(),
             dispatched_nodes: checks.len(),
@@ -3159,6 +3167,7 @@ fn openhands_create_conversation_payload(request: &HarnessRunRequest) -> Value {
 struct WorkflowReportInput<'a> {
     run_id: &'a RunId,
     workflow_id: &'a str,
+    request: &'a str,
     status: RunStatus,
     reason: Option<&'a str>,
     dispatched_nodes: usize,
@@ -3213,6 +3222,11 @@ fn workflow_run_report(input: WorkflowReportInput<'_>) -> FinalReport {
     evidence_refs
         .dedup_by(|left, right| left.kind == right.kind && left.reference == right.reference);
     report.evidence_refs = evidence_refs;
+    let mut completed = report.checks.clone();
+    if completed.is_empty() && input.dispatched_nodes > 0 {
+        completed.push(format!("Dispatched {} node(s).", input.dispatched_nodes));
+    }
+    report.refresh_planner_style_summary(Some(input.request), &completed);
     report
 }
 
@@ -3974,6 +3988,12 @@ diff --git a/tracked.txt b/tracked.txt
             .evidence_refs
             .iter()
             .any(|reference| reference.kind == "event_log"));
+        assert!(output.report.summary.contains("Requested: evidence task"));
+        assert!(output.report.summary.contains("Done:"));
+        assert!(output.report.summary.contains("Verification:"));
+        assert!(output.report.summary.contains("Evidence:"));
+        assert!(output.report.summary.contains("Remaining risks:"));
+        assert!(output.report.summary.contains("Next steps:"));
         let _ = fs::remove_dir_all(root);
     }
 

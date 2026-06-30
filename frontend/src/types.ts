@@ -924,10 +924,13 @@ export interface VerificationItem {
 export interface FinalSummaryItem {
   id: string;
   agent_id: string;
+  status: string;
   summary: string;
   changed_files: string[];
   checks: string[];
   evidence_refs: RustEvidenceRef[];
+  blockers: string[];
+  next_steps: string[];
   created_at: string;
 }
 

@@ -127,6 +127,8 @@ impl RunStore {
         let mut evidence_ref_seen = BTreeSet::new();
         let mut evidence_refs = Vec::new();
         let mut plan_context = None;
+        let mut requested = None;
+        let mut completed = Vec::new();
         if !events.is_empty() {
             evidence_ref_seen.insert((
                 "event_log".to_owned(),
@@ -142,6 +144,7 @@ impl RunStore {
 
             match event.kind.as_str() {
                 "run.started" => {
+                    requested = payload_string(&event.payload, "task").or(requested);
                     if let Some(value) = event
                         .payload
                         .get("plan_context")
@@ -170,6 +173,7 @@ impl RunStore {
                         .unwrap_or_else(|| "command".to_owned());
                     let status = payload_string(&event.payload, "status")
                         .unwrap_or_else(|| event.kind.trim_start_matches("command.").to_owned());
+                    completed.push(format!("Command {status}: {command}"));
                     let returncode = event
                         .payload
                         .get("returncode")
@@ -196,6 +200,10 @@ impl RunStore {
                     }
                 }
                 "patch.previewed" | "patch.applied" | "patch.failed" => {
+                    completed.push(format!(
+                        "Patch {}",
+                        event.kind.trim_start_matches("patch.").replace('_', " ")
+                    ));
                     collect_patch_files(&event.payload, &mut changed_file_seen);
                     collect_patch_ref(&event.payload, &mut patch_ref_seen);
                     for reference in &event.refs {
@@ -215,6 +223,7 @@ impl RunStore {
 
         for reference in repo_evidence {
             let ref_id = reference.ref_id;
+            completed.push(format!("Recorded repo evidence: {}", reference.summary));
             evidence_ref_seen.insert(("repo_evidence".to_owned(), ref_id.clone()));
             if reference.kind == RepoEvidenceKind::RepoDiff {
                 let payload = self.read_repo_evidence(&ref_id)?;
@@ -246,6 +255,9 @@ impl RunStore {
                 }
             }
         }
+        if requested.is_none() {
+            requested = plan_context_summary(plan_context.as_ref());
+        }
         if let Some(summary) = plan_context_summary(plan_context.as_ref()) {
             checks.push(format!("plan_context: {summary}"));
         }
@@ -273,14 +285,13 @@ impl RunStore {
         } else {
             ReportStatus::Completed
         };
-        let summary =
-            evidence_report_summary(status, events.len(), checks.len(), evidence_refs.len());
-        let mut report = FinalReport::with_status(status, summary);
+        let mut report = FinalReport::with_status(status, "");
         report.changed_files = changed_file_seen.into_iter().collect();
         report.checks = checks;
         report.patch_refs = patch_ref_seen.into_iter().collect();
         report.blockers = blockers;
         report.evidence_refs = evidence_refs;
+        report.refresh_planner_style_summary(requested.as_deref(), &completed);
         Ok(report)
     }
 
@@ -667,21 +678,6 @@ fn repo_evidence_uri(ref_id: &str) -> String {
     } else {
         format!("repo-evidence://{ref_id}")
     }
-}
-
-fn evidence_report_summary(
-    status: ReportStatus,
-    event_count: usize,
-    check_count: usize,
-    evidence_ref_count: usize,
-) -> String {
-    let prefix = match status {
-        ReportStatus::Completed => "Run completed from recorded evidence",
-        ReportStatus::Blocked => "Run is blocked by recorded evidence",
-        ReportStatus::Failed => "Run failed according to recorded evidence",
-        ReportStatus::Cancelled => "Run was cancelled according to recorded evidence",
-    };
-    format!("{prefix}: {event_count} event(s), {check_count} check(s), {evidence_ref_count} evidence ref(s).")
 }
 
 fn plan_context_summary(plan_context: Option<&Value>) -> Option<String> {
@@ -1171,6 +1167,82 @@ mod tests {
             .checks
             .iter()
             .any(|check| check == "acceptance: final report cites plan context"));
+        assert!(report.summary.contains("Requested: Update Planner loop"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn evidence_report_summary_covers_request_work_evidence_risks_and_next_steps() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "run.started",
+                    json!({"task": "Update README.md"}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(
+                    run_id.clone(),
+                    2,
+                    "command.completed",
+                    json!({
+                        "command": "cargo test",
+                        "status": "completed",
+                        "passed": true,
+                        "returncode": 0
+                    }),
+                )
+                .with_ref("command_evidence", "repo-evidence://repo-test:abc"),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &CoderEvent::new(
+                    run_id.clone(),
+                    3,
+                    "patch.applied",
+                    json!({
+                        "evidence_ref": "repo-diff:def",
+                        "files": [{"new_path": "README.md", "status": "modified"}]
+                    }),
+                )
+                .with_ref("patch_evidence", "repo-evidence://repo-diff:def"),
+            )
+            .unwrap();
+
+        let report = store.build_evidence_report(&run_id).unwrap();
+
+        assert_eq!(report.status, ReportStatus::Completed);
+        assert!(report.summary.contains("Status: completed"));
+        assert!(report.summary.contains("Requested: Update README.md"));
+        assert!(report
+            .summary
+            .contains("Done: Command completed: cargo test"));
+        assert!(report.summary.contains("Patch applied"));
+        assert!(report.summary.contains("Changed files: README.md"));
+        assert!(report
+            .summary
+            .contains("Verification: cargo test: completed exit 0"));
+        assert!(report
+            .summary
+            .contains("Evidence: 3 evidence ref(s) recorded"));
+        assert!(report
+            .summary
+            .contains("Remaining risks: No remaining blocker or risk was recorded."));
+        assert!(report
+            .summary
+            .contains("Next steps: No next step was recorded."));
+        assert!(!report.summary.contains("repo-evidence://"));
         let _ = fs::remove_dir_all(root);
     }
 

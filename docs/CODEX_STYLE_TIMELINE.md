@@ -45,6 +45,12 @@ metadata, and changed file paths. Command stdout/stderr previews are
 expandable; raw backend JSON, raw OpenHands payloads, and blob refs are not
 shown in the normal timeline.
 
+Final summaries are written as Planner-style public summaries grounded in the
+run report. They must cover the request, completed work, changed files,
+verification/checks, evidence availability, remaining blockers or risks, and
+next steps. When live Planner polishing is unavailable, deterministic summaries
+must say when evidence is missing rather than fabricating checks or changes.
+
 Executor entries should reflect the public ReAct loop:
 
 ```text

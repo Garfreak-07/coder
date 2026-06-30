@@ -938,6 +938,7 @@ async fn start_planner_chat_work(
         .unwrap_or_else(default_project_config);
     let runtime =
         resolve_planner_runtime(&config, &workflow_id, request.planner_agent_id.as_deref())?;
+    let runtime_for_summary = runtime.clone();
     session.workflow_id = workflow_id.clone();
     session.mode = "discuss".to_owned();
     session.runtime = Some(runtime);
@@ -1008,7 +1009,17 @@ async fn start_planner_chat_work(
     options.repo_root = PathBuf::from(&repo_root);
     options.plan_context = Some(plan_context);
     let runner = WorkflowRunner::new(config, state.store.clone());
-    let output = runner.run(options).await?;
+    let mut output = runner.run(options).await?;
+    maybe_polish_final_summary(
+        &state,
+        &provider_settings,
+        runtime_for_summary,
+        &session,
+        &plan,
+        &output.run_id,
+        &mut output.report,
+    )
+    .await;
     let run_id = output.run_id.to_string();
     session.ready = false;
     session.turns.push(PlannerChatTurn {
@@ -1028,6 +1039,80 @@ async fn start_planner_chat_work(
         events_url: Some(format!("/api/v3/runs/{run_id}/events")),
         timeline_url: Some(format!("/api/v3/runs/{run_id}/timeline")),
     }))
+}
+
+async fn maybe_polish_final_summary(
+    state: &ApiState,
+    provider_settings: &ProviderSettings,
+    runtime: PlannerRuntimeContext,
+    session: &PlannerChatSession,
+    plan: &PlanDraft,
+    run_id: &RunId,
+    report: &mut FinalReport,
+) {
+    if provider_settings.mock_mode {
+        return;
+    }
+
+    let engine = ModelPlannerConversationEngine::new();
+    let request = PlannerConversationRequest {
+        session_id: session.session_id.clone(),
+        workflow_id: session.workflow_id.clone(),
+        runtime,
+        mode: "work".to_owned(),
+        message: final_summary_polish_prompt(report),
+        confirmed: true,
+        history: session.turns.clone(),
+        current_plan: Some(plan.clone()),
+        provider_settings: provider_settings.clone(),
+    };
+
+    let Ok(Some(summary)) = engine.live_assistant_message(&request).await else {
+        return;
+    };
+    if !final_summary_polish_covers_required_sections(&summary) {
+        return;
+    }
+    report.summary = public_preview(&summary, 1200);
+    let _ = state.store.write_report(run_id, report);
+}
+
+fn final_summary_polish_prompt(report: &FinalReport) -> String {
+    let evidence_kinds = report
+        .evidence_refs
+        .iter()
+        .map(|reference| reference.kind.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    format!(
+        "Polish this final run summary for the user. Use only the fields below. Do not add checks, files, risks, evidence, or next steps that are not listed. Return only the final summary text.\n\n{}",
+        serde_json::json!({
+            "status": report_status_string(report.status),
+            "deterministic_summary": &report.summary,
+            "changed_files": &report.changed_files,
+            "checks": &report.checks,
+            "evidence_ref_count": report.evidence_refs.len(),
+            "evidence_kinds": evidence_kinds,
+            "remaining_risks": &report.blockers,
+            "next_steps": &report.next_steps
+        })
+    )
+}
+
+fn final_summary_polish_covers_required_sections(summary: &str) -> bool {
+    let normalized = summary.to_ascii_lowercase();
+    [
+        "request",
+        "done",
+        "changed",
+        "verification",
+        "evidence",
+        "risk",
+        "next",
+    ]
+    .iter()
+    .all(|needle| normalized.contains(needle))
 }
 
 async fn load_project_memory(
@@ -3684,10 +3769,13 @@ pub struct VerificationItem {
 pub struct FinalSummaryItem {
     pub id: String,
     pub agent_id: String,
+    pub status: String,
     pub summary: String,
     pub changed_files: Vec<String>,
     pub checks: Vec<String>,
     pub evidence_refs: Vec<coder_core::EvidenceRef>,
+    pub blockers: Vec<String>,
+    pub next_steps: Vec<String>,
     pub created_at: String,
 }
 
@@ -4203,10 +4291,13 @@ fn project_timeline_items(
         items.push(TimelineItem::FinalSummary(FinalSummaryItem {
             id: format!("timeline-final-{}", run_id.as_str()),
             agent_id: "planner".to_owned(),
+            status: report_status_string(report.status),
             summary: public_preview(&report.summary, 1200),
             changed_files: report.changed_files.clone(),
             checks: report.checks.clone(),
             evidence_refs: report.evidence_refs.clone(),
+            blockers: report.blockers.clone(),
+            next_steps: report.next_steps.clone(),
             created_at: events
                 .last()
                 .map(|event| event.timestamp.to_string())
@@ -4214,6 +4305,16 @@ fn project_timeline_items(
         }));
     }
     items
+}
+
+fn report_status_string(status: coder_core::ReportStatus) -> String {
+    match status {
+        coder_core::ReportStatus::Completed => "completed",
+        coder_core::ReportStatus::Blocked => "blocked",
+        coder_core::ReportStatus::Failed => "failed",
+        coder_core::ReportStatus::Cancelled => "cancelled",
+    }
+    .to_owned()
 }
 
 fn build_current_change_set(
@@ -8697,12 +8798,13 @@ diff --git a/tracked.txt b/tracked.txt
                 ),
             )
             .unwrap();
-        store
-            .write_report(
-                &run_id,
-                &FinalReport::completed("Done").with_check("cargo test: completed exit 0"),
-            )
-            .unwrap();
+        let mut report = FinalReport::completed("Done").with_check("cargo test: completed exit 0");
+        report.next_steps.push("No next step recorded.".to_owned());
+        report.refresh_planner_style_summary(
+            Some("Update README.md"),
+            &["Updated README.md".to_owned()],
+        );
+        store.write_report(&run_id, &report).unwrap();
         let app = router(ApiState::new(store));
 
         let response = app
@@ -8733,6 +8835,11 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(items.iter().any(|item| item["type"] == "command_execution"));
         assert!(items.iter().any(|item| item["type"] == "file_change"));
         assert!(items.iter().any(|item| item["type"] == "final_summary"));
+        assert!(items.iter().any(|item| {
+            item["type"] == "final_summary"
+                && item["status"] == "completed"
+                && item["next_steps"][0] == "No next step recorded."
+        }));
         assert!(items.iter().all(|item| item.get("payload").is_none()));
         assert!(!body.to_string().contains("raw-secret-value"));
         let _ = fs::remove_dir_all(root);
