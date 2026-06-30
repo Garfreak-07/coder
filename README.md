@@ -135,11 +135,17 @@ npm.cmd run test
 npm.cmd run build
 ```
 
-Rust v3 smoke test:
+Rust v3 Planner-to-Review smoke test:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\smoke-rust-v3.ps1 -Store .tmp\smoke-rust-v3
 ```
+
+By default this is a mock/plumbing validation. It configures Provider Settings
+in mock mode, creates a Planner Chat session, sends two side-effect-free turns,
+starts work, reads timeline and final-report surfaces, then verifies Review
+Changes and Undo against a temporary Git repository. Passing `-LiveProvider`
+labels the run as product validation and uses the configured provider path.
 
 Optional live LLM smoke, skipped when no provider key is configured:
 

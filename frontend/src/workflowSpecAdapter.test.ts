@@ -647,6 +647,34 @@ test("Review and Undo docs cover binary and untracked file handling", () => {
   assert.ok(docs.includes("git reset --hard"));
 });
 
+test("Rust v3 smoke exercises Planner to Review end-to-end path", () => {
+  const smokeScript = readFileSync("../scripts/smoke-rust-v3.ps1", "utf8");
+
+  for (const needle of [
+    "/api/v3/providers/settings",
+    "mock_mode = $mockMode",
+    "product_validation",
+    "plumbing",
+    "/api/v3/planner-chat/sessions",
+    "Send-PlannerTurn",
+    "should_start_workflow",
+    "/start-work",
+    "timeline_url",
+    "/report/preview",
+    "/changes",
+    "/diff",
+    "/undo",
+    "New-SmokeRepo",
+    "README.md",
+    "Review Changes returned no change sets",
+    "Undo did not restore README.md"
+  ]) {
+    if (!smokeScript.includes(needle)) {
+      throw new Error(`smoke-rust-v3.ps1 missing ${needle}`);
+    }
+  }
+});
+
 test("Provider Settings exposes DeepSeek preset and exact test result UI", () => {
   const panelSource = readFileSync("src/components/ProviderSettingsPanel.tsx", "utf8");
   const hookSource = readFileSync("src/hooks/useProviderSettings.ts", "utf8");

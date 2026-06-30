@@ -71,8 +71,9 @@
 - [x] `powershell -ExecutionPolicy Bypass -File .\scripts\live-openhands-smoke.ps1 -SkipIfMissingOpenHands`
   is opt-in through `OPENHANDS_LIVE_SMOKE=1`; without a live OpenHands server
   URL it reports `skipped` and does not contact OpenHands.
-- [x] Local Planner loop API smoke against `coder-rust server`: Planner Chat,
-  Start Work, run events, and report preview plan-context check.
+- [x] Local Planner loop API smoke against `coder-rust server`: Provider mock
+  setup, two Planner Chat turns, Start Work, run timeline, final report, Review
+  Changes, and Undo against a temporary Git repository.
 - [x] `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -DryRun`
 - [x] `node packaging/npm/bin/coder-rust.js --dry-run`
 - [x] `bash ./scripts/install.sh --dry-run` covered by Ubuntu `installer-dry-run` CI; local bash unavailable on this Windows host

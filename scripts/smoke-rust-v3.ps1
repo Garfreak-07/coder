@@ -1,7 +1,12 @@
 param(
   [string]$HostName = "127.0.0.1",
   [int]$Port = 8876,
-  [string]$Store = ".coder-rust-smoke"
+  [string]$Store = ".coder-rust-smoke",
+  [switch]$LiveProvider,
+  [string]$Provider = "deepseek",
+  [string]$Model = "deepseek-v4-flash",
+  [string]$BaseUrl = "https://api.deepseek.com",
+  [string]$ProxyUrl = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,6 +22,144 @@ $storePath = if ([System.IO.Path]::IsPathRooted($Store)) {
 $outLog = Join-Path $storePath "server.out.log"
 $errLog = Join-Path $storePath "server.err.log"
 New-Item -ItemType Directory -Force -Path $storePath | Out-Null
+
+function Assert-Smoke {
+  param(
+    [bool]$Condition,
+    [string]$Message
+  )
+  if (-not $Condition) {
+    throw $Message
+  }
+}
+
+function Invoke-Git {
+  param(
+    [string]$Repo,
+    [string[]]$GitArgs
+  )
+  & git -C $Repo @GitArgs | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "git $($GitArgs -join ' ') failed in $Repo"
+  }
+}
+
+function New-SmokeRepo {
+  param([string]$Parent)
+
+  $path = Join-Path $Parent ("scenario-repo-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Force -Path $path | Out-Null
+  [System.IO.File]::WriteAllText((Join-Path $path "README.md"), "# Smoke repo`nbase`n")
+  Invoke-Git -Repo $path -GitArgs @("init")
+  Invoke-Git -Repo $path -GitArgs @("config", "core.autocrlf", "false")
+  Invoke-Git -Repo $path -GitArgs @("config", "core.safecrlf", "false")
+  Invoke-Git -Repo $path -GitArgs @("config", "user.email", "coder@example.test")
+  Invoke-Git -Repo $path -GitArgs @("config", "user.name", "Coder Smoke")
+  Invoke-Git -Repo $path -GitArgs @("add", "README.md")
+  Invoke-Git -Repo $path -GitArgs @("commit", "-m", "base")
+  $path
+}
+
+function New-SmokeConfig {
+  param(
+    [string]$Provider,
+    [string]$Model
+  )
+
+  @{
+    version = 1
+    models = @{
+      default = @{
+        provider = $Provider
+        model = $Model
+        base_url_env = "LLM_BASE_URL"
+        api_key_env = "LLM_API_KEY"
+      }
+    }
+    agents = @{
+      planner = @{
+        role = "planner"
+        model = "default"
+        system = "Plan scoped repository work, keep execution behind Start Work, and summarize evidence without private reasoning."
+        memory = @{
+          read = @("user", "project", "run", "repo_facts", "knowledge_hints")
+          write = @("run")
+        }
+        output_contract = "planner_conversation"
+      }
+      executor = @{
+        role = "executor"
+        model = "default"
+        system = "Inspect the requested repository scope with native read-only tools and report evidence."
+        memory = @{
+          read = @("workflow", "run")
+          write = @("run")
+        }
+        output_contract = "execution_result"
+      }
+    }
+    harnesses = @{
+      "planner-conversation" = @{
+        backend = "planner-model"
+        tools = @("memory_read", "repo_search", "read_file", "git_diff")
+        permissions = @{
+          read_files = "allow"
+          write_files = "deny"
+          run_commands = "deny"
+          network = "deny"
+          secrets = "deny"
+          publish_external = "deny"
+          git_commit = "deny"
+          git_push = "deny"
+          deploy = "deny"
+        }
+        memory = @{
+          read = @("user", "project", "run", "repo_facts", "knowledge_hints")
+          write = @("run")
+        }
+        verification = @{
+          require_evidence = $false
+        }
+      }
+      "review-only" = @{
+        backend = "native-rust"
+        tools = @("repo_find_files", "read_file", "git_diff")
+        permissions = @{
+          read_files = "allow"
+          write_files = "deny"
+          run_commands = "deny"
+          network = "deny"
+          secrets = "deny"
+          publish_external = "deny"
+          git_commit = "deny"
+          git_push = "deny"
+          deploy = "deny"
+        }
+        memory = @{
+          read = @("workflow", "run")
+          write = @("run")
+        }
+      }
+    }
+    workflows = @{
+      "planner-led" = @{
+        name = "Planner to Review Smoke"
+        max_rounds = 1
+        nodes = @(
+          @{ id = "planner"; agent = "planner"; harness = "planner-conversation" },
+          @{ id = "executor"; agent = "executor"; harness = "review-only" }
+        )
+        edges = @(
+          @{ from = "planner"; to = "executor"; on = "ready" }
+        )
+        stop = @{
+          on_status = @("completed", "blocked", "failed")
+          final_report_agent = "planner"
+        }
+      }
+    }
+  }
+}
 
 # Some sandboxed Windows environments expose both Path and PATH. Start-Process
 # rejects duplicate environment keys, so keep Path and drop the duplicate PATH
@@ -51,115 +194,142 @@ try {
     throw "Rust v3 health check failed. See $errLog"
   }
 
-  $config = @{
-    version = 1
-    models = @{
-      default = @{
-        provider = "openai-compatible"
-        model = "mock"
-        api_key_env = "LLM_API_KEY"
-      }
-    }
-    agents = @{
-      planner = @{
-        role = "planner"
-        model = "default"
-        system = "Plan and decide readiness."
-        output_contract = "planner_order"
-      }
-      executor = @{
-        role = "executor"
-        model = "default"
-        system = "Execute approved work and report evidence."
-        output_contract = "execution_result"
-      }
-    }
-    harnesses = @{
-      review = @{
-        backend = "native-rust"
-        tools = @("repo_search", "read_file", "git_diff")
-        permissions = @{
-          read_files = "allow"
-          write_files = "deny"
-          run_commands = "deny"
-          network = "deny"
-          secrets = "deny"
-          publish_external = "deny"
-          git_commit = "deny"
-          git_push = "deny"
-          deploy = "deny"
-        }
-      }
-    }
-    workflows = @{
-      smoke = @{
-        name = "Rust v3 smoke"
-        max_rounds = 1
-        nodes = @(
-          @{ id = "planner"; agent = "planner"; harness = "review" }
-        )
-        edges = @()
-        stop = @{
-          on_status = @("completed", "blocked", "failed")
-          final_report_agent = "planner"
-        }
-      }
-    }
-  }
-
   $jsonHeaders = @{ "Content-Type" = "application/json" }
-  $saveBody = @{ workflow_id = "smoke"; workflow = $config.workflows.smoke } | ConvertTo-Json -Depth 20
-  $save = Invoke-RestMethod -Method Post -Uri "$base/api/v3/library/workflows" -Headers $jsonHeaders -Body $saveBody
-  if ($save.saved -ne $true) {
-    throw "Workflow save failed."
+  $normalizedProvider = $Provider.Trim().ToLowerInvariant()
+  $validationMode = if ($LiveProvider) { "product_validation" } else { "plumbing" }
+  $mockMode = -not $LiveProvider
+  $baseUrls = @{}
+  $baseUrls[$normalizedProvider] = $BaseUrl
+  $proxyUrls = @{}
+  if (-not [string]::IsNullOrWhiteSpace($ProxyUrl)) {
+    $proxyUrls[$normalizedProvider] = $ProxyUrl
   }
 
-  $loaded = Invoke-RestMethod -Method Get -Uri "$base/api/v3/library/workflows/smoke"
-  if ($loaded.workflow_id -ne "smoke") {
-    throw "Workflow load failed."
+  $settingsBody = @{
+    default_provider = $normalizedProvider
+    default_model = $Model
+    base_urls = $baseUrls
+    proxy_urls = $proxyUrls
+    mock_mode = $mockMode
+  } | ConvertTo-Json -Depth 20
+  $settings = Invoke-RestMethod -Method Post -Uri "$base/api/v3/providers/settings" -Headers $jsonHeaders -Body $settingsBody
+  Assert-Smoke ($settings.settings.default_provider -eq $normalizedProvider) "Provider settings did not save the requested provider."
+  Assert-Smoke ($settings.settings.mock_mode -eq $mockMode) "Provider settings did not save the requested mock mode."
+
+  $providerTestBody = @{
+    provider = $normalizedProvider
+    mock = $mockMode
+  } | ConvertTo-Json -Depth 10
+  $providerTest = Invoke-RestMethod -Method Post -Uri "$base/api/v3/providers/test" -Headers $jsonHeaders -Body $providerTestBody
+  Assert-Smoke ($providerTest.test.ok -eq $true) "Provider test failed: $($providerTest.test.message)"
+  if ($mockMode) {
+    Assert-Smoke ($providerTest.test.mode -eq "mock") "Mock smoke must not make a live provider request."
+  } else {
+    Assert-Smoke ($providerTest.test.mode -eq "live") "Live smoke did not validate the live provider path."
   }
 
-  $runBody = @{
+  $scenarioRepo = New-SmokeRepo -Parent $storePath
+  $config = New-SmokeConfig -Provider $normalizedProvider -Model $Model
+
+  $createBody = @{
+    workflow_id = "planner-led"
+    planner_agent_id = "planner"
     config = $config
-    workflow_id = "smoke"
-    task = "smoke test Rust v3 product path"
-  } | ConvertTo-Json -Depth 30
+    mode = "discuss"
+  } | ConvertTo-Json -Depth 60
+  $sessionResponse = Invoke-RestMethod -Method Post -Uri "$base/api/v3/planner-chat/sessions" -Headers $jsonHeaders -Body $createBody
+  $sessionId = $sessionResponse.session.session_id
+  Assert-Smoke (-not [string]::IsNullOrWhiteSpace($sessionId)) "Planner session creation did not return a session_id."
 
-  $preview = Invoke-RestMethod -Method Post -Uri "$base/api/v3/runs/preview" -Headers $jsonHeaders -Body $runBody
-  if ($preview.status -ne "ready") {
-    throw "Run preview did not report ready: $($preview | ConvertTo-Json -Depth 10)"
+  function Send-PlannerTurn {
+    param(
+      [string]$Message,
+      [bool]$Confirmed,
+      [string]$Mode = "discuss"
+    )
+    $body = @{
+      message = $Message
+      confirmed = $Confirmed
+      mode = $Mode
+      planner_agent_id = "planner"
+      config = $config
+    } | ConvertTo-Json -Depth 60
+    Invoke-RestMethod -Method Post -Uri "$base/api/v3/planner-chat/sessions/$sessionId/turn" -Headers $jsonHeaders -Body $body
   }
 
-  $run = Invoke-RestMethod -Method Post -Uri "$base/api/v3/runs/mock" -Headers $jsonHeaders -Body $runBody
-  if (-not $run.run_id) {
-    throw "Mock run did not return a run_id."
-  }
+  $firstTurn = Send-PlannerTurn -Message "Plan repository work for README.md. Acceptance: final report includes evidence." -Confirmed $false
+  Assert-Smoke (-not [string]::IsNullOrWhiteSpace($firstTurn.assistant_message)) "First Planner turn did not return an assistant message."
+  Assert-Smoke ($firstTurn.should_start_workflow -eq $false) "First Planner turn unexpectedly started work."
 
-  $events = Invoke-RestMethod -Method Get -Uri "$base$($run.events_url)"
-  if (-not $events.events -or $events.events.Count -lt 1) {
-    throw "Run events were not visible."
-  }
+  $secondTurn = Send-PlannerTurn -Message "Confirm scope README.md and keep validation offline. Acceptance: timeline, final report, Review Changes, and Undo are exercised." -Confirmed $true -Mode "work"
+  Assert-Smoke (-not [string]::IsNullOrWhiteSpace($secondTurn.assistant_message)) "Second Planner turn did not return an assistant message."
+  Assert-Smoke ($secondTurn.should_start_workflow -eq $false) "Second Planner turn unexpectedly started work."
+  Assert-Smoke (@($secondTurn.session.turns).Count -ge 4) "Planner session did not retain two user/assistant turns."
+  Assert-Smoke ($secondTurn.ready -eq $true) "Planner did not mark the scoped plan ready for Start Work."
 
-  $report = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$($run.run_id)/report/preview"
-  if ($report.report.status -ne "completed") {
-    throw "Report preview did not complete."
-  }
+  $startBody = @{
+    repo = $scenarioRepo
+    workflow_id = "planner-led"
+    planner_agent_id = "planner"
+    config = $config
+    scopes = @("README.md")
+  } | ConvertTo-Json -Depth 60
+  $startWork = Invoke-RestMethod -Method Post -Uri "$base/api/v3/planner-chat/sessions/$sessionId/start-work" -Headers $jsonHeaders -Body $startBody
+  Assert-Smoke (-not [string]::IsNullOrWhiteSpace($startWork.run_id)) "Start Work did not return a run_id: $($startWork | ConvertTo-Json -Depth 10)"
+  Assert-Smoke (-not [string]::IsNullOrWhiteSpace($startWork.timeline_url)) "Start Work did not return a timeline_url."
 
-  $artifact = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$($run.run_id)/artifacts/final-report.json"
-  if ($artifact.artifact_name -ne "final-report.json") {
-    throw "Final report artifact fetch failed."
-  }
+  $events = Invoke-RestMethod -Method Get -Uri "$base$($startWork.events_url)"
+  Assert-Smoke (@($events.events).Count -ge 1) "Run events were not visible."
 
-  $repoEvidence = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$($run.run_id)/repo-evidence"
+  $timeline = Invoke-RestMethod -Method Get -Uri "$base$($startWork.timeline_url)"
+  $timelineItems = @($timeline.items)
+  Assert-Smoke ($timelineItems.Count -ge 1) "Run timeline was empty."
+  Assert-Smoke (($timelineItems | Where-Object { $_.type -eq "final_summary" } | Select-Object -First 1) -ne $null) "Run timeline did not include a final summary."
+
+  $report = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$($startWork.run_id)/report/preview"
+  Assert-Smoke ($report.report.status -eq "completed") "Report preview did not complete."
+
+  $artifact = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$($startWork.run_id)/artifacts/final-report.json"
+  Assert-Smoke ($artifact.artifact_name -eq "final-report.json") "Final report artifact fetch failed."
+
+  $readmePath = Join-Path $scenarioRepo "README.md"
+  [System.IO.File]::WriteAllText($readmePath, "# Smoke repo`nchanged by review smoke`n")
+
+  $review = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$($startWork.run_id)/changes"
+  $reviewChanges = @($review.changes)
+  Assert-Smoke ($reviewChanges.Count -ge 1) "Review Changes returned no change sets after a controlled README.md change."
+  $changeSetId = $reviewChanges[0].change_set_id
+  Assert-Smoke (-not [string]::IsNullOrWhiteSpace($changeSetId)) "Review Changes did not return a change_set_id."
+
+  $diff = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$($startWork.run_id)/changes/$changeSetId/diff"
+  Assert-Smoke ($diff.diff.Contains("README.md")) "Change diff did not mention README.md."
+  Assert-Smoke ($diff.diff.Contains("changed by review smoke")) "Change diff did not include the controlled README.md edit."
+
+  $undo = Invoke-RestMethod -Method Post -Uri "$base/api/v3/runs/$($startWork.run_id)/changes/$changeSetId/undo"
+  Assert-Smoke ($undo.status -eq "undone") "Undo did not report undone."
+  $readmeAfterUndo = [System.IO.File]::ReadAllText($readmePath).Replace("`r`n", "`n")
+  Assert-Smoke ($readmeAfterUndo -eq "# Smoke repo`nbase`n") "Undo did not restore README.md to the committed content."
+
+  $reviewAfterUndo = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$($startWork.run_id)/changes"
+  Assert-Smoke (@($reviewAfterUndo.changes).Count -eq 0) "Review Changes still reported changes after undo."
 
   [pscustomobject]@{
     status = "ok"
-    health = $health.status
-    run_id = $run.run_id
-    events = $events.events.Count
+    validation = $validationMode
+    provider = $normalizedProvider
+    provider_test = $providerTest.test.mode
+    mock_mode = $mockMode
+    session_id = $sessionId
+    turns = @($secondTurn.session.turns).Count
+    run_id = $startWork.run_id
+    start_work_status = $startWork.status
+    events = @($events.events).Count
+    timeline_items = $timelineItems.Count
     report_status = $report.report.status
     artifact = $artifact.artifact_name
-    repo_evidence_count = $repoEvidence.items.Count
+    review_changes = $reviewChanges.Count
+    undo_status = $undo.status
+    review_changes_after_undo = @($reviewAfterUndo.changes).Count
   } | ConvertTo-Json -Depth 10
 } finally {
   if ($server -and -not $server.HasExited) {
