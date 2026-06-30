@@ -1730,6 +1730,8 @@ fn native_react_lifecycle_events(
         events.push(HarnessRunEvent::new(
             "executor.reasoning_summary",
             json!({
+                "run_id": request.run_id.as_str(),
+                "workflow_id": request.workflow_id,
                 "backend": "native-rust",
                 "step": step,
                 "node_id": request.node_id,
@@ -1742,6 +1744,8 @@ fn native_react_lifecycle_events(
         events.push(HarnessRunEvent::new(
             "executor.action_selected",
             json!({
+                "run_id": request.run_id.as_str(),
+                "workflow_id": request.workflow_id,
                 "backend": "native-rust",
                 "step": step,
                 "node_id": request.node_id,
@@ -1758,6 +1762,8 @@ fn native_react_lifecycle_events(
             events.push(HarnessRunEvent::new(
                 "tool.started",
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
                     "backend": "native-rust",
                     "step": step,
                     "node_id": request.node_id,
@@ -1772,6 +1778,8 @@ fn native_react_lifecycle_events(
             HarnessRunEvent::new(
                 "tool.completed",
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
                     "backend": "native-rust",
                     "step": step,
                     "node_id": request.node_id,
@@ -1789,6 +1797,8 @@ fn native_react_lifecycle_events(
             HarnessRunEvent::new(
                 "observation.recorded",
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
                     "backend": "native-rust",
                     "step": step,
                     "node_id": request.node_id,
@@ -1804,6 +1814,8 @@ fn native_react_lifecycle_events(
         events.push(HarnessRunEvent::new(
             "executor.next_step",
             json!({
+                "run_id": request.run_id.as_str(),
+                "workflow_id": request.workflow_id,
                 "backend": "native-rust",
                 "step": step,
                 "node_id": request.node_id,
@@ -1820,7 +1832,10 @@ fn native_react_lifecycle_events(
         events.push(HarnessRunEvent::new(
             executor_terminal_event_kind(terminal_status),
             json!({
+                "run_id": request.run_id.as_str(),
+                "workflow_id": request.workflow_id,
                 "backend": "native-rust",
+                "step": action_events.len(),
                 "node_id": request.node_id,
                 "agent_id": request.agent_id,
                 "harness_id": request.harness_id,
@@ -2215,7 +2230,7 @@ impl HarnessBackend for OpenHandsHarnessBackend {
         let lifecycle = poll_openhands_events(
             &client,
             &conversation.id,
-            &request.run_id,
+            &request,
             &self.store,
             &self.config,
         )
@@ -2266,7 +2281,7 @@ struct OpenHandsLifecycleResult {
 async fn poll_openhands_events(
     client: &OpenHandsClient,
     conversation_id: &str,
-    run_id: &RunId,
+    request: &HarnessRunRequest,
     store: &RunStore,
     config: &OpenHandsHarnessConfig,
 ) -> Result<OpenHandsLifecycleResult, HarnessError> {
@@ -2303,7 +2318,12 @@ async fn poll_openhands_events(
             }
             captured_events += 1;
             let terminal = openhands_terminal_status(&raw, &config.terminal_event_kinds);
-            events.extend(openhands_raw_harness_events(run_id, store, raw)?);
+            events.extend(openhands_raw_harness_events(
+                request,
+                store,
+                raw,
+                captured_events,
+            )?);
             if let Some((status, reason)) = terminal {
                 return Ok(OpenHandsLifecycleResult {
                     status: status.to_owned(),
@@ -2359,9 +2379,10 @@ async fn poll_openhands_events(
 }
 
 fn openhands_raw_harness_events(
-    run_id: &RunId,
+    request: &HarnessRunRequest,
     store: &RunStore,
     raw: Value,
+    step: usize,
 ) -> Result<Vec<HarnessRunEvent>, HarnessError> {
     let raw_text =
         serde_json::to_string(&raw).map_err(|error| HarnessError::Failed(error.to_string()))?;
@@ -2369,18 +2390,27 @@ fn openhands_raw_harness_events(
         .write_large_text_ref(&raw_text)
         .map_err(|error| HarnessError::Failed(error.to_string()))?
         .blob_ref;
-    let normalized =
-        normalize_openhands_event(run_id.clone(), 0, raw.clone(), Some(raw_ref.clone()));
+    let normalized = normalize_openhands_event(
+        request.run_id.clone(),
+        0,
+        raw.clone(),
+        Some(raw_ref.clone()),
+    );
     let mut event = HarnessRunEvent::new(normalized.kind, normalized.payload);
     for reference in normalized.refs {
         event = event.with_ref(reference.label, reference.uri);
     }
     let mut events = vec![event];
-    events.extend(openhands_public_react_events(&raw, &raw_ref));
+    events.extend(openhands_public_react_events(request, &raw, &raw_ref, step));
     Ok(events)
 }
 
-fn openhands_public_react_events(raw: &Value, raw_ref: &str) -> Vec<HarnessRunEvent> {
+fn openhands_public_react_events(
+    request: &HarnessRunRequest,
+    raw: &Value,
+    raw_ref: &str,
+    step: usize,
+) -> Vec<HarnessRunEvent> {
     let raw_kind = openhands_raw_event_kind(raw);
     let normalized_kind = raw_kind.to_ascii_lowercase();
     let summary =
@@ -2396,7 +2426,13 @@ fn openhands_public_react_events(raw: &Value, raw_ref: &str) -> Vec<HarnessRunEv
             HarnessRunEvent::new(
                 "executor.reasoning_summary",
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
                     "backend": "openhands",
+                    "step": step,
                     "summary": truncate_public(&summary, 500),
                     "raw_kind": raw_kind,
                     "raw_ref": raw_ref
@@ -2415,7 +2451,13 @@ fn openhands_public_react_events(raw: &Value, raw_ref: &str) -> Vec<HarnessRunEv
             HarnessRunEvent::new(
                 "executor.action_selected",
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
                     "backend": "openhands",
+                    "step": step,
                     "tool_name": tool_name,
                     "action": "openhands_action",
                     "permission_boundary": "harness",
@@ -2431,7 +2473,13 @@ fn openhands_public_react_events(raw: &Value, raw_ref: &str) -> Vec<HarnessRunEv
             HarnessRunEvent::new(
                 "tool.started",
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
                     "backend": "openhands",
+                    "step": step,
                     "tool_name": tool_name,
                     "status": "started",
                     "summary": truncate_public(&summary, 500),
@@ -2454,7 +2502,13 @@ fn openhands_public_react_events(raw: &Value, raw_ref: &str) -> Vec<HarnessRunEv
             HarnessRunEvent::new(
                 "tool.completed",
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
                     "backend": "openhands",
+                    "step": step,
                     "tool_name": tool_name,
                     "status": "completed",
                     "summary": truncate_public(&summary, 500),
@@ -2469,9 +2523,35 @@ fn openhands_public_react_events(raw: &Value, raw_ref: &str) -> Vec<HarnessRunEv
             HarnessRunEvent::new(
                 "observation.recorded",
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
                     "backend": "openhands",
+                    "step": step,
                     "tool_name": tool_name,
                     "summary": truncate_public(&summary, 500),
+                    "evidence_ref": raw_ref,
+                    "raw_kind": raw_kind,
+                    "raw_ref": raw_ref
+                }),
+            )
+            .with_ref("openhands.raw_event", raw_ref.to_owned()),
+        );
+        events.push(
+            HarnessRunEvent::new(
+                "executor.next_step",
+                json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
+                    "backend": "openhands",
+                    "step": step,
+                    "based_on_observation": truncate_public(&summary, 500),
+                    "next_action": "continue_or_finalize",
                     "evidence_ref": raw_ref,
                     "raw_kind": raw_kind,
                     "raw_ref": raw_ref
@@ -2496,7 +2576,13 @@ fn openhands_public_react_events(raw: &Value, raw_ref: &str) -> Vec<HarnessRunEv
             HarnessRunEvent::new(
                 executor_terminal_event_kind(status),
                 json!({
+                    "run_id": request.run_id.as_str(),
+                    "workflow_id": request.workflow_id,
+                    "node_id": request.node_id,
+                    "agent_id": request.agent_id,
+                    "harness_id": request.harness_id,
                     "backend": "openhands",
+                    "step": step,
                     "status": status,
                     "summary": truncate_public(&summary, 500),
                     "raw_kind": raw_kind,
@@ -3725,7 +3811,32 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(result
             .events
             .iter()
+            .any(|event| event.kind == "executor.next_step"));
+        assert!(result
+            .events
+            .iter()
             .any(|event| event.kind == "executor.completed"));
+        for event in result.events.iter().filter(|event| {
+            matches!(
+                event.kind.as_str(),
+                "executor.reasoning_summary"
+                    | "executor.action_selected"
+                    | "tool.started"
+                    | "tool.completed"
+                    | "observation.recorded"
+                    | "executor.next_step"
+                    | "executor.completed"
+                    | "executor.blocked"
+                    | "executor.failed"
+            )
+        }) {
+            assert_eq!(event.payload["run_id"], "run-openhands-test");
+            assert_eq!(event.payload["workflow_id"], "workflow");
+            assert_eq!(event.payload["node_id"], "executor");
+            assert_eq!(event.payload["agent_id"], "executor");
+            assert_eq!(event.payload["harness_id"], "openhands-code-edit");
+            assert!(event.payload["step"].as_u64().is_some());
+        }
         assert!(
             result
                 .events

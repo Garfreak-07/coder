@@ -45,6 +45,23 @@ Executor entries should reflect the public ReAct loop:
 Reasoning summary -> action selected -> tool started/completed -> observation -> next step
 ```
 
+The public executor lifecycle event kinds are:
+
+- `executor.reasoning_summary`
+- `executor.action_selected`
+- `tool.started`
+- `tool.completed`
+- `observation.recorded`
+- `executor.next_step`
+- `executor.completed`
+- `executor.blocked`
+- `executor.failed`
+
+Each event uses the RunStore event envelope for `run_id` and `timestamp`, and
+the payload carries `workflow_id`, `node_id`, `agent_id`, `harness_id`,
+`backend`, `step`, `summary`, status, action/tool names when applicable, and
+evidence refs when available.
+
 OpenHands remains the preferred backend for full coding-agent tool loops.
 Native Rust events are limited deterministic fallback for tests and local smoke
 checks.
