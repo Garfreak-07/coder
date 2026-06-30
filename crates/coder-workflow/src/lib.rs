@@ -2561,6 +2561,31 @@ fn openhands_public_react_events(
         );
     }
 
+    if let Some(event) = openhands_command_event(
+        request,
+        raw,
+        raw_ref,
+        &raw_kind,
+        &normalized_kind,
+        &tool_name,
+        &summary,
+        step,
+    ) {
+        events.push(event);
+    }
+
+    if let Some(event) = openhands_file_change_event(
+        request,
+        raw,
+        raw_ref,
+        &raw_kind,
+        &normalized_kind,
+        &summary,
+        step,
+    ) {
+        events.push(event);
+    }
+
     let raw_status = raw
         .get("status")
         .or_else(|| raw.get("state"))
@@ -2613,9 +2638,7 @@ fn openhands_public_summary(raw: &Value) -> Option<String> {
                 }
             }
             if value.is_object() || value.is_array() {
-                if let Ok(text) = serde_json::to_string(value) {
-                    return Some(truncate_public(&text, 500));
-                }
+                return Some(format!("OpenHands provided structured {key} data."));
             }
         }
     }
@@ -2632,6 +2655,425 @@ fn openhands_tool_name(raw: &Value) -> Option<String> {
         }
     }
     None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn openhands_command_event(
+    request: &HarnessRunRequest,
+    raw: &Value,
+    raw_ref: &str,
+    raw_kind: &str,
+    normalized_kind: &str,
+    tool_name: &str,
+    summary: &str,
+    step: usize,
+) -> Option<HarnessRunEvent> {
+    let command = openhands_command_text(raw).or_else(|| {
+        let normalized_tool = tool_name.to_ascii_lowercase();
+        if normalized_kind.contains("command")
+            || normalized_kind.contains("shell")
+            || normalized_tool.contains("shell")
+            || normalized_tool.contains("bash")
+            || normalized_tool.contains("terminal")
+        {
+            Some(truncate_public(summary, 500))
+        } else {
+            None
+        }
+    })?;
+    let argv = raw
+        .get("argv")
+        .or_else(|| raw.pointer("/args/argv"))
+        .filter(|value| value.is_array())
+        .cloned();
+    let returncode = openhands_i64_field(raw, &["returncode", "exit_code", "exitCode", "code"]);
+    let failed = returncode.is_some_and(|code| code != 0)
+        || openhands_bool_field(raw, &["failed", "error", "timed_out"]).unwrap_or(false)
+        || openhands_text_field(raw, &["status", "state", "outcome"])
+            .as_deref()
+            .map(|status| {
+                matches!(
+                    status.to_ascii_lowercase().as_str(),
+                    "failed" | "failure" | "error" | "errored" | "timeout" | "timed_out"
+                )
+            })
+            .unwrap_or(false);
+    let completed = failed
+        || returncode.is_some()
+        || normalized_kind.contains("observation")
+        || normalized_kind.contains("result")
+        || normalized_kind.contains("completed")
+        || normalized_kind.contains("complete")
+        || normalized_kind.contains("done")
+        || raw.get("stdout").is_some()
+        || raw.get("stderr").is_some()
+        || raw.get("output").is_some()
+        || raw.get("result").is_some();
+    let (kind, status) = if failed {
+        ("command.failed", "failed")
+    } else if completed {
+        ("command.completed", "completed")
+    } else {
+        ("command.previewed", "previewed")
+    };
+
+    Some(
+        HarnessRunEvent::new(
+            kind,
+            json!({
+                "run_id": request.run_id.as_str(),
+                "workflow_id": request.workflow_id,
+                "node_id": request.node_id,
+                "agent_id": request.agent_id,
+                "harness_id": request.harness_id,
+                "backend": "openhands",
+                "step": step,
+                "command": command,
+                "argv": argv,
+                "cwd": openhands_text_field(raw, &["cwd", "working_dir", "workingDirectory"]),
+                "status": status,
+                "passed": !failed,
+                "returncode": returncode,
+                "exit_code": returncode,
+                "timed_out": openhands_bool_field(raw, &["timed_out", "timeout"]).unwrap_or(false),
+                "stdout_preview": openhands_text_field(
+                    raw,
+                    &["stdout_preview", "stdout", "output_preview", "output", "content", "message"]
+                ).map(|value| truncate_public(&value, 1000)),
+                "stderr_preview": openhands_text_field(raw, &["stderr_preview", "stderr"])
+                    .map(|value| truncate_public(&value, 1000)),
+                "duration_ms": openhands_u64_field(raw, &["duration_ms", "elapsed_ms"]),
+                "summary": truncate_public(summary, 500),
+                "evidence_ref": raw_ref,
+                "raw_kind": raw_kind,
+                "raw_ref": raw_ref
+            }),
+        )
+        .with_ref("openhands.raw_event", raw_ref.to_owned()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn openhands_file_change_event(
+    request: &HarnessRunRequest,
+    raw: &Value,
+    raw_ref: &str,
+    raw_kind: &str,
+    normalized_kind: &str,
+    summary: &str,
+    step: usize,
+) -> Option<HarnessRunEvent> {
+    let files = openhands_changed_files(raw, normalized_kind);
+    if files.is_empty() {
+        return None;
+    }
+
+    Some(
+        HarnessRunEvent::new(
+            "patch.applied",
+            json!({
+                "run_id": request.run_id.as_str(),
+                "workflow_id": request.workflow_id,
+                "node_id": request.node_id,
+                "agent_id": request.agent_id,
+                "harness_id": request.harness_id,
+                "backend": "openhands",
+                "step": step,
+                "status": "applied",
+                "applied": true,
+                "patch_file": "openhands-file-change",
+                "file_count": files.len(),
+                "files": files,
+                "summary": truncate_public(summary, 500),
+                "evidence_ref": raw_ref,
+                "raw_kind": raw_kind,
+                "raw_ref": raw_ref
+            }),
+        )
+        .with_ref("openhands.raw_event", raw_ref.to_owned()),
+    )
+}
+
+fn openhands_command_text(raw: &Value) -> Option<String> {
+    openhands_text_field(
+        raw,
+        &[
+            "command",
+            "cmd",
+            "shell_command",
+            "bash_command",
+            "terminal_command",
+        ],
+    )
+    .or_else(|| {
+        raw.get("argv")
+            .or_else(|| raw.pointer("/args/argv"))
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(openhands_value_string)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|value| !value.trim().is_empty())
+    })
+}
+
+fn openhands_changed_files(raw: &Value, normalized_kind: &str) -> Vec<Value> {
+    if !openhands_file_change_like(raw, normalized_kind) {
+        return Vec::new();
+    }
+
+    let mut files = Vec::new();
+    let mut seen = BTreeSet::new();
+    let default_status = openhands_file_status(raw, normalized_kind);
+
+    for key in ["files", "changed_files", "touched_files"] {
+        if let Some(items) = raw.get(key).and_then(Value::as_array) {
+            for item in items {
+                if let Some(file) =
+                    openhands_changed_file_from_value(item, &default_status, normalized_kind)
+                {
+                    push_openhands_file(&mut files, &mut seen, file);
+                }
+            }
+        }
+    }
+
+    for key in [
+        "file",
+        "path",
+        "filename",
+        "filepath",
+        "new_path",
+        "old_path",
+        "target_file",
+    ] {
+        if let Some(value) = raw.get(key) {
+            if let Some(file) =
+                openhands_changed_file_from_value(value, &default_status, normalized_kind)
+            {
+                push_openhands_file(&mut files, &mut seen, file);
+            }
+        }
+    }
+
+    if let Some(diff) = openhands_text_field(raw, &["diff", "patch"]) {
+        for file in openhands_changed_files_from_diff(&diff, &default_status) {
+            push_openhands_file(&mut files, &mut seen, file);
+        }
+    }
+
+    files
+}
+
+fn openhands_file_change_like(raw: &Value, normalized_kind: &str) -> bool {
+    if [
+        "patch", "edit", "write", "create", "delete", "remove", "modify",
+    ]
+    .iter()
+    .any(|needle| normalized_kind.contains(needle))
+    {
+        return true;
+    }
+
+    if raw.get("files").is_some()
+        || raw.get("changed_files").is_some()
+        || raw.get("touched_files").is_some()
+        || raw.get("diff").is_some()
+        || raw.get("patch").is_some()
+    {
+        return true;
+    }
+
+    openhands_text_field(raw, &["status", "action", "operation"])
+        .map(|value| value.to_ascii_lowercase())
+        .map(|value| {
+            [
+                "patch", "edit", "write", "create", "delete", "remove", "modify",
+            ]
+            .iter()
+            .any(|needle| value.contains(needle))
+        })
+        .unwrap_or(false)
+}
+
+fn openhands_changed_file_from_value(
+    value: &Value,
+    default_status: &str,
+    normalized_kind: &str,
+) -> Option<Value> {
+    match value {
+        Value::String(path) => openhands_changed_file(path, default_status, None, None),
+        Value::Object(_) => {
+            let path = openhands_text_field(
+                value,
+                &[
+                    "new_path",
+                    "path",
+                    "old_path",
+                    "file",
+                    "filename",
+                    "filepath",
+                    "target_file",
+                ],
+            )?;
+            let status = openhands_text_field(value, &["status", "action", "operation"])
+                .unwrap_or_else(|| openhands_file_status(value, normalized_kind));
+            let additions = openhands_u64_field(value, &["additions", "added"]);
+            let deletions = openhands_u64_field(value, &["deletions", "deleted", "removed"]);
+            openhands_changed_file(&path, &status, additions, deletions)
+        }
+        _ => None,
+    }
+}
+
+fn openhands_changed_file(
+    path: &str,
+    status: &str,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+) -> Option<Value> {
+    let path = path.trim();
+    if path.is_empty() {
+        return None;
+    }
+    let mut object = serde_json::Map::new();
+    object.insert("path".to_owned(), Value::String(path.to_owned()));
+    object.insert("status".to_owned(), Value::String(status.to_owned()));
+    if let Some(additions) = additions {
+        object.insert(
+            "additions".to_owned(),
+            Value::Number(serde_json::Number::from(additions)),
+        );
+    }
+    if let Some(deletions) = deletions {
+        object.insert(
+            "deletions".to_owned(),
+            Value::Number(serde_json::Number::from(deletions)),
+        );
+    }
+    Some(Value::Object(object))
+}
+
+fn push_openhands_file(files: &mut Vec<Value>, seen: &mut BTreeSet<String>, file: Value) {
+    let Some(path) = file.get("path").and_then(Value::as_str).map(str::to_owned) else {
+        return;
+    };
+    if seen.insert(path) {
+        files.push(file);
+    }
+}
+
+fn openhands_changed_files_from_diff(diff: &str, default_status: &str) -> Vec<Value> {
+    let mut files = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in diff.lines() {
+        let Some(path) = line.strip_prefix("+++ b/") else {
+            continue;
+        };
+        if path == "/dev/null" {
+            continue;
+        }
+        if let Some(file) = openhands_changed_file(path, default_status, None, None) {
+            push_openhands_file(&mut files, &mut seen, file);
+        }
+    }
+    files
+}
+
+fn openhands_file_status(raw: &Value, normalized_kind: &str) -> String {
+    openhands_text_field(raw, &["status", "action", "operation"]).unwrap_or_else(|| {
+        if normalized_kind.contains("delete") || normalized_kind.contains("remove") {
+            "deleted".to_owned()
+        } else if normalized_kind.contains("create") || normalized_kind.contains("add") {
+            "added".to_owned()
+        } else {
+            "modified".to_owned()
+        }
+    })
+}
+
+fn openhands_text_field(raw: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = raw.get(*key).and_then(openhands_value_string) {
+            return Some(value);
+        }
+    }
+    for parent in [
+        "action",
+        "args",
+        "metadata",
+        "data",
+        "tool_call",
+        "toolCall",
+    ] {
+        let Some(value) = raw.get(parent) else {
+            continue;
+        };
+        for key in keys {
+            if let Some(value) = value.get(*key).and_then(openhands_value_string) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn openhands_bool_field(raw: &Value, keys: &[&str]) -> Option<bool> {
+    for key in keys {
+        if let Some(value) = raw.get(*key).and_then(Value::as_bool) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn openhands_i64_field(raw: &Value, keys: &[&str]) -> Option<i64> {
+    for key in keys {
+        let Some(value) = raw.get(*key) else {
+            continue;
+        };
+        if let Some(value) = value.as_i64() {
+            return Some(value);
+        }
+        if let Some(value) = value.as_str().and_then(|value| value.parse::<i64>().ok()) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn openhands_u64_field(raw: &Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        let Some(value) = raw.get(*key) else {
+            continue;
+        };
+        if let Some(value) = value.as_u64() {
+            return Some(value);
+        }
+        if let Some(value) = value.as_str().and_then(|value| value.parse::<u64>().ok()) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn openhands_value_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        }
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
 }
 
 fn openhands_event_key(raw: &Value) -> String {
@@ -3794,9 +4236,11 @@ diff --git a/tracked.txt b/tracked.txt
             json_response(r#"{"accepted":true}"#),
             json_response(
                 r#"[
-                    {"id":"raw-1","type":"ActionEvent","tool_name":"shell","message":"Run tests"},
-                    {"id":"raw-2","type":"ObservationEvent","content":"tests passed"},
-                    {"id":"raw-3","type":"done","status":"completed"}
+                    {"id":"raw-1","type":"ThoughtEvent","thought":"I should run the test suite."},
+                    {"id":"raw-2","type":"ActionEvent","tool_name":"shell","command":"cargo test","cwd":".","message":"Run tests"},
+                    {"id":"raw-3","type":"ObservationEvent","tool_name":"shell","command":"cargo test","content":"tests passed","returncode":0,"stdout":"ok"},
+                    {"id":"raw-4","type":"FileEditObservation","files":[{"path":"src/lib.rs","status":"modified","additions":1,"deletions":0}],"content":"updated src/lib.rs"},
+                    {"id":"raw-5","type":"done","status":"completed"}
                 ]"#,
             ),
         ]);
@@ -3809,6 +4253,14 @@ diff --git a/tracked.txt b/tracked.txt
         let result = backend.run(request).await.unwrap();
 
         assert_eq!(result.status, "completed");
+        assert!(result
+            .events
+            .iter()
+            .any(|event| event.kind == "executor.reasoning_summary"
+                && event.payload["summary"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("test suite")));
         assert!(result
             .events
             .iter()
@@ -3834,6 +4286,24 @@ diff --git a/tracked.txt b/tracked.txt
             .events
             .iter()
             .any(|event| event.kind == "executor.next_step"));
+        assert!(result.events.iter().any(|event| {
+            event.kind == "command.completed"
+                && event.payload["command"].as_str() == Some("cargo test")
+                && event.payload["returncode"].as_i64() == Some(0)
+        }));
+        assert!(result.events.iter().any(|event| {
+            event.kind == "patch.applied"
+                && event
+                    .payload
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .is_some_and(|files| {
+                        files.iter().any(|file| {
+                            file.get("path").and_then(Value::as_str) == Some("src/lib.rs")
+                                && file.get("status").and_then(Value::as_str) == Some("modified")
+                        })
+                    })
+        }));
         assert!(result
             .events
             .iter()
@@ -3850,6 +4320,10 @@ diff --git a/tracked.txt b/tracked.txt
                     | "executor.completed"
                     | "executor.blocked"
                     | "executor.failed"
+                    | "command.previewed"
+                    | "command.completed"
+                    | "command.failed"
+                    | "patch.applied"
             )
         }) {
             assert_eq!(event.payload["run_id"], "run-openhands-test");
