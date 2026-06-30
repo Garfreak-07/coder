@@ -4,7 +4,7 @@ import { AppSidebar } from "./components/AppSidebar";
 import { PlannerChatPage } from "./features/planner-chat/PlannerChatPage";
 import { ReviewChangesCard } from "./features/review-changes/ReviewChangesCard";
 import { WorkTimeline } from "./features/work-timeline/WorkTimeline";
-import type { AgentWorkflowSpec, RustProjectConfig } from "./types";
+import type { AgentWorkflowSpec, RustProjectConfig, TimelineItem } from "./types";
 import {
   agentWorkflowToRustLibrarySaveRequest,
   rustDefaultWorkflowToAgentWorkflow,
@@ -364,6 +364,148 @@ test("Work timeline renders public ReAct items without raw backend details", () 
   assert.ok(text.includes("repo_find_files"));
   assert.ok(!text.includes("raw_ref"));
   assert.ok(!text.includes("backend.openhands"));
+});
+
+test("Work timeline explains a complete run with compact command output", () => {
+  const items: TimelineItem[] = [
+    {
+      type: "planner_message",
+      id: "planner-1",
+      agent_id: "planner",
+      content: "Planner prepared the run.",
+      created_at: "2026-01-01T00:00:00Z"
+    },
+    {
+      type: "reasoning_summary",
+      id: "reason-1",
+      agent_id: "executor",
+      summary_text: ["Need inspect repo state before editing."],
+      created_at: "2026-01-01T00:00:01Z"
+    },
+    {
+      type: "executor_step",
+      id: "action-1",
+      agent_id: "executor",
+      title: "Action selected",
+      status: "selected",
+      summary: "Selected repo_find_files.",
+      created_at: "2026-01-01T00:00:02Z"
+    },
+    {
+      type: "tool_call",
+      id: "tool-1",
+      agent_id: "executor",
+      tool_name: "repo_find_files",
+      status: "started",
+      summary: "Scanning repository files.",
+      evidence_ref: "blob://sha256/raw-tool-start",
+      created_at: "2026-01-01T00:00:03Z"
+    },
+    {
+      type: "tool_call",
+      id: "tool-2",
+      agent_id: "executor",
+      tool_name: "repo_find_files",
+      status: "completed",
+      summary: "Found README.md.",
+      evidence_ref: "blob://sha256/raw-tool-complete",
+      created_at: "2026-01-01T00:00:04Z"
+    },
+    {
+      type: "executor_step",
+      id: "observation-1",
+      agent_id: "executor",
+      title: "Observation recorded",
+      status: "completed",
+      summary: "README.md needs the requested update.",
+      created_at: "2026-01-01T00:00:05Z"
+    },
+    {
+      type: "command_execution",
+      id: "command-1",
+      agent_id: "executor",
+      command: ["cargo", "test"],
+      cwd: ".",
+      status: "completed",
+      stdout_preview: "test result: ok",
+      stderr_preview: null,
+      exit_code: 0,
+      duration_ms: 1530,
+      evidence_ref: "blob://sha256/raw-command",
+      created_at: "2026-01-01T00:00:06Z"
+    },
+    {
+      type: "file_change",
+      id: "file-1",
+      agent_id: "executor",
+      path: "README.md",
+      change_type: "modified",
+      diff_ref: "blob://sha256/raw-diff",
+      created_at: "2026-01-01T00:00:07Z"
+    },
+    {
+      type: "approval",
+      id: "approval-1",
+      agent_id: "executor",
+      risk_level: "medium",
+      action_type: "command",
+      summary: "Command required confirmation.",
+      status: "blocked",
+      created_at: "2026-01-01T00:00:08Z"
+    },
+    {
+      type: "verification",
+      id: "verification-1",
+      agent_id: "executor",
+      status: "completed",
+      summary: "Tests passed.",
+      evidence_ref: "blob://sha256/raw-verification",
+      created_at: "2026-01-01T00:00:09Z"
+    },
+    {
+      type: "final_summary",
+      id: "summary-1",
+      agent_id: "planner",
+      summary: "README.md was updated and tests passed.",
+      changed_files: ["README.md"],
+      checks: ["cargo test: completed exit 0"],
+      evidence_refs: [{ kind: "openhands_raw_event", reference: "blob://sha256/raw-final" }],
+      created_at: "2026-01-01T00:00:10Z"
+    }
+  ];
+  const tree = WorkTimeline({ runId: "run-1", items });
+  const text = collectReactTreeText(tree);
+  const classNames = collectReactTreeClassNames(tree);
+
+  assert.ok(text.includes("11 public steps"));
+  assert.ok(text.includes("Planner message"));
+  assert.ok(text.includes("Planner prepared the run."));
+  assert.ok(text.includes("Executor reasoning"));
+  assert.ok(text.includes("Need inspect repo state before editing."));
+  assert.ok(text.includes("Action selected"));
+  assert.ok(text.includes("Tool running: repo_find_files"));
+  assert.ok(text.includes("Tool completed: repo_find_files"));
+  assert.ok(text.includes("Observation recorded"));
+  assert.ok(text.includes("Command execution"));
+  assert.ok(text.includes("cargo test"));
+  assert.ok(text.includes("cwd ."));
+  assert.ok(text.includes("exit 0"));
+  assert.ok(text.includes("1.5 s"));
+  assert.ok(text.includes("Command output"));
+  assert.ok(text.includes("test result: ok"));
+  assert.ok(text.includes("File change"));
+  assert.ok(text.includes("README.md"));
+  assert.ok(text.includes("Approval"));
+  assert.ok(text.includes("Blocked"));
+  assert.ok(text.includes("Verification"));
+  assert.ok(text.includes("Final summary"));
+  assert.ok(text.includes("cargo test: completed exit 0"));
+  assert.ok(classNames.includes("timeline-command-output"));
+  assert.ok(classNames.includes("timeline-tone-success"));
+  assert.ok(classNames.includes("timeline-tone-warning"));
+  assert.ok(!text.includes("raw_ref"));
+  assert.ok(!text.includes("backend.openhands"));
+  assert.ok(!text.includes("blob://sha256"));
 });
 
 test("Review Changes stays hidden without changes and shows undo conflicts", () => {

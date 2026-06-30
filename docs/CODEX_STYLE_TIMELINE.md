@@ -39,6 +39,12 @@ The timeline appears only after Start Work starts execution. Chat turns never
 start runs and do not show an empty timeline. Raw event cards are not part of
 the ordinary chat view.
 
+The frontend renderer is compact by default. It should show short public
+labels, clear completed/blocked/failed states, command/cwd/exit/duration
+metadata, and changed file paths. Command stdout/stderr previews are
+expandable; raw backend JSON, raw OpenHands payloads, and blob refs are not
+shown in the normal timeline.
+
 Executor entries should reflect the public ReAct loop:
 
 ```text

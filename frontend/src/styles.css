@@ -509,6 +509,12 @@ label {
   text-transform: uppercase;
 }
 
+.timeline-header p {
+  color: #9ca3af;
+  font-size: 12px;
+  margin: 4px 0 0;
+}
+
 .timeline-list {
   display: grid;
   gap: 10px;
@@ -529,6 +535,18 @@ label {
   height: 10px;
   margin-top: 14px;
   width: 10px;
+}
+
+.timeline-tone-success .timeline-marker {
+  background: #22c55e;
+}
+
+.timeline-tone-warning .timeline-marker {
+  background: #f59e0b;
+}
+
+.timeline-tone-danger .timeline-marker {
+  background: #ef4444;
 }
 
 .timeline-body,
@@ -569,6 +587,21 @@ label {
   padding: 3px 7px;
 }
 
+.timeline-tone-success .timeline-title-row span {
+  border-color: #166534;
+  color: #bbf7d0;
+}
+
+.timeline-tone-warning .timeline-title-row span {
+  border-color: #92400e;
+  color: #fde68a;
+}
+
+.timeline-tone-danger .timeline-title-row span {
+  border-color: #991b1b;
+  color: #fecaca;
+}
+
 .timeline-body p,
 .final-summary-card p,
 .plugin-card p {
@@ -589,6 +622,26 @@ label {
   overflow: auto;
   padding: 10px;
   white-space: pre-wrap;
+}
+
+.timeline-command {
+  max-height: 120px;
+}
+
+.timeline-command-output {
+  display: grid;
+  gap: 8px;
+}
+
+.timeline-command-output summary {
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.timeline-stderr {
+  color: #fecaca;
 }
 
 .timeline-meta,
