@@ -35,7 +35,11 @@ export function ReviewChangesCard({
           (changeSet.status === "pending_review" || changeSet.status === "accepted");
         const undoConflict = changeSet.status === "failed_to_undo";
         return (
-          <article className="change-set-card" key={changeSet.change_set_id}>
+          <article
+            className={`change-set-card change-set-${changeSet.status}`}
+            key={changeSet.change_set_id}
+            aria-busy={loading}
+          >
             <div className="change-set-title">
               <strong>{changeSet.change_set_id}</strong>
               <code>{changeSet.status}</code>
@@ -61,7 +65,13 @@ export function ReviewChangesCard({
                 ))}
               </div>
             )}
-            {diff && <pre className="review-diff">{diff}</pre>}
+            {loading ? (
+              <div className="review-diff-state" role="status">Loading diff...</div>
+            ) : diff ? (
+              <pre className="review-diff">{diff}</pre>
+            ) : (
+              <div className="review-diff-state">Diff is not loaded yet.</div>
+            )}
             {undoConflict && (
               <p className="review-conflict">
                 {changeSet.undo_conflict ??

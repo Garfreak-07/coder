@@ -15,7 +15,7 @@ interface WorkTimelineProps {
 export function WorkTimeline({ runId, items }: WorkTimelineProps) {
   if (!runId && items.length === 0) return null;
   return (
-    <section className="work-timeline" aria-label="Work timeline">
+    <section className="work-timeline" aria-label="Work timeline" aria-live="polite">
       <div className="timeline-header">
         <div>
           <span>Work timeline</span>
@@ -23,7 +23,10 @@ export function WorkTimeline({ runId, items }: WorkTimelineProps) {
         </div>
       </div>
       {items.length === 0 ? (
-        <div className="timeline-empty">Work has started. Timeline events will appear here.</div>
+        <div className="timeline-empty">
+          <strong>Work has started</strong>
+          <span>Timeline events will appear here as the executor reports progress.</span>
+        </div>
       ) : (
         <ol className="timeline-list">
           {items.map((item) => (

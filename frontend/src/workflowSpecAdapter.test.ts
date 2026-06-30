@@ -4,7 +4,7 @@ import { AppSidebar } from "./components/AppSidebar";
 import { PlannerChatPage } from "./features/planner-chat/PlannerChatPage";
 import { ReviewChangesCard } from "./features/review-changes/ReviewChangesCard";
 import { WorkTimeline } from "./features/work-timeline/WorkTimeline";
-import type { AgentWorkflowSpec, RustProjectConfig, TimelineItem } from "./types";
+import type { AgentWorkflowSpec, PlannerChatSession, RustProjectConfig, TimelineItem } from "./types";
 import {
   agentWorkflowToRustLibrarySaveRequest,
   rustDefaultWorkflowToAgentWorkflow,
@@ -239,43 +239,15 @@ test("Planner Chat page uses Start Work timeline and hides legacy draft controls
 });
 
 test("Planner Chat page renders two turns without synthetic status cards", () => {
-  const tree = renderPlannerChat({
-    session_id: "session-1",
-    workflow_id: defaultPlannerLedAgentWorkflow.id,
-    planner_agent_id: "planner",
-    agent_workflow: defaultPlannerLedAgentWorkflow,
-    repo: ".",
-    scopes: [],
-    knowledge_pack_ids: [],
-    skill_pack_ids: [],
-    memory_pack_ids: [],
-    interaction_mode: "discuss",
+  const tree = renderPlannerChat(plannerSessionFixture({
     messages: [
       { role: "user", content: "First question" },
       { role: "assistant", content: "First answer" },
       { role: "user", content: "Second question" },
       { role: "assistant", content: "Second answer" }
     ],
-    task_state: {
-      goal: null,
-      user_intent: null,
-      scope: [],
-      constraints: [],
-      success_criteria: [],
-      known_context: [],
-      missing_context: [],
-      open_questions: [],
-      assumptions: [],
-      risks: [],
-      memory_proposals: [],
-      plan_steps: [],
-      readiness: "not_ready"
-    },
-    generation: 4,
-    last_turn: null,
-    run_id: null,
-    status: "chatting"
-  });
+    generation: 4
+  }));
   const text = collectReactTreeText(tree);
   const classNames = collectReactTreeClassNames(tree);
 
@@ -288,6 +260,23 @@ test("Planner Chat page renders two turns without synthetic status cards", () =>
   assert.ok(!text.includes(["Draft", "Plan"].join(" ")));
   assert.ok(!text.includes("Discuss"));
   assert.ok(!text.includes(["Work", "mode"].join(" ")));
+});
+
+test("Planner Chat shell exposes polished empty, loading, and Start Work states", () => {
+  const emptyTree = renderPlannerChat(null);
+  const readyTree = renderPlannerChat(plannerSessionFixture(), { request: "Implement the accepted plan." });
+  const loadingTree = renderPlannerChat(plannerSessionFixture({ run_id: "run-1" }), { runLoading: true });
+  const emptyClasses = collectReactTreeClassNames(emptyTree);
+  const readyClasses = collectReactTreeClassNames(readyTree);
+  const loadingText = collectReactTreeText(loadingTree);
+  const loadingClasses = collectReactTreeClassNames(loadingTree);
+
+  assert.ok(emptyClasses.includes("chat-empty-panel"));
+  assert.ok(readyClasses.includes("message-bubble"));
+  assert.ok(readyClasses.includes("composer-actions"));
+  assert.ok(readyClasses.includes("start-work-action primary-action"));
+  assert.ok(loadingText.includes("Working..."));
+  assert.ok(loadingClasses.includes("chat-loading-row"));
 });
 
 test("Planner Chat composer disables input only while a request is in flight", () => {
@@ -520,6 +509,16 @@ test("Work timeline explains a complete run with compact command output", () => 
   assert.ok(!text.includes("blob://sha256"));
 });
 
+test("Work timeline shows a clear empty progress state", () => {
+  const tree = WorkTimeline({ runId: "run-1", items: [] });
+  const text = collectReactTreeText(tree);
+  const classNames = collectReactTreeClassNames(tree);
+
+  assert.ok(text.includes("Work has started"));
+  assert.ok(text.includes("Timeline events will appear here"));
+  assert.ok(classNames.includes("timeline-empty"));
+});
+
 test("Review Changes stays hidden without changes and shows undo conflicts", () => {
   const empty = ReviewChangesCard({
     changeSets: [],
@@ -558,10 +557,63 @@ test("Review Changes stays hidden without changes and shows undo conflicts", () 
     onUndo: () => undefined
   });
   const text = collectReactTreeText(conflicted);
+  const classNames = collectReactTreeClassNames(conflicted);
 
   assert.ok(text.includes("Review changes"));
+  assert.ok(text.includes("Diff is not loaded yet."));
   assert.ok(text.includes("diff content changed for: tracked.txt"));
   assert.ok(text.includes("tracked.txt"));
+  assert.ok(classNames.includes("review-diff-state"));
+  assert.ok(classNames.includes("change-set-failed_to_undo"));
+});
+
+test("Review Changes renders loaded diffs with readable diff class", () => {
+  const tree = ReviewChangesCard({
+    changeSets: [
+      {
+        change_set_id: "changeset-current",
+        run_id: "run-1",
+        repo_root: ".",
+        status: "pending_review",
+        created_at: "2026-01-01T00:00:00Z",
+        base_git_head: null,
+        before_checkpoint_ref: null,
+        after_diff_ref: "artifact://runs/run-1/artifacts/changeset-current.json",
+        reverse_patch_ref: null,
+        changed_files: [{ path: "tracked.txt", change_type: "modified" }],
+        command_checks: [{ command: "npm run test", status: "passed", exit_code: 0 }],
+        evidence_refs: [],
+        after_diff: "diff --git a/tracked.txt b/tracked.txt",
+        diff_truncated: false,
+        undo_conflict: null
+      }
+    ],
+    diffByChangeSetId: {
+      "changeset-current": "diff --git a/tracked.txt b/tracked.txt\n-old\n+new"
+    },
+    loadingChangeSetId: null,
+    onAccept: () => undefined,
+    onLoadDiff: () => undefined,
+    onUndo: () => undefined
+  });
+  const text = collectReactTreeText(tree);
+  const classNames = collectReactTreeClassNames(tree);
+
+  assert.ok(text.includes("diff --git a/tracked.txt b/tracked.txt"));
+  assert.ok(text.includes("npm run test"));
+  assert.ok(classNames.includes("review-diff"));
+  assert.ok(classNames.includes("change-set-pending_review"));
+});
+
+test("Core UI styles include responsive chat and review polish hooks", () => {
+  const css = readFileSync("src/styles.css", "utf8");
+
+  assert.ok(css.includes(".message-bubble"));
+  assert.ok(css.includes(".composer-actions"));
+  assert.ok(css.includes(".review-diff-state"));
+  assert.ok(css.includes(".timeline-empty"));
+  assert.ok(css.includes("@media (max-width: 640px)"));
+  assert.ok(css.includes("white-space: pre;"));
 });
 
 test("Review and Undo docs cover binary and untracked file handling", () => {
@@ -641,6 +693,45 @@ function renderPlannerChat(
     onUndoChangeSet: () => undefined,
     ...overrides
   });
+}
+
+function plannerSessionFixture(overrides: Partial<PlannerChatSession> = {}): PlannerChatSession {
+  return {
+    session_id: "session-1",
+    workflow_id: defaultPlannerLedAgentWorkflow.id,
+    planner_agent_id: "planner",
+    agent_workflow: defaultPlannerLedAgentWorkflow,
+    repo: ".",
+    scopes: [],
+    knowledge_pack_ids: [],
+    skill_pack_ids: [],
+    memory_pack_ids: [],
+    interaction_mode: "discuss",
+    messages: [
+      { role: "user", content: "Please plan the change." },
+      { role: "assistant", content: "The plan is ready." }
+    ],
+    task_state: {
+      goal: null,
+      user_intent: null,
+      scope: [],
+      constraints: [],
+      success_criteria: [],
+      known_context: [],
+      missing_context: [],
+      open_questions: [],
+      assumptions: [],
+      risks: [],
+      memory_proposals: [],
+      plan_steps: [],
+      readiness: "ready_to_execute"
+    },
+    generation: 2,
+    last_turn: null,
+    run_id: null,
+    status: "chatting",
+    ...overrides
+  };
 }
 
 function collectReactTreeText(node: unknown): string {

@@ -97,23 +97,24 @@ export function PlannerChatPage({
         {!submittedRequest && !runIdForTimeline && !hasSessionMessages ? (
           <div className="chat-empty">
             {providerSetupRequired && (
-              <div className="provider-setup-card">
-                <strong>Provider setup required</strong>
-                <p>{providerSetupMessage}</p>
-                <button onClick={onOpenProviderSettings}>Open Settings</button>
-              </div>
+              <ProviderSetupBanner
+                message={providerSetupMessage}
+                onOpenProviderSettings={onOpenProviderSettings}
+              />
             )}
-            <h2>What should the Planner work on?</h2>
-            <p>Chat with the Planner, then start work when the plan is ready.</p>
+            <div className="chat-empty-panel">
+              <span className="eyebrow">Planner Chat</span>
+              <h2>What should the Planner work on?</h2>
+              <p>Chat with the Planner, then start work when the plan is ready.</p>
+            </div>
           </div>
         ) : (
           <>
             {providerSetupRequired && (
-              <div className="provider-setup-card">
-                <strong>Provider setup required</strong>
-                <p>{providerSetupMessage}</p>
-                <button onClick={onOpenProviderSettings}>Open Settings</button>
-              </div>
+              <ProviderSetupBanner
+                message={providerSetupMessage}
+                onOpenProviderSettings={onOpenProviderSettings}
+              />
             )}
             {hasSessionMessages ? (
               sessionMessages.map((message, index) => (
@@ -121,17 +122,27 @@ export function PlannerChatPage({
                   key={`${message.created_at ?? index}-${message.role}`}
                   className={`chat-message ${message.role === "user" ? "user-message" : "planner-message"}`}
                 >
-                  <div className="message-role">{message.role === "user" ? "You" : "Planner"}</div>
-                  <p>{message.content}</p>
+                  <div className="message-bubble">
+                    <div className="message-role">{message.role === "user" ? "You" : "Planner"}</div>
+                    <p>{message.content}</p>
+                  </div>
                 </article>
               ))
             ) : (
               submittedRequest && (
                 <article className="chat-message user-message">
-                  <div className="message-role">You</div>
-                  <p>{submittedRequest}</p>
+                  <div className="message-bubble">
+                    <div className="message-role">You</div>
+                    <p>{submittedRequest}</p>
+                  </div>
                 </article>
               )
+            )}
+            {runLoading && (
+              <div className="chat-loading-row" role="status">
+                <span className="loading-dot" aria-hidden="true" />
+                Working...
+              </div>
             )}
             <WorkTimeline runId={runIdForTimeline} items={timelineItems} />
             <ReviewChangesCard
@@ -186,15 +197,39 @@ export function PlannerChatPage({
                 <option value="strong">Strong</option>
               </select>
             </label>
-            <button onClick={startWork} disabled={!canStartWork}>
-              {runLoading ? "Starting..." : "Start Work"}
-            </button>
-            <button className="primary-action" onClick={submit} disabled={!canSend}>
-              {runLoading ? "Sending..." : "Send"}
-            </button>
+            <div className="composer-actions">
+              <button
+                className={`start-work-action ${canStartWork ? "primary-action" : ""}`}
+                onClick={startWork}
+                disabled={!canStartWork}
+              >
+                {runLoading ? "Starting..." : "Start Work"}
+              </button>
+              <button className={canStartWork ? "" : "primary-action"} onClick={submit} disabled={!canSend}>
+                {runLoading ? "Sending..." : "Send"}
+              </button>
+            </div>
           </div>
         </div>
       </section>
     </main>
+  );
+}
+
+function ProviderSetupBanner({
+  message,
+  onOpenProviderSettings
+}: {
+  message: string;
+  onOpenProviderSettings: () => void;
+}) {
+  return (
+    <div className="provider-setup-card" role="status">
+      <div>
+        <strong>Provider setup required</strong>
+        <p>{message}</p>
+      </div>
+      <button onClick={onOpenProviderSettings}>Open Settings</button>
+    </div>
   );
 }
