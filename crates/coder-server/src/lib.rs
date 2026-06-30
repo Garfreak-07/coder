@@ -5176,7 +5176,7 @@ fn provider_http_client_builder(
     if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
         let proxy = Proxy::all(proxy_url)
             .map_err(|error| format!("Provider proxy URL is invalid: {error}"))?;
-        return Ok(Client::builder().proxy(proxy));
+        Ok(Client::builder().proxy(proxy))
     } else {
         Ok(Client::builder().no_proxy())
     }
@@ -8039,9 +8039,11 @@ mod tests {
                 api_key_env: Some("SECONDARY_API_KEY".to_owned()),
             },
         );
-        let mut settings = ProviderSettings::default();
-        settings.default_provider = "deepseek".to_owned();
-        settings.default_model = "deepseek-v4-flash".to_owned();
+        let mut settings = ProviderSettings {
+            default_provider: "deepseek".to_owned(),
+            default_model: "deepseek-v4-flash".to_owned(),
+            ..ProviderSettings::default()
+        };
         settings.api_keys.insert(
             "deepseek".to_owned(),
             ProviderKeyState {
