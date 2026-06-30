@@ -3,15 +3,20 @@
 Normal users configure model access in the app UI:
 
 1. Open `Settings`.
-2. Click `DeepSeek preset`, or choose:
+2. Choose one provider:
+   - provider: `deepseek`
    - provider: `openai-compatible`
+   - provider: `custom`
+3. For DeepSeek, use:
    - base URL: `https://api.deepseek.com`
    - model: `deepseek-v4-flash`
-3. Paste the provider API key into `API Key`.
-4. Click `Save`.
-5. Click `Test Provider`.
+4. Paste the provider API key into `API Key`.
+5. Click `Save`.
+6. Click `Test Provider`.
 
 `deepseek-v4-pro` is also supported when the account has access to that model.
+The `DeepSeek preset` button fills the DeepSeek-compatible base URL and model;
+users still provide their own API key.
 
 Planner Chat uses the configured provider in product mode. If provider
 credentials are missing, the Planner returns a setup-required assistant message
@@ -21,6 +26,10 @@ API keys are accepted by the Rust server and kept in server memory for this MVP.
 The settings response only returns whether a key is configured and where it came
 from. Plaintext keys must not be written into repository files, run events,
 timeline items, evidence blobs, reports, debug exports, or screenshots.
+
+Use `Clear API Key` in Settings to remove the current provider key from the
+server's in-memory settings. Leaving the API key field blank during `Save`
+keeps the existing key.
 
 TODO: replace the in-memory key store with an OS keychain or local secret store
 before public desktop release.

@@ -108,6 +108,23 @@ export function useProviderSettings(onStatus: (status: string) => void) {
     }
   }, [onStatus, providerForm.default_provider]);
 
+  const clearProviderKey = useCallback(async () => {
+    const provider = providerForm.default_provider.trim().toLowerCase() || "openai";
+    onStatus(`Clearing API key for ${provider}...`);
+    try {
+      const result = await saveProviderSettings({
+        api_keys: { [provider]: null }
+      });
+      setProviderSettings(result.settings);
+      setProviderStatus(result.status);
+      setProviderTestResult(null);
+      setProviderForm((current) => ({ ...current, api_key: "" }));
+      onStatus(`API key for ${provider} cleared.`);
+    } catch (error) {
+      onStatus(error instanceof Error ? error.message : String(error));
+    }
+  }, [onStatus, providerForm.default_provider]);
+
   return {
     providerSettings,
     providerStatus,
@@ -116,7 +133,8 @@ export function useProviderSettings(onStatus: (status: string) => void) {
     updateProviderForm,
     refreshProviderInfo,
     persistProviderSettings,
-    runProviderTest
+    runProviderTest,
+    clearProviderKey
   };
 }
 

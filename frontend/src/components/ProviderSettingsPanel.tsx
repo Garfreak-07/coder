@@ -7,6 +7,7 @@ interface ProviderSettingsPanelProps {
   status: ProviderStatus | null;
   testResult: ProviderTestResult | null;
   onChange: (patch: Partial<ProviderFormState>) => void;
+  onClearKey: () => void;
   onSave: () => void;
   onRefresh: () => void;
   onTest: () => void;
@@ -18,6 +19,7 @@ export function ProviderSettingsPanel({
   status,
   testResult,
   onChange,
+  onClearKey,
   onSave,
   onRefresh,
   onTest
@@ -89,6 +91,9 @@ export function ProviderSettingsPanel({
         <button onClick={() => onChange(deepSeekProviderPreset)}>DeepSeek preset</button>
         <button onClick={onSave}>Save</button>
         <button onClick={onTest}>Test Provider</button>
+        <button disabled={!keyState?.configured && !form.api_key.trim()} onClick={onClearKey}>
+          Clear API Key
+        </button>
         <button onClick={onRefresh}>Refresh</button>
       </div>
     </div>

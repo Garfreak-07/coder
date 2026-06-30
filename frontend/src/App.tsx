@@ -116,6 +116,7 @@ export function App() {
     providerTestResult,
     providerForm,
     updateProviderForm,
+    clearProviderKey,
     refreshProviderInfo,
     persistProviderSettings,
     runProviderTest
@@ -873,6 +874,7 @@ export function App() {
               status={providerStatus}
               testResult={providerTestResult}
               onChange={updateProviderForm}
+              onClearKey={clearProviderKey}
               onSave={persistProviderSettings}
               onRefresh={refreshProviderInfo}
               onTest={runProviderTest}
