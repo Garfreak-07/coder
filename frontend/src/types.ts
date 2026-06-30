@@ -1037,6 +1037,8 @@ export interface ProviderTestResult {
   provider: string;
   ok: boolean;
   mode: string;
+  model: string;
+  endpoint?: string | null;
   message: string;
 }
 

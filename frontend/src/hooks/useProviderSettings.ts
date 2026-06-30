@@ -9,7 +9,7 @@ import {
 import type { ProviderFormState, ProviderSettings, ProviderStatus, ProviderTestResult } from "../types";
 
 export const deepSeekProviderPreset: ProviderFormState = {
-  default_provider: "openai-compatible",
+  default_provider: "deepseek",
   default_model: "deepseek-v4-flash",
   base_url: "https://api.deepseek.com",
   api_key: "",

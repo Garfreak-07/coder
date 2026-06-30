@@ -403,8 +403,12 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(panelSource.includes("showMockMode"));
   assert.ok(panelSource.includes("Test succeeded"));
   assert.ok(panelSource.includes("Test failed"));
+  assert.ok(panelSource.includes("testResult.model"));
+  assert.ok(panelSource.includes("testResult.endpoint"));
+  assert.ok(panelSource.includes("deepseek"));
   assert.ok(panelSource.includes("openai-compatible"));
   assert.ok(panelSource.includes("custom"));
+  assert.ok(hookSource.includes('default_provider: "deepseek"'));
   assert.ok(hookSource.includes("deepseek-v4-flash"));
   assert.ok(hookSource.includes("https://api.deepseek.com"));
   assert.ok(hookSource.includes("api_keys: { [provider]: null }"));

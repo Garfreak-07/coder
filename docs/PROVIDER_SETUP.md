@@ -18,9 +18,16 @@ Normal users configure model access in the app UI:
 The `DeepSeek preset` button fills the DeepSeek-compatible base URL and model;
 users still provide their own API key.
 
+Provider id `deepseek` uses the OpenAI-compatible chat completions API. The
+separate `openai-compatible` and `custom` provider choices remain available for
+other services with user-provided base URLs and models.
+
 Planner Chat uses the configured provider in product mode. If provider
 credentials are missing, the Planner returns a setup-required assistant message
 instead of using a fake product response.
+
+The `Test Provider` result shows success or failure, the model used, and the
+sanitized chat completions endpoint. It never displays the API key.
 
 Mock mode is for CI and developer debugging only. It is hidden from the normal
 Settings path and is not product-mode Planner behavior.
@@ -36,6 +43,23 @@ keeps the existing key.
 
 TODO: replace the in-memory key store with an OS keychain or local secret store
 before public desktop release.
+
+## Troubleshooting
+
+- `401` or `403`: the API key is missing, expired, copied incorrectly, or does
+  not have access to the selected provider. Re-enter the key in Settings and run
+  `Test Provider` again.
+- `404`, `model not found`, or similar model errors: the model field does not
+  match a model available to the account. For DeepSeek, start with
+  `deepseek-v4-flash`, then switch only after confirming account access.
+- Network, timeout, DNS, or proxy errors: verify the base URL, local proxy, VPN,
+  firewall, and Windows proxy settings. The DeepSeek base URL should normally be
+  `https://api.deepseek.com`.
+- OpenHands unavailable vs Planner provider unavailable: OpenHands is the
+  optional coding-agent executor backend. Planner provider errors mean the chat
+  model itself is not configured or reachable. Fix Provider Settings first when
+  Planner Chat cannot answer; fix OpenHands settings only when Start Work needs
+  an OpenHands executor and that backend is unavailable.
 
 ## Developer Fallback
 

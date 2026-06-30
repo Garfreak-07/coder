@@ -1992,6 +1992,9 @@ async fn test_provider_status(
             provider: provider.clone(),
             ok: false,
             mode: "live".to_owned(),
+            model: settings.default_model.clone(),
+            endpoint: provider_base_url(&settings, &provider)
+                .map(|base_url| provider_chat_completions_endpoint_for_display(&base_url)),
             message,
         });
     Json(ProviderTestResponse {
@@ -3334,10 +3337,10 @@ pub struct ProviderSettings {
 impl Default for ProviderSettings {
     fn default() -> Self {
         Self {
-            default_provider: "openai-compatible".to_owned(),
+            default_provider: "deepseek".to_owned(),
             default_model: "deepseek-v4-flash".to_owned(),
             base_urls: BTreeMap::from([(
-                "openai-compatible".to_owned(),
+                "deepseek".to_owned(),
                 "https://api.deepseek.com".to_owned(),
             )]),
             api_keys: BTreeMap::new(),
@@ -3383,6 +3386,8 @@ pub struct ProviderTestResult {
     pub provider: String,
     pub ok: bool,
     pub mode: String,
+    pub model: String,
+    pub endpoint: Option<String>,
     pub message: String,
 }
 
@@ -4906,11 +4911,14 @@ async fn test_provider_chat_completion(
     mock: bool,
 ) -> Result<ProviderTestResult, String> {
     let provider = normalize_provider(provider);
+    let model = settings.default_model.clone();
     if mock {
         return Ok(ProviderTestResult {
             provider,
             ok: true,
             mode: "mock".to_owned(),
+            model,
+            endpoint: None,
             message: "Mock provider test passed without a live request.".to_owned(),
         });
     }
@@ -4920,6 +4928,8 @@ async fn test_provider_chat_completion(
             provider,
             ok: true,
             mode: "mock".to_owned(),
+            model,
+            endpoint: None,
             message: "Mock mode is enabled; no live provider request was sent.".to_owned(),
         });
     }
@@ -4929,13 +4939,14 @@ async fn test_provider_chat_completion(
     })?;
     let base_url = provider_base_url(settings, &provider)
         .ok_or_else(|| "Provider test requires a base URL.".to_owned())?;
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let url = provider_chat_completions_endpoint(&base_url);
+    let endpoint = provider_chat_completions_endpoint_for_display(&base_url);
     let client = provider_http_client_builder(&url)
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|error| error.to_string())?;
     let response = client
-        .post(url)
+        .post(&url)
         .bearer_auth(&api_key)
         .json(&json!({
             "model": &settings.default_model,
@@ -4953,6 +4964,8 @@ async fn test_provider_chat_completion(
             provider,
             ok: false,
             mode: "live".to_owned(),
+            model,
+            endpoint: Some(endpoint),
             message: format!("Provider returned HTTP {}.", response.status()),
         });
     }
@@ -4971,6 +4984,8 @@ async fn test_provider_chat_completion(
             provider,
             ok: false,
             mode: "live".to_owned(),
+            model,
+            endpoint: Some(endpoint),
             message: "Provider response did not include assistant content.".to_owned(),
         });
     }
@@ -4978,8 +4993,44 @@ async fn test_provider_chat_completion(
         provider,
         ok: true,
         mode: "live".to_owned(),
+        model,
+        endpoint: Some(endpoint),
         message: format!("Live provider test succeeded using {source} credentials."),
     })
+}
+
+fn provider_chat_completions_endpoint(base_url: &str) -> String {
+    let base_url = base_url.trim();
+    if let Ok(mut url) = reqwest::Url::parse(base_url) {
+        url.set_query(None);
+        url.set_fragment(None);
+        let path = format!("{}/chat/completions", url.path().trim_end_matches('/'));
+        url.set_path(&path);
+        return url.to_string();
+    }
+    format!("{}/chat/completions", base_url.trim_end_matches('/'))
+}
+
+fn provider_chat_completions_endpoint_for_display(base_url: &str) -> String {
+    sanitize_provider_endpoint(&provider_chat_completions_endpoint(base_url))
+}
+
+fn sanitize_provider_endpoint(endpoint: &str) -> String {
+    if let Ok(mut url) = reqwest::Url::parse(endpoint) {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_query(None);
+        url.set_fragment(None);
+        return url.to_string();
+    }
+    endpoint
+        .split('?')
+        .next()
+        .unwrap_or(endpoint)
+        .split('#')
+        .next()
+        .unwrap_or(endpoint)
+        .to_owned()
 }
 
 fn normalize_planner_mode(value: Option<&str>) -> String {
@@ -7396,10 +7447,7 @@ mod tests {
             .await
             .unwrap();
         let initial_body = response_json(initial).await;
-        assert_eq!(
-            initial_body["settings"]["default_provider"],
-            "openai-compatible"
-        );
+        assert_eq!(initial_body["settings"]["default_provider"], "deepseek");
         assert_eq!(
             initial_body["settings"]["default_model"],
             "deepseek-v4-flash"
@@ -7450,6 +7498,8 @@ mod tests {
         );
         assert_eq!(test_body["test"]["ok"], true);
         assert_eq!(test_body["test"]["mode"], "mock");
+        assert_eq!(test_body["test"]["model"], "deepseek-chat");
+        assert_eq!(test_body["test"]["endpoint"], Value::Null);
         assert!(!test_body.to_string().contains("sk-secret-value"));
 
         let remove = post_json(
@@ -7482,6 +7532,16 @@ mod tests {
         assert!(serialized.contains("\"source\":\"settings\""));
         assert!(!serialized.contains("sk-secret-value"));
         assert!(!serialized.contains("secret"));
+    }
+
+    #[test]
+    fn provider_test_endpoint_display_redacts_url_credentials() {
+        assert_eq!(
+            provider_chat_completions_endpoint_for_display(
+                "https://user:secret@api.deepseek.com/v1?token=secret#fragment",
+            ),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
     }
 
     #[tokio::test]

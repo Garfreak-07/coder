@@ -88,6 +88,8 @@ export function ProviderSettingsPanel({
         <div className={`provider-test-result ${testResult.ok ? "provider-test-ok" : "provider-test-failed"}`}>
           <strong>{testResult.ok ? "Test succeeded" : "Test failed"}</strong>
           <span>{testResult.mode}</span>
+          <span>Model: {testResult.model}</span>
+          {testResult.endpoint && <span>Endpoint: {testResult.endpoint}</span>}
           <p>{testResult.message}</p>
         </div>
       )}
