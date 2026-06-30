@@ -90,7 +90,7 @@ export function AgentWorkflowPage({
     <main className="workflow-page">
       <section className="workflow-page-header">
         <div>
-          <h2>Agent Workflow</h2>
+          <h2>Workflow editor</h2>
         </div>
         <div className="button-row">
           <button onClick={onSave}>Save</button>

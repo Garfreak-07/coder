@@ -1,7 +1,7 @@
 export const appSections = ["chat", "workflow", "extensions", "settings"] as const;
 
 export type AppSection = (typeof appSections)[number];
-const coreAppSections = appSections.filter((section) => section !== "extensions");
+const primaryAppSections = ["chat", "settings"] as const satisfies readonly AppSection[];
 
 interface AppSidebarProps {
   activeSection: AppSection;
@@ -12,7 +12,7 @@ interface AppSidebarProps {
 
 const sectionLabels: Record<AppSection, string> = {
   chat: "Planner Chat",
-  workflow: "Agent Workflow",
+  workflow: "Workflow editor",
   extensions: "Plugins & Skills",
   settings: "Settings"
 };
@@ -23,7 +23,8 @@ export function AppSidebar({
   onSectionChange,
   showExtensions = false
 }: AppSidebarProps) {
-  const visibleSections: readonly AppSection[] = showExtensions ? appSections : coreAppSections;
+  const advancedSections: readonly AppSection[] = showExtensions ? ["workflow", "extensions"] : ["workflow"];
+  const advancedOpen = activeSection === "workflow" || activeSection === "extensions";
 
   return (
     <aside className="app-sidebar">
@@ -32,7 +33,7 @@ export function AppSidebar({
         <h1>Coder</h1>
       </div>
       <nav className="side-nav" aria-label="Primary">
-        {visibleSections.map((section) => (
+        {primaryAppSections.map((section) => (
           <button
             className={activeSection === section ? "selected" : ""}
             key={section}
@@ -41,6 +42,19 @@ export function AppSidebar({
             {sectionLabels[section]}
           </button>
         ))}
+        <details className="advanced-nav" open={advancedOpen}>
+          <summary>Advanced</summary>
+          <div className="nav-group-label">Developer</div>
+          {advancedSections.map((section) => (
+            <button
+              className={activeSection === section ? "selected" : ""}
+              key={section}
+              onClick={() => onSectionChange(section)}
+            >
+              {sectionLabels[section]}
+            </button>
+          ))}
+        </details>
       </nav>
       <div className="sidebar-status">{status}</div>
     </aside>

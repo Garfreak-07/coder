@@ -117,6 +117,30 @@ label {
   color: #e0f2fe;
 }
 
+.advanced-nav {
+  border-top: 1px solid #202938;
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 10px;
+}
+
+.advanced-nav summary {
+  color: #cbd5e1;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.nav-group-label {
+  color: #7b8797;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .sidebar-status {
   color: #7b8797;
   font-size: 12px;

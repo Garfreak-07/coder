@@ -315,10 +315,14 @@ test("App navigation hides Plugins & Skills outside debug UI", () => {
   const appSource = readFileSync("src/App.tsx", "utf8");
 
   assert.ok(collectReactTreeText(defaultTree).includes("Planner Chat"));
-  assert.ok(collectReactTreeText(defaultTree).includes("Agent Workflow"));
   assert.ok(collectReactTreeText(defaultTree).includes("Settings"));
+  assert.ok(collectReactTreeText(defaultTree).includes("Advanced"));
+  assert.ok(collectReactTreeText(defaultTree).includes("Developer"));
+  assert.ok(collectReactTreeText(defaultTree).includes("Workflow editor"));
+  assert.ok(!collectReactTreeText(defaultTree).includes("Agent Workflow"));
   assert.ok(!collectReactTreeText(defaultTree).includes("Plugins & Skills"));
   assert.ok(collectReactTreeText(debugTree).includes("Plugins & Skills"));
+  assert.ok(appSource.includes('useState<AppSection>("chat")'));
   assert.ok(appSource.includes("showExtensions={debugUiEnabled}"));
   assert.ok(appSource.includes('activeSection === "extensions" && debugUiEnabled'));
   assert.ok(appSource.includes('get("debug") === "1"'));

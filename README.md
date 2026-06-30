@@ -195,13 +195,15 @@ SDK-style OpenHands servers.
 - Keep Planner Chat LLM-backed in product mode.
 - Keep user interaction in `User <-> Planner`.
 - Keep Start Work as the only execution boundary.
+- Keep the ordinary UI starting at Planner Chat; the workflow canvas is an
+  Advanced -> Developer -> Workflow editor surface.
 - Executors must not ask the user directly, commit, push, deploy, publish
   externally, or write long-term memory directly.
 - Keep OpenHands as an optional external backend.
 - Keep marketplace/plugin UI deferred from the ordinary product path.
 - Keep environment variables as developer/headless fallback, not normal setup.
 - Keep GPU support optional and provider-scoped; it is not core runtime.
-- Keep the React workflow canvas, user-defined agents, workflows, harnesses,
+- Keep the Advanced React workflow canvas, user-defined agents, workflows, harnesses,
   provider settings, evidence/report systems, memory/knowledge/RAG baselines,
   MCP baselines, release tooling, and installer tooling.
 

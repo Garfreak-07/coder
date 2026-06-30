@@ -28,7 +28,9 @@
 
 ## Still Different From Codex
 
-- Coder keeps a user-editable Agent Workflow canvas.
+- Coder keeps a user-editable workflow canvas, but it is now an
+  Advanced -> Developer -> Workflow editor surface rather than the normal
+  starting point.
 - Coder stores local run state through `RunStore`, repo evidence, artifacts,
   blobs, and checkpoints rather than Codex session JSONL names.
 - Plugin/skill marketplace support is retained only as a local developer/debug
