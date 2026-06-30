@@ -578,6 +578,8 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(panelSource.includes("showMockMode"));
   assert.ok(panelSource.includes("Test succeeded"));
   assert.ok(panelSource.includes("Test failed"));
+  assert.ok(panelSource.includes('type="password"'));
+  assert.ok(panelSource.includes('autoComplete="off"'));
   assert.ok(panelSource.includes("testResult.model"));
   assert.ok(panelSource.includes("testResult.endpoint"));
   assert.ok(panelSource.includes("deepseek"));

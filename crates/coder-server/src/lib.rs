@@ -4791,20 +4791,15 @@ fn public_preview(text: &str, max_chars: usize) -> String {
 }
 
 fn redact_secret_markers(text: &str) -> String {
-    let mut redacted = text.to_owned();
-    for marker in [
-        "api_key",
-        "apikey",
-        "authorization",
-        "cookie",
-        "password",
-        "private_key",
-        "secret",
-        "token",
-    ] {
-        if redacted.to_ascii_lowercase().contains(marker) {
-            redacted = "[redacted sensitive output]".to_owned();
-            break;
+    coder_events::redact_secret_text(text)
+}
+
+fn redact_provider_error(message: &str, secrets: &[&str]) -> String {
+    let mut redacted = redact_secret_markers(message);
+    for secret in secrets {
+        let secret = secret.trim();
+        if secret.len() >= 4 {
+            redacted = redacted.replace(secret, "[REDACTED]");
         }
     }
     redacted
@@ -5122,7 +5117,7 @@ async fn test_provider_chat_completion(
     let client = provider_http_client_builder(&url)
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| redact_provider_error(&error.to_string(), &[&api_key, &base_url]))?;
     let response = client
         .post(&url)
         .bearer_auth(&api_key)
@@ -5136,7 +5131,12 @@ async fn test_provider_chat_completion(
         }))
         .send()
         .await
-        .map_err(|error| format!("Provider test request failed: {}", error))?;
+        .map_err(|error| {
+            redact_provider_error(
+                &format!("Provider test request failed: {}", error),
+                &[&api_key, &base_url],
+            )
+        })?;
     if !response.status().is_success() {
         return Ok(ProviderTestResult {
             provider,
@@ -5147,7 +5147,10 @@ async fn test_provider_chat_completion(
             message: format!("Provider returned HTTP {}.", response.status()),
         });
     }
-    let payload: Value = response.json().await.map_err(|error| error.to_string())?;
+    let payload: Value = response
+        .json()
+        .await
+        .map_err(|error| redact_provider_error(&error.to_string(), &[&api_key, &base_url]))?;
     let content = payload
         .get("choices")
         .and_then(Value::as_array)
@@ -5180,6 +5183,8 @@ async fn test_provider_chat_completion(
 fn provider_chat_completions_endpoint(base_url: &str) -> String {
     let base_url = base_url.trim();
     if let Ok(mut url) = reqwest::Url::parse(base_url) {
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
         url.set_query(None);
         url.set_fragment(None);
         let path = format!("{}/chat/completions", url.path().trim_end_matches('/'));
@@ -5262,7 +5267,7 @@ impl ModelPlannerConversationEngine {
         .ok_or_else(planner_model_config_error)?;
         let base_url = planner_model_base_url(request, &provider, model)
             .ok_or_else(planner_model_config_error)?;
-        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        let url = provider_chat_completions_endpoint(&base_url);
         let model_name = planner_model_name(request, model);
         let mut messages = vec![json!({
             "role": "system",
@@ -5294,10 +5299,10 @@ impl ModelPlannerConversationEngine {
         let client = provider_http_client_builder(&url)
             .timeout(Duration::from_secs(20))
             .build()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| redact_provider_error(&error.to_string(), &[&api_key, &base_url]))?;
         let response = client
-            .post(url)
-            .bearer_auth(api_key)
+            .post(&url)
+            .bearer_auth(&api_key)
             .json(&json!({
                 "model": model_name,
                 "messages": messages,
@@ -5305,11 +5310,19 @@ impl ModelPlannerConversationEngine {
             }))
             .send()
             .await
-            .map_err(|error| format!("planner model request failed: {error}"))?;
+            .map_err(|error| {
+                redact_provider_error(
+                    &format!("planner model request failed: {error}"),
+                    &[&api_key, &base_url],
+                )
+            })?;
         if !response.status().is_success() {
             return Err(format!("planner model returned HTTP {}", response.status()));
         }
-        let payload: Value = response.json().await.map_err(|error| error.to_string())?;
+        let payload: Value = response
+            .json()
+            .await
+            .map_err(|error| redact_provider_error(&error.to_string(), &[&api_key, &base_url]))?;
         Ok(payload
             .get("choices")
             .and_then(Value::as_array)
@@ -7744,6 +7757,73 @@ mod tests {
     }
 
     #[test]
+    fn provider_settings_patch_updates_clears_and_overrides_env_fallback() {
+        let env_name = "CODER_TEST_PROVIDER_KEY_OVERRIDE";
+        let previous = env::var_os(env_name);
+        env::set_var(env_name, "env-key-value");
+        let mut settings = ProviderSettings::default();
+
+        apply_provider_settings_patch(
+            &mut settings,
+            ProviderSettingsPatch {
+                default_provider: Some("openai-compatible".to_owned()),
+                default_model: None,
+                base_urls: None,
+                api_keys: Some(BTreeMap::from([(
+                    "openai-compatible".to_owned(),
+                    json!("settings-key-value"),
+                )])),
+                mock_mode: None,
+            },
+        );
+        assert_eq!(
+            provider_api_key(&settings, "openai-compatible", Some(env_name)),
+            Some(("settings-key-value".to_owned(), "settings".to_owned()))
+        );
+
+        apply_provider_settings_patch(
+            &mut settings,
+            ProviderSettingsPatch {
+                default_provider: None,
+                default_model: None,
+                base_urls: None,
+                api_keys: Some(BTreeMap::from([(
+                    "openai-compatible".to_owned(),
+                    json!("updated-settings-key"),
+                )])),
+                mock_mode: None,
+            },
+        );
+        assert_eq!(
+            provider_api_key(&settings, "openai-compatible", Some(env_name)),
+            Some(("updated-settings-key".to_owned(), "settings".to_owned()))
+        );
+
+        apply_provider_settings_patch(
+            &mut settings,
+            ProviderSettingsPatch {
+                default_provider: None,
+                default_model: None,
+                base_urls: None,
+                api_keys: Some(BTreeMap::from([(
+                    "openai-compatible".to_owned(),
+                    Value::Null,
+                )])),
+                mock_mode: None,
+            },
+        );
+        assert_eq!(
+            provider_api_key(&settings, "openai-compatible", Some(env_name)),
+            Some(("env-key-value".to_owned(), "environment".to_owned()))
+        );
+        if let Some(previous) = previous {
+            env::set_var(env_name, previous);
+        } else {
+            env::remove_var(env_name);
+        }
+    }
+
+    #[test]
     fn provider_key_state_serialization_redacts_secret() {
         let mut settings = ProviderSettings::default();
         settings.api_keys.insert(
@@ -7765,6 +7845,12 @@ mod tests {
 
     #[test]
     fn provider_test_endpoint_display_redacts_url_credentials() {
+        assert_eq!(
+            provider_chat_completions_endpoint(
+                "https://user:secret@api.deepseek.com/v1?token=secret#fragment",
+            ),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
         assert_eq!(
             provider_chat_completions_endpoint_for_display(
                 "https://user:secret@api.deepseek.com/v1?token=secret#fragment",
@@ -8991,6 +9077,85 @@ diff --git a/tracked.txt b/tracked.txt
         }));
         assert!(items.iter().all(|item| item.get("payload").is_none()));
         assert!(!body.to_string().contains("raw-secret-value"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn report_timeline_artifact_and_jsonl_redact_key_like_strings() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-1");
+        let secret = "sk-live-1234567890";
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "run.started",
+                    json!({"task": format!("Use provider key {secret}"), "repo_root": "."}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    2,
+                    "command.completed",
+                    json!({"command": format!("echo {secret}"), "returncode": 0, "status": "completed"}),
+                ),
+            )
+            .unwrap();
+        let app = router(ApiState::new(store));
+
+        let report_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v3/runs/run-1/report")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(report_response.status(), StatusCode::OK);
+        let report_body = response_json(report_response).await;
+        assert!(!report_body.to_string().contains(secret));
+
+        let artifact_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/artifacts/final-report.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(artifact_response.status(), StatusCode::OK);
+        let artifact_body = response_json(artifact_response).await;
+        assert!(!artifact_body.to_string().contains(secret));
+
+        let timeline_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-1/timeline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(timeline_response.status(), StatusCode::OK);
+        let timeline_body = response_json(timeline_response).await;
+        assert!(!timeline_body.to_string().contains(secret));
+
+        let events_text =
+            fs::read_to_string(root.join("runs").join("run-1").join("events.jsonl")).unwrap();
+        assert!(!events_text.contains(secret));
+        assert!(events_text.contains("[REDACTED]"));
         let _ = fs::remove_dir_all(root);
     }
 

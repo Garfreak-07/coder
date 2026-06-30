@@ -76,6 +76,11 @@ Provider-specific variables such as `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, or
 `CODER_API_KEY` may also be used by developer tooling. They are fallback paths,
 not the normal user setup path.
 
+When a provider key is configured in Settings, that in-memory Settings key wins
+over the environment fallback for the same provider. Clearing the Settings key
+returns the provider to the developer/headless environment fallback if one is
+present.
+
 ## Optional Live LLM Smoke
 
 Mock tests prove CI-safe plumbing only. The live smoke proves the product

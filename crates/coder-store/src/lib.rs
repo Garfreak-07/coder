@@ -6,7 +6,10 @@ use std::{
 };
 
 use coder_core::{FinalReport, ReportStatus, RunId, RunState, RunStatus};
-use coder_events::{CoderEvent, LargePayloadRef, DEFAULT_LARGE_PAYLOAD_PREVIEW_LIMIT};
+use coder_events::{
+    redact_payload, redact_secret_text, CoderEvent, LargePayloadRef,
+    DEFAULT_LARGE_PAYLOAD_PREVIEW_LIMIT,
+};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -113,6 +116,8 @@ impl RunStore {
     pub fn append_event(&self, run_id: &RunId, event: &CoderEvent) -> Result<(), StoreError> {
         let path = self.safe_run_dir(run_id)?.join("events.jsonl");
         ensure_parent(&path)?;
+        let mut event = event.clone();
+        event.payload = redact_payload(event.payload);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         file.write_all(event.to_jsonl()?.as_bytes())?;
         Ok(())
@@ -188,7 +193,9 @@ impl RunStore {
     }
 
     pub fn write_report(&self, run_id: &RunId, report: &FinalReport) -> Result<String, StoreError> {
-        self.write_artifact(run_id, "final-report.json", report)
+        let mut report = report.clone();
+        redact_final_report(&mut report);
+        self.write_artifact(run_id, "final-report.json", &report)
     }
 
     pub fn build_evidence_report(&self, run_id: &RunId) -> Result<FinalReport, StoreError> {
@@ -371,6 +378,7 @@ impl RunStore {
         report.blockers = blockers;
         report.evidence_refs = evidence_refs;
         report.refresh_planner_style_summary(requested.as_deref(), &completed);
+        redact_final_report(&mut report);
         Ok(report)
     }
 
@@ -787,6 +795,26 @@ fn write_json(path: impl AsRef<Path>, value: &impl Serialize) -> Result<(), Stor
     Ok(())
 }
 
+fn redact_final_report(report: &mut FinalReport) {
+    report.summary = redact_secret_text(&report.summary);
+    redact_strings(&mut report.changed_files);
+    redact_strings(&mut report.checks);
+    redact_strings(&mut report.patch_refs);
+    redact_strings(&mut report.artifact_refs);
+    redact_strings(&mut report.blockers);
+    redact_strings(&mut report.next_steps);
+    for evidence in &mut report.evidence_refs {
+        evidence.kind = redact_secret_text(&evidence.kind);
+        evidence.reference = redact_secret_text(&evidence.reference);
+    }
+}
+
+fn redact_strings(items: &mut [String]) {
+    for item in items {
+        *item = redact_secret_text(item);
+    }
+}
+
 fn payload_string(payload: &Value, key: &str) -> Option<String> {
     payload
         .get(key)
@@ -1125,6 +1153,31 @@ mod tests {
     }
 
     #[test]
+    fn append_event_redacts_payload_before_jsonl_write() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run_test");
+        let event = CoderEvent {
+            event_id: "evt_manual".to_owned(),
+            run_id: run_id.clone(),
+            sequence: 1,
+            timestamp: OffsetDateTime::now_utc(),
+            kind: "run.started".to_owned(),
+            payload: json!({"task": "Use sk-live-1234567890"}),
+            refs: Vec::new(),
+        };
+
+        store.append_event(&run_id, &event).unwrap();
+
+        let events = store.read_events(&run_id).unwrap();
+        assert_eq!(events[0].payload["task"], "[REDACTED]");
+        let text =
+            fs::read_to_string(root.join("runs").join("run_test").join("events.jsonl")).unwrap();
+        assert!(!text.contains("sk-live-1234567890"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn local_layout_creates_required_directories() {
         let root = temp_root();
         let store = RunStore::new(&root);
@@ -1377,6 +1430,33 @@ mod tests {
         assert_eq!(loaded_state.status, coder_core::RunStatus::Completed);
         assert_eq!(loaded_report.summary, "done");
         assert_eq!(loaded_report.evidence_refs[0].kind, "event_log");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn report_artifact_redacts_key_like_strings() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run_test");
+        let mut report = FinalReport::completed("Used sk-live-1234567890");
+        report
+            .checks
+            .push("cargo test sk-live-1234567890".to_owned());
+        report
+            .blockers
+            .push("blocked by sk-live-1234567890".to_owned());
+
+        store.write_report(&run_id, &report).unwrap();
+
+        let text = fs::read_to_string(
+            root.join("runs")
+                .join("run_test")
+                .join("artifacts")
+                .join("final-report.json"),
+        )
+        .unwrap();
+        assert!(!text.contains("sk-live-1234567890"));
+        assert!(text.contains("[REDACTED]"));
         let _ = fs::remove_dir_all(root);
     }
 

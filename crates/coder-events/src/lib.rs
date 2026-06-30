@@ -92,15 +92,26 @@ pub fn redact_payload(value: Value) -> Value {
             Value::Object(redacted)
         }
         Value::Array(items) => Value::Array(items.into_iter().map(redact_payload).collect()),
+        Value::String(text) => Value::String(redact_secret_text(&text)),
         other => other,
+    }
+}
+
+pub fn redact_secret_text(text: &str) -> String {
+    if contains_secret_marker(text) || contains_api_key_like_token(text) {
+        "[REDACTED]".to_owned()
+    } else {
+        text.to_owned()
     }
 }
 
 fn is_secret_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase();
     normalized.contains("api_key")
+        || normalized.contains("api-key")
         || normalized.contains("apikey")
         || normalized.contains("token")
+        || normalized.contains("bearer")
         || normalized.contains("secret")
         || normalized.contains("password")
         || normalized.contains("private_key")
@@ -108,6 +119,41 @@ fn is_secret_key(key: &str) -> bool {
         || normalized.contains("aws_secret_access_key")
         || normalized.contains("authorization")
         || normalized.contains("cookie")
+}
+
+fn contains_secret_marker(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    [
+        "api_key",
+        "api-key",
+        "apikey",
+        "authorization",
+        "bearer ",
+        "cookie",
+        "password",
+        "private_key",
+        "secret",
+        "token",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+fn contains_api_key_like_token(text: &str) -> bool {
+    text.split(|ch: char| ch.is_whitespace())
+        .map(|token| {
+            token.trim_matches(|ch: char| {
+                !ch.is_ascii_alphanumeric() && !matches!(ch, '-' | '_' | '.')
+            })
+        })
+        .any(|token| {
+            let normalized = token.to_ascii_lowercase();
+            token.len() >= 12
+                && (normalized.starts_with("sk-")
+                    || normalized.starts_with("sk_")
+                    || normalized.starts_with("sk_live_")
+                    || normalized.starts_with("sk-proj-"))
+        })
 }
 
 #[cfg(test)]
@@ -151,6 +197,22 @@ mod tests {
         assert_eq!(event.payload["nested"]["Authorization"], "[REDACTED]");
         assert_eq!(event.payload["nested"]["cookie"], "[REDACTED]");
         assert_eq!(event.payload["nested"]["safe"], "visible");
+    }
+
+    #[test]
+    fn secret_like_payload_strings_are_redacted() {
+        let event = CoderEvent::new(
+            RunId::from_string("run_1"),
+            1,
+            "run.started",
+            json!({
+                "task": "Use sk-live-1234567890 for the request",
+                "note": "safe value"
+            }),
+        );
+
+        assert_eq!(event.payload["task"], "[REDACTED]");
+        assert_eq!(event.payload["note"], "safe value");
     }
 
     #[test]
