@@ -442,6 +442,7 @@ impl WorkflowRunner {
                     task: options.task.clone(),
                     backend_context: harness_backend_context(OpenHandsConversationPayloadInput {
                         run_id: &run_id,
+                        repo_root: &request.repo_root,
                         workflow_id: &options.workflow_id,
                         workflow,
                         node,
@@ -874,6 +875,7 @@ pub fn replay_run_status(events: &[CoderEvent]) -> Option<RunStatus> {
 
 pub struct OpenHandsConversationPayloadInput<'a> {
     pub run_id: &'a RunId,
+    pub repo_root: &'a str,
     pub workflow_id: &'a str,
     pub workflow: &'a WorkflowSpec,
     pub node: &'a WorkflowNodeSpec,
@@ -895,6 +897,7 @@ pub fn build_openhands_conversation_payload(input: OpenHandsConversationPayloadI
         "source": "coder-workflow",
         "agent_kind_source": "default_fallback",
         "run_id": input.run_id.as_str(),
+        "repo_root": input.repo_root,
         "workflow_id": input.workflow_id,
         "workflow_name": &input.workflow.name,
         "node_id": &input.node.id,
@@ -920,7 +923,8 @@ pub fn build_openhands_conversation_payload(input: OpenHandsConversationPayloadI
         "coder_context": {
             "contract": "coder.openhands.context.v1",
             "run": {
-                "run_id": input.run_id.as_str()
+                "run_id": input.run_id.as_str(),
+                "repo_root": input.repo_root
             },
             "workflow": {
                 "workflow_id": input.workflow_id,
@@ -4097,6 +4101,7 @@ diff --git a/tracked.txt b/tracked.txt
 
         let payload = build_openhands_conversation_payload(OpenHandsConversationPayloadInput {
             run_id: &run_id,
+            repo_root: root.to_str().unwrap(),
             workflow_id: "planner-led",
             workflow,
             node,
@@ -4115,6 +4120,10 @@ diff --git a/tracked.txt b/tracked.txt
             "default_fallback"
         );
         assert_eq!(payload["metadata"]["coder"]["run_id"], "run-phase2");
+        assert_eq!(
+            payload["metadata"]["coder"]["repo_root"],
+            root.to_str().unwrap()
+        );
         assert_eq!(payload["metadata"]["coder"]["workflow_id"], "planner-led");
         assert_eq!(payload["metadata"]["coder"]["node_id"], "executor");
         assert!(payload["metadata"]["coder"]["selected_tools"]
@@ -4137,6 +4146,10 @@ diff --git a/tracked.txt b/tracked.txt
         assert_eq!(
             payload["coder_context"]["agent"]["output_contract"],
             "execution_result"
+        );
+        assert_eq!(
+            payload["coder_context"]["run"]["repo_root"],
+            root.to_str().unwrap()
         );
         assert!(payload["coder_context"]["agent"]["system_instructions"]
             .as_str()

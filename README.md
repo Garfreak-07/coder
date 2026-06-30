@@ -183,6 +183,17 @@ OpenHands remains the preferred external Executor backend. Without a running
 OpenHands server, local development can use native Rust fallback capabilities
 and the mock workflow endpoint used by smoke tests.
 
+Optional live OpenHands validation is available when a server is configured:
+
+```powershell
+$env:OPENHANDS_LIVE_SMOKE="1"
+$env:OPENHANDS_AGENT_SERVER_URL="http://127.0.0.1:8000"
+powershell -ExecutionPolicy Bypass -File .\scripts\live-openhands-smoke.ps1
+```
+
+Without `OPENHANDS_LIVE_SMOKE=1`, the script can be run with
+`-SkipIfMissingOpenHands` to report `skipped` for CI and local release checks.
+
 ## Provider Setup
 
 Use the app `Settings` page for DeepSeek or OpenAI-compatible API keys. The

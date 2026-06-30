@@ -10,9 +10,11 @@ Normal users configure model access in the app UI:
 3. For DeepSeek, use:
    - base URL: `https://api.deepseek.com`
    - model: `deepseek-v4-flash`
+   - provider proxy URL: `http://127.0.0.1:7890` when this machine reaches
+     DeepSeek through the local proxy
 4. Paste the provider API key into `API Key`.
-5. Click `Save`.
-6. Click `Test Provider`.
+5. Click `Save`, or click `Test Provider` to save the current fields and test
+   them in one step.
 
 `deepseek-v4-pro` is also supported when the account has access to that model.
 The `DeepSeek preset` button fills the DeepSeek-compatible base URL and model;
@@ -26,8 +28,16 @@ Planner Chat uses the configured provider in product mode. If provider
 credentials are missing, the Planner returns a setup-required assistant message
 instead of using a fake product response.
 
-The `Test Provider` result shows success or failure, the model used, and the
-sanitized chat completions endpoint. It never displays the API key.
+The `Test Provider` action first saves the current provider, model, base URL,
+provider proxy URL, and API key into the Rust server's in-memory settings, then
+calls the provider. The result shows success or failure, the model used, and
+the sanitized chat completions endpoint. It never displays the API key.
+
+Provider proxy URLs are per provider. They are used for external provider calls
+such as DeepSeek Planner Chat and provider tests, while local Coder server calls
+and localhost services stay direct. Developer fallback variables are also
+recognized: `CODER_DEEPSEEK_PROXY_URL`, `CODER_PROVIDER_PROXY_URL`,
+`HTTPS_PROXY`, then `HTTP_PROXY`.
 
 Mock mode is for CI and developer debugging only. It is hidden from the normal
 Settings path and is not product-mode Planner behavior.
@@ -54,7 +64,8 @@ before public desktop release.
   `deepseek-v4-flash`, then switch only after confirming account access.
 - Network, timeout, DNS, or proxy errors: verify the base URL, local proxy, VPN,
   firewall, and Windows proxy settings. The DeepSeek base URL should normally be
-  `https://api.deepseek.com`.
+  `https://api.deepseek.com`. If this machine uses the local proxy, set
+  Provider Proxy URL to `http://127.0.0.1:7890`.
 - OpenHands unavailable vs Planner provider unavailable: OpenHands is the
   optional coding-agent executor backend. Planner provider errors mean the chat
   model itself is not configured or reachable. Fix Provider Settings first when

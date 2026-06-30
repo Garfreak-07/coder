@@ -57,6 +57,14 @@ export function ProviderSettingsPanel({
         />
       </label>
       <label>
+        Provider Proxy URL
+        <input
+          placeholder="Optional, e.g. http://127.0.0.1:7890"
+          value={form.proxy_url}
+          onChange={(event) => onChange({ proxy_url: event.target.value })}
+        />
+      </label>
+      <label>
         API Key
         <input
           type="password"
@@ -82,6 +90,7 @@ export function ProviderSettingsPanel({
           <span>{currentStatus.credential_source}</span>
           <span>{currentStatus.configured ? "configured" : "missing"}</span>
           <span>{currentStatus.base_url ?? "default URL"}</span>
+          <span>{currentStatus.proxy_url ? "proxy configured" : "direct network"}</span>
         </div>
       )}
       {testResult && (

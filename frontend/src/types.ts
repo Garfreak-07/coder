@@ -1020,6 +1020,7 @@ export interface ProviderSettings {
   default_provider: string;
   default_model: string;
   base_urls: Record<string, string>;
+  proxy_urls: Record<string, string>;
   api_keys: Record<string, ProviderKeyState>;
   mock_mode: boolean;
 }
@@ -1030,6 +1031,7 @@ export interface ProviderStatusItem {
   credential_configured: boolean;
   credential_source: string;
   base_url?: string | null;
+  proxy_url?: string | null;
   mode: string;
 }
 
@@ -1054,6 +1056,7 @@ export interface ProviderFormState {
   default_provider: string;
   default_model: string;
   base_url: string;
+  proxy_url: string;
   api_key: string;
   mock_mode: boolean;
 }

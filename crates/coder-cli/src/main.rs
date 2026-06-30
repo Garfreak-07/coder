@@ -2,16 +2,13 @@ use std::{collections::BTreeSet, fs, net::SocketAddr, path::PathBuf};
 
 use clap::{Args, Parser, Subcommand};
 use coder_config::{
-    load_project_config, validate_project_config, OpenHandsApiPaths as ConfigOpenHandsApiPaths,
-    OpenHandsAuthHeaderMode as ConfigOpenHandsAuthHeaderMode,
-    OpenHandsRunStartStrategy as ConfigOpenHandsRunStartStrategy, ProjectConfig, ValidationIssue,
-    ValidationLevel,
+    load_project_config, validate_project_config, ProjectConfig, ValidationIssue, ValidationLevel,
 };
 use coder_core::{RunId, RunState, RunStatus, WorkflowId};
 use coder_events::CoderEvent;
 use coder_openhands::{
-    normalize_openhands_event, openhands_final_report, OpenHandsApiPaths, OpenHandsAuthHeaderMode,
-    OpenHandsClient, OpenHandsRunStartStrategy, OpenHandsServerConfig,
+    normalize_openhands_event, openhands_final_report, OpenHandsApiPaths, OpenHandsClient,
+    OpenHandsRunStartStrategy, OpenHandsServerConfig,
 };
 use coder_server::{serve, ApiState};
 use coder_store::{RepoEvidenceKind, RepoEvidenceRef, RunStore};
@@ -20,7 +17,7 @@ use coder_tools::{
     read_file_range, run_command, search_text, CommandRunEvidence, CommandRunRequest,
     PatchApplyEvidence, PatchApplyRequest, PatchPreviewEvidence, RepoToolConfig,
 };
-use coder_workflow::MockWorkflowRunner;
+use coder_workflow::{MockWorkflowRunner, WorkflowRunOptions, WorkflowRunner};
 use serde_json::json;
 
 #[derive(Debug, Parser)]
@@ -87,6 +84,8 @@ enum WorkflowCommand {
     Run {
         #[arg(long)]
         mock: bool,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
         #[arg(long)]
         conversation_id: Option<String>,
         #[arg(long)]
@@ -260,16 +259,6 @@ struct EvidenceRecordArgs {
 }
 
 #[derive(Debug)]
-struct OpenHandsWorkflowTarget {
-    node_id: String,
-    harness_id: String,
-    server_url: String,
-    session_api_key_env: Option<String>,
-    api_paths: OpenHandsApiPaths,
-    run_start_strategy: OpenHandsRunStartStrategy,
-}
-
-#[derive(Debug)]
 struct OpenHandsRecordedRun {
     workflow_id: String,
     node_id: Option<String>,
@@ -370,76 +359,6 @@ fn validation_issue(
         message: message.into(),
         target: target.into(),
     }
-}
-
-fn openhands_api_paths_from_config(paths: &ConfigOpenHandsApiPaths) -> OpenHandsApiPaths {
-    OpenHandsApiPaths {
-        api_prefix: paths.api_prefix.clone(),
-        conversations_path: paths.conversations_path.clone(),
-        events_search_path: paths.events_search_path.clone(),
-        run_endpoint_path: paths.run_endpoint_path.clone(),
-        websocket_path_template: paths.websocket_path_template.clone(),
-        auth_header: match paths.auth_header {
-            ConfigOpenHandsAuthHeaderMode::AuthorizationBearer => {
-                OpenHandsAuthHeaderMode::AuthorizationBearer
-            }
-            ConfigOpenHandsAuthHeaderMode::XSessionApiKey => {
-                OpenHandsAuthHeaderMode::XSessionApiKey
-            }
-        },
-    }
-}
-
-fn openhands_run_strategy_from_config(
-    strategy: ConfigOpenHandsRunStartStrategy,
-) -> OpenHandsRunStartStrategy {
-    match strategy {
-        ConfigOpenHandsRunStartStrategy::PostRunEndpoint => {
-            OpenHandsRunStartStrategy::PostRunEndpoint
-        }
-        ConfigOpenHandsRunStartStrategy::PostUserEventWithRunTrue => {
-            OpenHandsRunStartStrategy::PostUserEventWithRunTrue
-        }
-        ConfigOpenHandsRunStartStrategy::None => OpenHandsRunStartStrategy::None,
-    }
-}
-
-fn select_openhands_workflow_target(
-    config: &ProjectConfig,
-    workflow_id: &str,
-) -> anyhow::Result<OpenHandsWorkflowTarget> {
-    let workflow = config
-        .workflows
-        .get(workflow_id)
-        .ok_or_else(|| anyhow::anyhow!("workflow '{workflow_id}' was not found"))?;
-    for node in &workflow.nodes {
-        let harness = config.harnesses.get(&node.harness).ok_or_else(|| {
-            anyhow::anyhow!(
-                "workflow '{workflow_id}' node '{}' references missing harness '{}'",
-                node.id,
-                node.harness
-            )
-        })?;
-        if harness.backend == "openhands" {
-            let openhands = harness.openhands.as_ref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "harness '{}' uses openhands backend without openhands config",
-                    node.harness
-                )
-            })?;
-            return Ok(OpenHandsWorkflowTarget {
-                node_id: node.id.clone(),
-                harness_id: node.harness.clone(),
-                server_url: openhands.server_url.clone(),
-                session_api_key_env: openhands.session_api_key_env.clone(),
-                api_paths: openhands_api_paths_from_config(&openhands.api_paths),
-                run_start_strategy: openhands_run_strategy_from_config(
-                    openhands.run_start_strategy,
-                ),
-            });
-        }
-    }
-    anyhow::bail!("workflow '{workflow_id}' has no OpenHands-backed node")
 }
 
 async fn run_openhands_recorded(
@@ -874,6 +793,7 @@ async fn main() -> anyhow::Result<()> {
             command:
                 WorkflowCommand::Run {
                     mock,
+                    repo,
                     conversation_id,
                     create_payload,
                     config,
@@ -890,23 +810,19 @@ async fn main() -> anyhow::Result<()> {
                 println!("report_ref={}", output.report_ref);
                 println!("summary={}", output.report.summary);
             } else {
+                if conversation_id.is_some() || create_payload.is_some() {
+                    anyhow::bail!(
+                        "workflow run uses configured harness context; use 'openhands run' for --conversation-id or --create-payload"
+                    );
+                }
                 ensure_valid_config(&config)?;
-                let target = select_openhands_workflow_target(&config, &workflow_id)?;
-                let output = run_openhands_recorded(OpenHandsRecordedRun {
-                    workflow_id,
-                    node_id: Some(target.node_id),
-                    harness_id: Some(target.harness_id),
-                    server_url: target.server_url,
-                    session_api_key_env: target.session_api_key_env,
-                    api_paths: target.api_paths,
-                    run_start_strategy: target.run_start_strategy,
-                    conversation_id,
-                    create_payload,
-                    store,
-                    task,
-                })
-                .await?;
-                print_openhands_run_output(&output);
+                let runner = WorkflowRunner::new(config, RunStore::new(store));
+                let mut options = WorkflowRunOptions::new(workflow_id, task);
+                options.repo_root = repo;
+                let output = runner.run(options).await?;
+                println!("run_id={}", output.run_id);
+                println!("report_ref={}", output.report_ref);
+                println!("summary={}", output.report.summary);
             }
         }
         Command::Openhands {
@@ -1301,37 +1217,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selects_openhands_harness_from_example_workflow() {
-        let config: ProjectConfig =
-            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
-
-        let target = select_openhands_workflow_target(&config, "planner-led").unwrap();
-
-        assert_eq!(target.node_id, "executor");
-        assert_eq!(target.harness_id, "openhands-code-edit");
-        assert_eq!(target.server_url, "http://127.0.0.1:8000");
-        assert_eq!(
-            target.session_api_key_env.as_deref(),
-            Some("SESSION_API_KEY")
-        );
-    }
-
-    #[test]
-    fn reports_when_workflow_has_no_openhands_harness() {
-        let mut config: ProjectConfig =
-            serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
-        config
-            .harnesses
-            .get_mut("openhands-code-edit")
-            .unwrap()
-            .backend = "native-rust".to_owned();
-
-        let error = select_openhands_workflow_target(&config, "planner-led").unwrap_err();
-
-        assert!(error.to_string().contains("no OpenHands-backed node"));
-    }
-
-    #[test]
     fn workflow_preview_reports_ready_with_backends() {
         let config: ProjectConfig =
             serde_yaml::from_str(include_str!("../../../examples/coder.yaml")).unwrap();
@@ -1664,6 +1549,8 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(workflow_commands.contains(&"validate"));
         assert!(workflow_commands.contains(&"preview"));
         assert!(workflow_commands.contains(&"run"));
+        let workflow_run = find_subcommand(workflow, "run");
+        assert!(arg_names(workflow_run).contains(&"repo"));
 
         let runs = find_subcommand(&command, "runs");
         let runs_commands = subcommand_names(runs);
@@ -1698,6 +1585,13 @@ diff --git a/tracked.txt b/tracked.txt
             .get_subcommands()
             .find(|subcommand| subcommand.get_name() == name)
             .unwrap()
+    }
+
+    fn arg_names(command: &clap::Command) -> std::collections::BTreeSet<&str> {
+        command
+            .get_arguments()
+            .map(|argument| argument.get_id().as_str())
+            .collect()
     }
 
     fn temp_root(prefix: &str) -> PathBuf {

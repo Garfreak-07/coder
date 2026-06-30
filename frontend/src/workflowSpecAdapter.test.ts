@@ -655,6 +655,8 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
 
   assert.ok(panelSource.includes("DeepSeek preset"));
   assert.ok(panelSource.includes("Test Provider"));
+  assert.ok(panelSource.includes("Provider Proxy URL"));
+  assert.ok(panelSource.includes("proxy configured"));
   assert.ok(panelSource.includes("Clear API Key"));
   assert.ok(panelSource.includes("showMockMode"));
   assert.ok(panelSource.includes("Test succeeded"));
@@ -669,8 +671,12 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(hookSource.includes('default_provider: "deepseek"'));
   assert.ok(hookSource.includes("deepseek-v4-flash"));
   assert.ok(hookSource.includes("https://api.deepseek.com"));
+  assert.ok(hookSource.includes("http://127.0.0.1:7890"));
+  assert.ok(hookSource.includes("proxy_urls: proxyUrls"));
   assert.ok(hookSource.includes("api_keys: { [provider]: null }"));
   assert.ok(hookSource.includes("mock_mode: false"));
+  assert.ok(hookSource.includes("buildProviderSettingsPayload(providerForm, providerSettings)"));
+  assert.ok(hookSource.includes("Saving provider ${provider} before test"));
   assert.ok(readFileSync("src/App.tsx", "utf8").includes("showMockMode={debugUiEnabled}"));
   assert.ok(liveSmokeScript.includes("CODER_LIVE_LLM_SMOKE"));
   assert.ok(liveSmokeScript.includes("should_start_workflow"));

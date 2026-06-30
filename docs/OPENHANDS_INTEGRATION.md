@@ -57,3 +57,28 @@ OpenHands file or patch-shaped events emit `patch.applied` with a sanitized
 Normal CI uses fake OpenHands event shapes and does not require a live
 OpenHands server. Live compatibility checks should remain opt-in because they
 need external services and credentials.
+
+## Optional Live Smoke
+
+Use `scripts/live-openhands-smoke.ps1` only when a real OpenHands server is
+available. The script is gated by `OPENHANDS_LIVE_SMOKE=1`; without that flag it
+can report `skipped` and will not contact OpenHands.
+
+```powershell
+$env:OPENHANDS_LIVE_SMOKE="1"
+$env:OPENHANDS_AGENT_SERVER_URL="http://127.0.0.1:8000"
+$env:OPENHANDS_SESSION_API_KEY="..."
+powershell -ExecutionPolicy Bypass -File .\scripts\live-openhands-smoke.ps1
+```
+
+The smoke creates a temporary git repository under `.tmp/`, runs a
+documentation-only task through the configured `openhands` harness, and checks:
+
+- OpenHands server health
+- public ReAct timeline events such as executor, tool, command, or patch events
+- raw OpenHands event refs in the run store
+- final report summary
+- Review Changes when the temporary repository has file changes
+
+If the live run changes no files, Review Changes is not required. CI must keep
+using fake adapter tests and must not require this live smoke.

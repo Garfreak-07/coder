@@ -68,6 +68,9 @@
 - [x] `powershell -ExecutionPolicy Bypass -File .\scripts\live-llm-smoke.ps1 -SkipIfMissingProvider`
   is opt-in through `CODER_LIVE_LLM_SMOKE=1`; without live credentials it
   reports `skipped` and does not call a paid provider.
+- [x] `powershell -ExecutionPolicy Bypass -File .\scripts\live-openhands-smoke.ps1 -SkipIfMissingOpenHands`
+  is opt-in through `OPENHANDS_LIVE_SMOKE=1`; without a live OpenHands server
+  URL it reports `skipped` and does not contact OpenHands.
 - [x] Local Planner loop API smoke against `coder-rust server`: Planner Chat,
   Start Work, run events, and report preview plan-context check.
 - [x] `powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -DryRun`

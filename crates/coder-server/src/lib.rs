@@ -56,7 +56,7 @@ use coder_tools::{
     RepoFileRef, RepoReadSnippet, RepoSearchMatch, RepoToolConfig, RepoToolError,
 };
 use coder_workflow::{MockWorkflowRunner, WorkflowError, WorkflowRunOptions, WorkflowRunner};
-use reqwest::Client;
+use reqwest::{Client, Proxy};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
@@ -815,7 +815,9 @@ async fn create_planner_chat_session(
     let workflow_id = request
         .workflow_id
         .unwrap_or_else(|| "planner-led".to_owned());
-    let config = request.config.unwrap_or_else(default_project_config);
+    let mut config = request.config.unwrap_or_else(default_project_config);
+    let provider_settings = state.provider_settings.lock().unwrap().clone();
+    apply_provider_settings_to_project_config(&mut config, &provider_settings);
     let runtime =
         resolve_planner_runtime(&config, &workflow_id, request.planner_agent_id.as_deref())?;
     let session = PlannerChatSession {
@@ -876,10 +878,11 @@ async fn planner_chat_turn(
             || request.planner_agent_id.is_some()
             || session.runtime.is_none()
         {
-            let config = request
+            let mut config = request
                 .config
                 .clone()
                 .unwrap_or_else(default_project_config);
+            apply_provider_settings_to_project_config(&mut config, &provider_settings);
             session.runtime = Some(resolve_planner_runtime(
                 &config,
                 &session.workflow_id,
@@ -979,10 +982,12 @@ async fn start_planner_chat_work(
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| session.workflow_id.clone());
-    let config = request
+    let mut config = request
         .config
         .clone()
         .unwrap_or_else(default_project_config);
+    let provider_settings = state.provider_settings.lock().unwrap().clone();
+    apply_provider_settings_to_project_config(&mut config, &provider_settings);
     let runtime =
         resolve_planner_runtime(&config, &workflow_id, request.planner_agent_id.as_deref())?;
     let runtime_for_summary = runtime.clone();
@@ -1023,7 +1028,6 @@ async fn start_planner_chat_work(
         return Ok(Json(response));
     }
 
-    let provider_settings = state.provider_settings.lock().unwrap().clone();
     if let Some(message) =
         start_work_provider_config_error(&config, &workflow_id, &provider_settings)
     {
@@ -2151,12 +2155,15 @@ async fn run_workflow(
     State(state): State<ApiState>,
     Json(request): Json<MockRunRequest>,
 ) -> Result<Json<MockRunResponse>, ApiError> {
+    let provider_settings = state.provider_settings.lock().unwrap().clone();
+    let mut config = request.config;
+    apply_provider_settings_to_project_config(&mut config, &provider_settings);
     let mut options = WorkflowRunOptions::new(&request.workflow_id, &request.task);
     if let Some(repo_root) = &request.repo_root {
         options.repo_root = PathBuf::from(repo_root);
     }
     options.plan_context = request.plan_context.clone();
-    let runner = WorkflowRunner::new(request.config, state.store);
+    let runner = WorkflowRunner::new(config, state.store);
     let output = runner.run(options).await?;
     Ok(Json(MockRunResponse {
         run_id: output.run_id.to_string(),
@@ -3470,6 +3477,8 @@ pub struct ProviderSettings {
     pub default_provider: String,
     pub default_model: String,
     pub base_urls: BTreeMap<String, String>,
+    #[serde(default)]
+    pub proxy_urls: BTreeMap<String, String>,
     pub api_keys: BTreeMap<String, ProviderKeyState>,
     pub mock_mode: bool,
 }
@@ -3483,6 +3492,7 @@ impl Default for ProviderSettings {
                 "deepseek".to_owned(),
                 "https://api.deepseek.com".to_owned(),
             )]),
+            proxy_urls: BTreeMap::new(),
             api_keys: BTreeMap::new(),
             mock_mode: false,
         }
@@ -3494,6 +3504,7 @@ pub struct ProviderSettingsPatch {
     pub default_provider: Option<String>,
     pub default_model: Option<String>,
     pub base_urls: Option<BTreeMap<String, String>>,
+    pub proxy_urls: Option<BTreeMap<String, String>>,
     pub api_keys: Option<BTreeMap<String, Value>>,
     pub mock_mode: Option<bool>,
 }
@@ -3538,6 +3549,7 @@ pub struct ProviderStatusItem {
     pub credential_configured: bool,
     pub credential_source: String,
     pub base_url: Option<String>,
+    pub proxy_url: Option<String>,
     pub mode: String,
 }
 
@@ -4892,6 +4904,9 @@ fn apply_provider_settings_patch(settings: &mut ProviderSettings, patch: Provide
     if let Some(base_urls) = patch.base_urls {
         settings.base_urls = clean_provider_string_map(base_urls);
     }
+    if let Some(proxy_urls) = patch.proxy_urls {
+        settings.proxy_urls = clean_provider_string_map(proxy_urls);
+    }
     if let Some(api_keys) = patch.api_keys {
         for (provider, value) in api_keys {
             let provider = normalize_provider(&provider);
@@ -4918,11 +4933,30 @@ fn apply_provider_settings_patch(settings: &mut ProviderSettings, patch: Provide
     }
 }
 
+fn apply_provider_settings_to_project_config(
+    config: &mut ProjectConfig,
+    settings: &ProviderSettings,
+) {
+    if settings.mock_mode {
+        return;
+    }
+    let provider = normalize_provider(&settings.default_provider);
+    let model = settings.default_model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return;
+    }
+    for model_spec in config.models.values_mut() {
+        model_spec.provider = provider.clone();
+        model_spec.model = model.to_owned();
+    }
+}
+
 fn provider_status(settings: &ProviderSettings, providers: Option<Vec<String>>) -> ProviderStatus {
     let selected = providers.unwrap_or_else(|| {
         let mut names = provider_env_keys().keys().cloned().collect::<BTreeSet<_>>();
         names.insert(settings.default_provider.clone());
         names.extend(settings.api_keys.keys().cloned());
+        names.extend(settings.proxy_urls.keys().cloned());
         names.into_iter().collect()
     });
     let providers = selected
@@ -4956,6 +4990,8 @@ fn provider_status_item(settings: &ProviderSettings, provider: &str) -> Provider
             credential_source
         },
         base_url: provider_base_url(settings, provider),
+        proxy_url: provider_proxy_url(settings, provider)
+            .map(|proxy_url| sanitize_provider_endpoint(&proxy_url)),
         mode: if settings.mock_mode && !credential_configured && provider != "ollama" {
             "mock"
         } else {
@@ -4990,6 +5026,42 @@ fn provider_base_url(settings: &ProviderSettings, provider: &str) -> Option<Stri
 
 fn settings_provider_base_url(settings: &ProviderSettings, provider: &str) -> Option<String> {
     settings.base_urls.get(provider).cloned()
+}
+
+fn provider_proxy_url(settings: &ProviderSettings, provider: &str) -> Option<String> {
+    settings
+        .proxy_urls
+        .get(provider)
+        .cloned()
+        .or_else(|| provider_proxy_url_from_env(provider))
+}
+
+fn provider_proxy_url_from_env(provider: &str) -> Option<String> {
+    let provider_key = provider
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let candidates = [
+        format!("CODER_{}_PROXY_URL", provider_key),
+        "CODER_PROVIDER_PROXY_URL".to_owned(),
+        "HTTPS_PROXY".to_owned(),
+        "HTTP_PROXY".to_owned(),
+    ];
+    for env_name in candidates {
+        if let Some(value) = env::var_os(env_name).and_then(|value| value.into_string().ok()) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn provider_base_url_from_env(model_base_url_env: Option<&str>) -> Option<String> {
@@ -5094,12 +5166,19 @@ fn normalize_provider(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
-fn provider_http_client_builder(url: &str) -> reqwest::ClientBuilder {
-    let builder = Client::builder();
+fn provider_http_client_builder(
+    url: &str,
+    proxy_url: Option<&str>,
+) -> Result<reqwest::ClientBuilder, String> {
     if url.contains("://127.0.0.1") || url.contains("://localhost") || url.contains("://[::1]") {
-        builder.no_proxy()
+        return Ok(Client::builder().no_proxy());
+    }
+    if let Some(proxy_url) = proxy_url.map(str::trim).filter(|value| !value.is_empty()) {
+        let proxy = Proxy::all(proxy_url)
+            .map_err(|error| format!("Provider proxy URL is invalid: {error}"))?;
+        return Ok(Client::builder().proxy(proxy));
     } else {
-        builder
+        Ok(Client::builder().no_proxy())
     }
 }
 
@@ -5139,10 +5218,22 @@ async fn test_provider_chat_completion(
         .ok_or_else(|| "Provider test requires a base URL.".to_owned())?;
     let url = provider_chat_completions_endpoint(&base_url);
     let endpoint = provider_chat_completions_endpoint_for_display(&base_url);
-    let client = provider_http_client_builder(&url)
+    let proxy_url = provider_proxy_url(settings, &provider);
+    let client = provider_http_client_builder(&url, proxy_url.as_deref())
+        .map_err(|error| {
+            redact_provider_error(
+                &error,
+                &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
+            )
+        })?
         .timeout(Duration::from_secs(20))
         .build()
-        .map_err(|error| redact_provider_error(&error.to_string(), &[&api_key, &base_url]))?;
+        .map_err(|error| {
+            redact_provider_error(
+                &error.to_string(),
+                &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
+            )
+        })?;
     let request_body = provider_test_chat_completion_body(&provider, &settings.default_model);
     let response = client
         .post(&url)
@@ -5153,7 +5244,7 @@ async fn test_provider_chat_completion(
         .map_err(|error| {
             redact_provider_error(
                 &format!("Provider test request failed: {}", error),
-                &[&api_key, &base_url],
+                &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
             )
         })?;
     if !response.status().is_success() {
@@ -5166,10 +5257,12 @@ async fn test_provider_chat_completion(
             message: format!("Provider returned HTTP {}.", response.status()),
         });
     }
-    let payload: Value = response
-        .json()
-        .await
-        .map_err(|error| redact_provider_error(&error.to_string(), &[&api_key, &base_url]))?;
+    let payload: Value = response.json().await.map_err(|error| {
+        redact_provider_error(
+            &error.to_string(),
+            &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
+        )
+    })?;
     let content = payload
         .get("choices")
         .and_then(Value::as_array)
@@ -5303,6 +5396,7 @@ impl ModelPlannerConversationEngine {
             .ok_or_else(planner_model_config_error)?;
         let url = provider_chat_completions_endpoint(&base_url);
         let model_name = planner_model_name(request, model);
+        let proxy_url = provider_proxy_url(&request.provider_settings, &provider);
         let mut messages = vec![json!({
             "role": "system",
             "content": planner_system_prompt(&request.runtime)
@@ -5330,10 +5424,21 @@ impl ModelPlannerConversationEngine {
             "role": "user",
             "content": &request.message
         }));
-        let client = provider_http_client_builder(&url)
+        let client = provider_http_client_builder(&url, proxy_url.as_deref())
+            .map_err(|error| {
+                redact_provider_error(
+                    &error,
+                    &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
+                )
+            })?
             .timeout(Duration::from_secs(20))
             .build()
-            .map_err(|error| redact_provider_error(&error.to_string(), &[&api_key, &base_url]))?;
+            .map_err(|error| {
+                redact_provider_error(
+                    &error.to_string(),
+                    &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
+                )
+            })?;
         let response = client
             .post(&url)
             .bearer_auth(&api_key)
@@ -5347,16 +5452,18 @@ impl ModelPlannerConversationEngine {
             .map_err(|error| {
                 redact_provider_error(
                     &format!("planner model request failed: {error}"),
-                    &[&api_key, &base_url],
+                    &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
                 )
             })?;
         if !response.status().is_success() {
             return Err(format!("planner model returned HTTP {}", response.status()));
         }
-        let payload: Value = response
-            .json()
-            .await
-            .map_err(|error| redact_provider_error(&error.to_string(), &[&api_key, &base_url]))?;
+        let payload: Value = response.json().await.map_err(|error| {
+            redact_provider_error(
+                &error.to_string(),
+                &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
+            )
+        })?;
         Ok(payload
             .get("choices")
             .and_then(Value::as_array)
@@ -7743,6 +7850,7 @@ mod tests {
                 "default_provider": "deepseek",
                 "default_model": "deepseek-chat",
                 "base_urls": {"deepseek": "https://api.deepseek.com"},
+                "proxy_urls": {"deepseek": "http://127.0.0.1:7890"},
                 "api_keys": {"deepseek": "sk-secret-value"},
                 "mock_mode": false
             }),
@@ -7764,6 +7872,10 @@ mod tests {
         assert_eq!(
             save_body["status"]["default_status"]["base_url"],
             "https://api.deepseek.com"
+        );
+        assert_eq!(
+            save_body["status"]["default_status"]["proxy_url"],
+            "http://127.0.0.1:7890/"
         );
 
         let test = post_json(
@@ -7809,6 +7921,7 @@ mod tests {
                 default_provider: Some("openai-compatible".to_owned()),
                 default_model: None,
                 base_urls: None,
+                proxy_urls: None,
                 api_keys: Some(BTreeMap::from([(
                     "openai-compatible".to_owned(),
                     json!("settings-key-value"),
@@ -7827,6 +7940,7 @@ mod tests {
                 default_provider: None,
                 default_model: None,
                 base_urls: None,
+                proxy_urls: None,
                 api_keys: Some(BTreeMap::from([(
                     "openai-compatible".to_owned(),
                     json!("updated-settings-key"),
@@ -7845,6 +7959,7 @@ mod tests {
                 default_provider: None,
                 default_model: None,
                 base_urls: None,
+                proxy_urls: None,
                 api_keys: Some(BTreeMap::from([(
                     "openai-compatible".to_owned(),
                     Value::Null,
@@ -7910,6 +8025,41 @@ mod tests {
             provider_test_chat_completion_body("openai-compatible", "gpt-compatible-test");
         assert_eq!(generic["model"], "gpt-compatible-test");
         assert!(generic.get("thinking").is_none());
+    }
+
+    #[test]
+    fn provider_settings_apply_to_all_workflow_models_without_secrets() {
+        let mut config = default_project_config();
+        config.models.insert(
+            "secondary".to_owned(),
+            ConfigModelSpec {
+                provider: "openai-compatible".to_owned(),
+                model: "economy".to_owned(),
+                base_url_env: Some("SECONDARY_BASE_URL".to_owned()),
+                api_key_env: Some("SECONDARY_API_KEY".to_owned()),
+            },
+        );
+        let mut settings = ProviderSettings::default();
+        settings.default_provider = "deepseek".to_owned();
+        settings.default_model = "deepseek-v4-flash".to_owned();
+        settings.api_keys.insert(
+            "deepseek".to_owned(),
+            ProviderKeyState {
+                configured: true,
+                source: "settings".to_owned(),
+                secret: Some("sk-secret-value".to_owned()),
+            },
+        );
+
+        apply_provider_settings_to_project_config(&mut config, &settings);
+
+        assert!(config
+            .models
+            .values()
+            .all(|model| model.provider == "deepseek" && model.model == "deepseek-v4-flash"));
+        assert!(!serde_json::to_string(&config)
+            .unwrap()
+            .contains("sk-secret-value"));
     }
 
     #[tokio::test]

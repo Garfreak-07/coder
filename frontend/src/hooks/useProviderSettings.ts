@@ -12,6 +12,7 @@ export const deepSeekProviderPreset: ProviderFormState = {
   default_provider: "deepseek",
   default_model: "deepseek-v4-flash",
   base_url: "https://api.deepseek.com",
+  proxy_url: "http://127.0.0.1:7890",
   api_key: "",
   mock_mode: false
 };
@@ -20,6 +21,7 @@ const defaultProviderForm: ProviderFormState = {
   default_provider: deepSeekProviderPreset.default_provider,
   default_model: deepSeekProviderPreset.default_model,
   base_url: deepSeekProviderPreset.base_url,
+  proxy_url: deepSeekProviderPreset.proxy_url,
   api_key: "",
   mock_mode: deepSeekProviderPreset.mock_mode
 };
@@ -40,6 +42,7 @@ export function useProviderSettings(onStatus: (status: string) => void) {
           default_provider: provider,
           default_model: settings.default_model || status.default_model || deepSeekProviderPreset.default_model,
           base_url: settings.base_urls[provider] ?? "",
+          proxy_url: settings.proxy_urls[provider] ?? defaultProxyUrlForProvider(provider),
           api_key: "",
           mock_mode: settings.mock_mode
         });
@@ -54,6 +57,7 @@ export function useProviderSettings(onStatus: (status: string) => void) {
         const merged = { ...current, ...patch };
         if (nextProvider && nextProvider !== current.default_provider) {
           merged.base_url = providerSettings?.base_urls[nextProvider] ?? defaultBaseUrlForProvider(nextProvider);
+          merged.proxy_url = providerSettings?.proxy_urls[nextProvider] ?? defaultProxyUrlForProvider(nextProvider);
           merged.api_key = "";
           if (!patch.default_model) {
             merged.default_model = defaultModelForProvider(nextProvider);
@@ -67,21 +71,7 @@ export function useProviderSettings(onStatus: (status: string) => void) {
 
   const persistProviderSettings = useCallback(async () => {
     const provider = providerForm.default_provider.trim().toLowerCase() || "openai";
-    const baseUrls = { ...(providerSettings?.base_urls ?? {}) };
-    if (providerForm.base_url.trim()) {
-      baseUrls[provider] = providerForm.base_url.trim();
-    } else {
-      delete baseUrls[provider];
-    }
-    const payload: Record<string, unknown> = {
-      default_provider: provider,
-      default_model: providerForm.default_model.trim() || "gpt-4.1-mini",
-      base_urls: baseUrls,
-      mock_mode: providerForm.mock_mode
-    };
-    if (providerForm.api_key.trim()) {
-      payload.api_keys = { [provider]: providerForm.api_key.trim() };
-    }
+    const payload = buildProviderSettingsPayload(providerForm, providerSettings);
     onStatus(`Saving provider ${provider}...`);
     try {
       const result = await saveProviderSettings(payload);
@@ -97,8 +87,14 @@ export function useProviderSettings(onStatus: (status: string) => void) {
 
   const runProviderTest = useCallback(async () => {
     const provider = providerForm.default_provider.trim().toLowerCase() || "openai";
-    onStatus(`Checking provider ${provider}...`);
+    const payload = buildProviderSettingsPayload(providerForm, providerSettings);
+    onStatus(`Saving provider ${provider} before test...`);
     try {
+      const saved = await saveProviderSettings(payload);
+      setProviderSettings(saved.settings);
+      setProviderStatus(saved.status);
+      setProviderForm((current) => ({ ...current, default_provider: provider, api_key: "" }));
+      onStatus(`Checking provider ${provider}...`);
       const result = await testProvider(provider);
       setProviderStatus(result.status);
       setProviderTestResult(result.test);
@@ -106,7 +102,7 @@ export function useProviderSettings(onStatus: (status: string) => void) {
     } catch (error) {
       onStatus(error instanceof Error ? error.message : String(error));
     }
-  }, [onStatus, providerForm.default_provider]);
+  }, [onStatus, providerForm, providerSettings]);
 
   const clearProviderKey = useCallback(async () => {
     const provider = providerForm.default_provider.trim().toLowerCase() || "openai";
@@ -138,9 +134,46 @@ export function useProviderSettings(onStatus: (status: string) => void) {
   };
 }
 
+function buildProviderSettingsPayload(
+  providerForm: ProviderFormState,
+  providerSettings: ProviderSettings | null
+): Record<string, unknown> {
+  const provider = providerForm.default_provider.trim().toLowerCase() || "openai";
+  const baseUrls = { ...(providerSettings?.base_urls ?? {}) };
+  const proxyUrls = { ...(providerSettings?.proxy_urls ?? {}) };
+  if (providerForm.base_url.trim()) {
+    baseUrls[provider] = providerForm.base_url.trim();
+  } else {
+    delete baseUrls[provider];
+  }
+  if (providerForm.proxy_url.trim()) {
+    proxyUrls[provider] = providerForm.proxy_url.trim();
+  } else {
+    delete proxyUrls[provider];
+  }
+  const payload: Record<string, unknown> = {
+    default_provider: provider,
+    default_model: providerForm.default_model.trim() || "gpt-4.1-mini",
+    base_urls: baseUrls,
+    proxy_urls: proxyUrls,
+    mock_mode: providerForm.mock_mode
+  };
+  if (providerForm.api_key.trim()) {
+    payload.api_keys = { [provider]: providerForm.api_key.trim() };
+  }
+  return payload;
+}
+
 function defaultBaseUrlForProvider(provider: string): string {
   if (provider === deepSeekProviderPreset.default_provider || provider === "deepseek") {
     return deepSeekProviderPreset.base_url;
+  }
+  return "";
+}
+
+function defaultProxyUrlForProvider(provider: string): string {
+  if (provider === deepSeekProviderPreset.default_provider || provider === "deepseek") {
+    return deepSeekProviderPreset.proxy_url;
   }
   return "";
 }
