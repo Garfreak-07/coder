@@ -1088,14 +1088,6 @@ export interface OpenHandsStatus {
   capabilities: string[];
 }
 
-export interface OpenHandsFormState {
-  enabled: boolean;
-  server_url: string;
-  session_api_key: string;
-  workspace_mode: string;
-  allow_native_fallback: boolean;
-}
-
 export interface WorkflowSummary {
   id: string;
   version?: string;

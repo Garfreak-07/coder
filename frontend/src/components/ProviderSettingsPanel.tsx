@@ -1,8 +1,5 @@
 import { deepSeekProviderPreset } from "../hooks/useProviderSettings";
 import type {
-  OpenHandsFormState,
-  OpenHandsSettings,
-  OpenHandsStatus,
   ProviderFormState,
   ProviderSettings,
   ProviderStatus,
@@ -11,44 +8,28 @@ import type {
 
 interface ProviderSettingsPanelProps {
   form: ProviderFormState;
-  openHandsForm: OpenHandsFormState;
-  openHandsSettings: OpenHandsSettings | null;
-  openHandsStatus: OpenHandsStatus | null;
   showMockMode?: boolean;
   settings: ProviderSettings | null;
   status: ProviderStatus | null;
   testResult: ProviderTestResult | null;
   onChange: (patch: Partial<ProviderFormState>) => void;
-  onOpenHandsChange: (patch: Partial<OpenHandsFormState>) => void;
   onClearKey: () => void;
-  onClearOpenHandsToken: () => void;
   onSave: () => void;
-  onSaveOpenHands: () => void;
   onRefresh: () => void;
-  onRefreshOpenHands: () => void;
   onTest: () => void;
-  onTestOpenHands: () => void;
 }
 
 export function ProviderSettingsPanel({
   form,
-  openHandsForm,
-  openHandsSettings,
-  openHandsStatus,
   showMockMode = false,
   settings,
   status,
   testResult,
   onChange,
-  onOpenHandsChange,
   onClearKey,
-  onClearOpenHandsToken,
   onSave,
-  onSaveOpenHands,
   onRefresh,
-  onRefreshOpenHands,
-  onTest,
-  onTestOpenHands
+  onTest
 }: ProviderSettingsPanelProps) {
   const provider = form.default_provider.trim().toLowerCase() || "openai";
   const currentStatus =
@@ -136,71 +117,6 @@ export function ProviderSettingsPanel({
             Clear API Key
           </button>
           <button onClick={onRefresh}>Refresh</button>
-        </div>
-      </div>
-
-      <div className="settings-section">
-        <div className="panel-subtitle">Execution Backend / OpenHands</div>
-        <p className="muted">
-          OpenHands is the required execution backend for Start Work. If it is unavailable, Planner will block and
-          explain what needs to be fixed.
-        </p>
-        <label>
-          Server URL
-          <input
-            placeholder="http://127.0.0.1:8000"
-            value={openHandsForm.server_url}
-            onChange={(event) => onOpenHandsChange({ server_url: event.target.value })}
-          />
-        </label>
-        <label>
-          Session API key / token
-          <input
-            type="password"
-            placeholder={
-              openHandsSettings?.session_api_key.configured
-                ? `${openHandsSettings.session_api_key.source}: configured`
-                : "Leave blank to keep current value"
-            }
-            autoComplete="off"
-            value={openHandsForm.session_api_key}
-            onChange={(event) => onOpenHandsChange({ session_api_key: event.target.value })}
-          />
-        </label>
-        <label>
-          Workspace mode
-          <select
-            value={openHandsForm.workspace_mode}
-            onChange={(event) => onOpenHandsChange({ workspace_mode: event.target.value })}
-          >
-            <option value="local">local</option>
-            <option value="ephemeral">ephemeral</option>
-          </select>
-        </label>
-        {openHandsStatus && (
-          <div className={`provider-test-result openhands-status-${openHandsStatus.status}`}>
-            <strong>OpenHands {openHandsStatus.status}</strong>
-            <span>required executor</span>
-            <span>{openHandsStatus.credential_source}</span>
-            <span>{openHandsStatus.server_url}</span>
-            <span>Workspace: {openHandsStatus.workspace_mode}</span>
-            {openHandsStatus.version && <span>Version: {openHandsStatus.version}</span>}
-            {openHandsStatus.capabilities.length > 0 && (
-              <span>Capabilities: {openHandsStatus.capabilities.join(", ")}</span>
-            )}
-            <p>{openHandsStatus.detail}</p>
-          </div>
-        )}
-        <div className="button-row">
-          <button onClick={onSaveOpenHands}>Save OpenHands</button>
-          <button onClick={onTestOpenHands}>Test OpenHands</button>
-          <button
-            disabled={!openHandsSettings?.session_api_key.configured && !openHandsForm.session_api_key.trim()}
-            onClick={onClearOpenHandsToken}
-          >
-            Clear OpenHands Token
-          </button>
-          <button onClick={onRefreshOpenHands}>Refresh OpenHands</button>
         </div>
       </div>
     </div>

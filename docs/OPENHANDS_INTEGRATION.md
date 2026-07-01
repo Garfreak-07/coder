@@ -14,11 +14,16 @@ default product workflow. Coder owns the workflow boundary around that backend:
 Planner Chat does not currently run through OpenHands. The decision and future
 adapter boundary are recorded in `docs/OPENHANDS_PLANNER_REUSE_DECISION.md`.
 
-## Settings UI
+## Runtime Boundary
 
-Normal users configure OpenHands from Settings under
-`Execution Backend / OpenHands`. Editing `examples/coder.yaml` is only a
-developer/headless fallback.
+Normal users do not configure OpenHands, executor ports, or executor session
+tokens. OpenHands is an internal execution backend behind Start Work. Coder
+should own the runtime boundary: discover or launch the local executor, choose
+loopback ports, generate high-entropy session tokens, pass them only through
+process memory or a local secret store, and hide those details from the normal
+Settings UI.
+
+Editing `examples/coder.yaml` is only a developer/headless fallback.
 
 The server exposes:
 
@@ -28,7 +33,7 @@ POST /api/v3/openhands/settings
 GET  /api/v3/openhands/status
 ```
 
-Settings include:
+Headless/developer settings include:
 
 - `server_url`, defaulting to `http://127.0.0.1:8000`
 - masked `session_api_key`
@@ -44,7 +49,7 @@ from `OPENHANDS_SESSION_API_KEY` as a headless fallback. Settings responses
 return only whether a key is configured and its source; they do not return the
 plaintext key.
 
-The Test OpenHands action performs a direct `GET /health` request with proxy
+The developer status check performs a direct `GET /health` request with proxy
 bypass, so local OpenHands agent servers are not accidentally routed through a
 system proxy.
 

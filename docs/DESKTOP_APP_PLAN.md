@@ -18,9 +18,11 @@ The desktop app should keep the existing product architecture:
   directory.
 - Provider API keys move from the current in-memory development store to OS
   keychain or an equivalent local secret store before public desktop release.
-- OpenHands remains the required Start Work executor. Desktop may connect to an
-  already-running local or remote OpenHands Agent Server first, then later add a
-  managed helper that launches it for the user.
+- OpenHands remains the required Start Work executor, but it is not a normal
+  user setting. Desktop must manage the local executor boundary itself:
+  allocate loopback ports, generate a high-entropy session token, pass the token
+  only to the Coder runtime and OpenHands process, and report failures as local
+  executor startup or connection problems.
 
 Normal users should not run `cargo`, run `npm`, or set environment variables.
 Opening the desktop app should start the Rust runtime automatically, load the
@@ -80,16 +82,22 @@ commands when there is a clear reliability or packaging benefit.
 
 ## OpenHands Connection Options
 
-Desktop should expose the same OpenHands boundary as the web app:
+Desktop should hide the OpenHands boundary from normal users:
 
-- External OpenHands server: connect to a user-provided local or remote URL.
-- Later managed OpenHands helper: launch or discover a local OpenHands service
-  automatically, but only after the external-server path is stable.
+- Managed local executor: launch or discover a local OpenHands service
+  automatically.
+- Random loopback port: avoid fixed user-visible ports when Coder owns the
+  child process.
+- Random session token: generate per runtime/session, store only in memory or
+  the OS secret store, and never show it in the normal UI.
+- Developer/headless override: keep environment variables and scripts for live
+  compatibility testing only.
 
 OpenHands should not look optional in the product UI. CI can still use fake
 OpenHands event shapes and native Rust scaffolding for deterministic plumbing,
 but product Start Work must block with a clear message when OpenHands is not
-reachable.
+reachable. The message should refer to the local executor, not ask normal users
+to configure OpenHands.
 
 ## Local Data
 
@@ -169,7 +177,8 @@ In scope for the first desktop path:
 
 - start and stop local Rust runtime automatically
 - load bundled React assets
-- configure provider and OpenHands connection
+- configure provider access
+- manage the OpenHands executor connection internally
 - store Planner sessions and runs under `.coder/`
 - preserve current localhost web dev mode
 

@@ -66,17 +66,18 @@ before public desktop release.
   firewall, and Windows proxy settings. The DeepSeek base URL should normally be
   `https://api.deepseek.com`. If this machine uses the local proxy, set
   Provider Proxy URL to `http://127.0.0.1:7890`.
-- OpenHands unavailable vs Planner provider unavailable: OpenHands is the
-  required coding-agent executor backend for Start Work. Planner provider errors
+- Local executor unavailable vs Planner provider unavailable: the local
+  coding-agent executor is required for Start Work. Planner provider errors
   mean the chat model itself is not configured or reachable. Fix Provider
-  Settings first when Planner Chat cannot answer; fix OpenHands settings when
-  Start Work reports that the required OpenHands executor is unavailable.
+  Settings first when Planner Chat cannot answer. If Start Work reports that
+  the required local executor is unavailable, the runtime must start or repair
+  the local executor connection instead of asking the user for executor ports or
+  tokens.
 
-OpenHands is configured from the same Settings page in the
-`Execution Backend / OpenHands` section. The OpenHands token is masked and is
-not returned by settings responses. `OPENHANDS_AGENT_SERVER_URL` and
-`OPENHANDS_SESSION_API_KEY` remain valid for headless smoke scripts, but normal
-users should use the Settings UI and Test OpenHands button.
+Normal users do not configure OpenHands, executor ports, or executor session
+tokens in Settings. `OPENHANDS_AGENT_SERVER_URL` and
+`OPENHANDS_SESSION_API_KEY` remain valid only for headless smoke scripts and
+developer diagnostics.
 
 ## Developer Fallback
 

@@ -784,7 +784,6 @@ test("Rust v3 smoke exercises Planner to Review end-to-end path", () => {
 test("Provider Settings exposes DeepSeek preset and exact test result UI", () => {
   const panelSource = readFileSync("src/components/ProviderSettingsPanel.tsx", "utf8");
   const hookSource = readFileSync("src/hooks/useProviderSettings.ts", "utf8");
-  const openHandsHookSource = readFileSync("src/hooks/useOpenHandsSettings.ts", "utf8");
   const apiSource = readFileSync("src/api.ts", "utf8");
   const appSource = readFileSync("src/App.tsx", "utf8");
   const liveSmokeScript = readFileSync("../scripts/live-llm-smoke.ps1", "utf8");
@@ -805,16 +804,16 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(panelSource.includes("deepseek"));
   assert.ok(panelSource.includes("openai-compatible"));
   assert.ok(panelSource.includes("custom"));
-  assert.ok(panelSource.includes("Execution Backend / OpenHands"));
-  assert.ok(panelSource.includes("OpenHands is the required execution backend"));
-  assert.ok(panelSource.includes("required executor"));
+  assert.ok(!panelSource.includes("Execution Backend / OpenHands"));
+  assert.ok(!panelSource.includes("OpenHands is the required execution backend"));
+  assert.ok(!panelSource.includes("required executor"));
   assert.ok(!panelSource.includes("OpenHands enabled"));
   assert.ok(!panelSource.includes("Allow native fallback when OpenHands is unavailable"));
   assert.ok(!panelSource.includes("native fallback allowed"));
-  assert.ok(panelSource.includes("Session API key / token"));
-  assert.ok(panelSource.includes("Workspace mode"));
-  assert.ok(panelSource.includes("Test OpenHands"));
-  assert.ok(panelSource.includes("Clear OpenHands Token"));
+  assert.ok(!panelSource.includes("Session API key / token"));
+  assert.ok(!panelSource.includes("Workspace mode"));
+  assert.ok(!panelSource.includes("Test OpenHands"));
+  assert.ok(!panelSource.includes("Clear OpenHands Token"));
   assert.ok(hookSource.includes('default_provider: "deepseek"'));
   assert.ok(hookSource.includes("deepseek-v4-flash"));
   assert.ok(hookSource.includes("https://api.deepseek.com"));
@@ -824,13 +823,9 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(hookSource.includes("mock_mode: false"));
   assert.ok(hookSource.includes("buildProviderSettingsPayload(providerForm, providerSettings)"));
   assert.ok(hookSource.includes("Saving provider ${provider} before test"));
-  assert.ok(openHandsHookSource.includes("http://127.0.0.1:8000"));
-  assert.ok(openHandsHookSource.includes("allow_native_fallback: false"));
-  assert.ok(!openHandsHookSource.includes("allow_native_fallback: form.allow_native_fallback"));
-  assert.ok(openHandsHookSource.includes("session_api_key: null"));
   assert.ok(apiSource.includes("/api/v3/openhands/settings"));
   assert.ok(apiSource.includes("/api/v3/openhands/status"));
-  assert.ok(appSource.includes("useOpenHandsSettings"));
+  assert.ok(!appSource.includes("useOpenHandsSettings"));
   assert.ok(appSource.includes("showMockMode={debugUiEnabled}"));
   assert.ok(liveSmokeScript.includes("CODER_LIVE_LLM_SMOKE"));
   assert.ok(liveSmokeScript.includes("should_start_workflow"));
