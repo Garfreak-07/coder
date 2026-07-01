@@ -1061,6 +1061,38 @@ export interface ProviderFormState {
   mock_mode: boolean;
 }
 
+export interface OpenHandsKeyState {
+  configured: boolean;
+  source: string;
+}
+
+export interface OpenHandsSettings {
+  enabled: boolean;
+  server_url: string;
+  workspace_mode: string;
+  session_api_key: OpenHandsKeyState;
+}
+
+export interface OpenHandsStatus {
+  enabled: boolean;
+  configured: boolean;
+  status: "connected" | "failed" | "not_configured" | string;
+  server_url: string;
+  workspace_mode: string;
+  credential_configured: boolean;
+  credential_source: string;
+  detail: string;
+  version?: string | null;
+  capabilities: string[];
+}
+
+export interface OpenHandsFormState {
+  enabled: boolean;
+  server_url: string;
+  session_api_key: string;
+  workspace_mode: string;
+}
+
 export interface WorkflowSummary {
   id: string;
   version?: string;

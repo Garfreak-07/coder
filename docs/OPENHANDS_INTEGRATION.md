@@ -12,6 +12,36 @@ backend:
 - publish normalized public Coder events for the Start Work timeline
 - produce an evidence-backed final report
 
+## Settings UI
+
+Normal users configure OpenHands from Settings under
+`Execution Backend / OpenHands`. Editing `examples/coder.yaml` is only a
+developer/headless fallback.
+
+The server exposes:
+
+```text
+GET  /api/v3/openhands/settings
+POST /api/v3/openhands/settings
+GET  /api/v3/openhands/status
+```
+
+Settings include:
+
+- `enabled`
+- `server_url`, defaulting to `http://127.0.0.1:8000`
+- masked `session_api_key`
+- `workspace_mode`, currently `local` or `ephemeral`
+
+The session key is stored only in the Rust server's in-memory settings or read
+from `OPENHANDS_SESSION_API_KEY` as a headless fallback. Settings responses
+return only whether a key is configured and its source; they do not return the
+plaintext key.
+
+The Test OpenHands action performs a direct `GET /health` request with proxy
+bypass, so local OpenHands agent servers are not accidentally routed through a
+system proxy.
+
 ## Raw Events
 
 Raw OpenHands event payloads are persisted through `RunStore` large-text blob

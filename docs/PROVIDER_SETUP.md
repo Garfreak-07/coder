@@ -72,6 +72,12 @@ before public desktop release.
   Planner Chat cannot answer; fix OpenHands settings only when Start Work needs
   an OpenHands executor and that backend is unavailable.
 
+OpenHands is configured from the same Settings page in the
+`Execution Backend / OpenHands` section. The OpenHands token is masked and is
+not returned by settings responses. `OPENHANDS_AGENT_SERVER_URL` and
+`OPENHANDS_SESSION_API_KEY` remain valid for headless smoke scripts, but normal
+users should use the Settings UI and Test OpenHands button.
+
 ## Developer Fallback
 
 Environment variables remain for CI, smoke tests, and headless development.

@@ -39,6 +39,7 @@ import {
   type PlannerStrength
 } from "./features/planner-chat/PlannerChatPage";
 import { PluginsPage } from "./features/plugins/PluginsPage";
+import { useOpenHandsSettings } from "./hooks/useOpenHandsSettings";
 import { useProviderSettings } from "./hooks/useProviderSettings";
 import { useRuntimeInfo } from "./hooks/useRuntimeInfo";
 import { enUS } from "./i18n";
@@ -123,6 +124,16 @@ export function App() {
     persistProviderSettings,
     runProviderTest
   } = useProviderSettings(setStatus);
+  const {
+    openHandsSettings,
+    openHandsStatus,
+    openHandsForm,
+    updateOpenHandsForm,
+    refreshOpenHandsInfo,
+    persistOpenHandsSettings,
+    runOpenHandsTest,
+    clearOpenHandsToken
+  } = useOpenHandsSettings(setStatus);
   const [selectedRunDetail, setSelectedRunDetail] = useState<StoredRunDetail | LiveRunDetail | null>(null);
   const [selectedRunKind, setSelectedRunKind] = useState<"live" | "stored" | null>(null);
   const [runLoading, setRunLoading] = useState(false);
@@ -150,6 +161,7 @@ export function App() {
     refreshLibrary();
     refreshRuntimeInfo();
     refreshProviderInfo();
+    refreshOpenHandsInfo();
   }, []);
 
   function refreshLibrary() {
@@ -891,15 +903,23 @@ export function App() {
             <div className="panel-title">Provider Settings</div>
             <ProviderSettingsPanel
               form={providerForm}
+              openHandsForm={openHandsForm}
+              openHandsSettings={openHandsSettings}
+              openHandsStatus={openHandsStatus}
               showMockMode={debugUiEnabled}
               settings={providerSettings}
               status={providerStatus}
               testResult={providerTestResult}
               onChange={updateProviderForm}
+              onOpenHandsChange={updateOpenHandsForm}
               onClearKey={clearProviderKey}
+              onClearOpenHandsToken={clearOpenHandsToken}
               onSave={persistProviderSettings}
+              onSaveOpenHands={persistOpenHandsSettings}
               onRefresh={refreshProviderInfo}
+              onRefreshOpenHands={refreshOpenHandsInfo}
               onTest={runProviderTest}
+              onTestOpenHands={runOpenHandsTest}
             />
           </section>
         </main>

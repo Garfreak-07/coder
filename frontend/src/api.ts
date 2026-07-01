@@ -23,6 +23,8 @@ import type {
   PluginMarketplace,
   PluginMarketplaceListResponse,
   PluginReadResponse,
+  OpenHandsSettings,
+  OpenHandsStatus,
   ProviderSettings,
   ProviderStatus,
   ProviderTestResult,
@@ -382,6 +384,26 @@ export async function testProvider(provider: string): Promise<{
     method: "POST",
     headers: jsonHeaders,
     body: JSON.stringify({ provider })
+  });
+}
+
+export async function getOpenHandsSettings(): Promise<OpenHandsSettings> {
+  const payload = await requestJson<{ settings: OpenHandsSettings }>("/api/v3/openhands/settings");
+  return payload.settings;
+}
+
+export function getOpenHandsStatus(): Promise<OpenHandsStatus> {
+  return requestJson<OpenHandsStatus>("/api/v3/openhands/status");
+}
+
+export async function saveOpenHandsSettings(input: Record<string, unknown>): Promise<{
+  settings: OpenHandsSettings;
+  status: OpenHandsStatus;
+}> {
+  return requestJson("/api/v3/openhands/settings", {
+    method: "POST",
+    headers: jsonHeaders,
+    body: JSON.stringify(input)
   });
 }
 

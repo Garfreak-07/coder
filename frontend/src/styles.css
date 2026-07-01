@@ -1047,6 +1047,14 @@ label {
   gap: 10px;
 }
 
+.settings-section {
+  border: 1px solid #263244;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
 .list-item {
   display: grid;
   justify-items: start;
@@ -1560,8 +1568,17 @@ label {
   border-color: #166534;
 }
 
-.provider-test-failed {
+.provider-test-failed,
+.openhands-status-failed {
   border-color: #7f1d1d;
+}
+
+.openhands-status-connected {
+  border-color: #166534;
+}
+
+.openhands-status-not_configured {
+  border-color: #713f12;
 }
 
 .status-pill {

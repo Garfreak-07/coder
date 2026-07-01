@@ -72,6 +72,7 @@ pub struct ApiState {
     plugin_marketplaces: Arc<Mutex<BTreeMap<String, PluginMarketplace>>>,
     skill_extra_roots: Arc<Mutex<Vec<SkillExtraRoot>>>,
     provider_settings: Arc<Mutex<ProviderSettings>>,
+    openhands_settings: Arc<Mutex<OpenHandsSettings>>,
 }
 
 impl ApiState {
@@ -91,6 +92,7 @@ impl ApiState {
             )]))),
             skill_extra_roots: Arc::new(Mutex::new(Vec::new())),
             provider_settings: Arc::new(Mutex::new(ProviderSettings::default())),
+            openhands_settings: Arc::new(Mutex::new(OpenHandsSettings::default())),
         }
     }
 }
@@ -228,6 +230,11 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v3/providers/status", get(get_provider_status))
         .route("/api/v3/providers/test", post(test_provider_status))
+        .route(
+            "/api/v3/openhands/settings",
+            get(get_openhands_settings).post(save_openhands_settings),
+        )
+        .route("/api/v3/openhands/status", get(get_openhands_status))
         .route("/api/v3/runs", get(list_runs).post(run_workflow))
         .route("/api/v3/runs/preview", post(preview_run))
         .route(
@@ -2137,6 +2144,30 @@ async fn test_provider_status(
     })
 }
 
+async fn get_openhands_settings(State(state): State<ApiState>) -> Json<OpenHandsSettingsResponse> {
+    Json(OpenHandsSettingsResponse {
+        settings: state.openhands_settings.lock().unwrap().clone(),
+    })
+}
+
+async fn save_openhands_settings(
+    State(state): State<ApiState>,
+    Json(request): Json<OpenHandsSettingsPatch>,
+) -> Json<OpenHandsSettingsSaveResponse> {
+    let settings = {
+        let mut settings = state.openhands_settings.lock().unwrap();
+        apply_openhands_settings_patch(&mut settings, request);
+        settings.clone()
+    };
+    let status = openhands_status_for_settings(&settings).await;
+    Json(OpenHandsSettingsSaveResponse { settings, status })
+}
+
+async fn get_openhands_status(State(state): State<ApiState>) -> Json<OpenHandsStatus> {
+    let settings = state.openhands_settings.lock().unwrap().clone();
+    Json(openhands_status_for_settings(&settings).await)
+}
+
 async fn run_mock_workflow(
     State(state): State<ApiState>,
     Json(request): Json<MockRunRequest>,
@@ -3524,6 +3555,91 @@ pub struct ProviderSettingsSaveResponse {
 pub struct ProviderTestRequest {
     pub provider: Option<String>,
     pub mock: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenHandsKeyState {
+    pub configured: bool,
+    pub source: String,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenHandsSettings {
+    pub enabled: bool,
+    pub server_url: String,
+    pub workspace_mode: String,
+    pub session_api_key: OpenHandsKeyState,
+}
+
+impl Default for OpenHandsSettings {
+    fn default() -> Self {
+        let env_token_configured = env::var("OPENHANDS_SESSION_API_KEY")
+            .ok()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        Self {
+            enabled: env::var("OPENHANDS_ENABLED")
+                .ok()
+                .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false),
+            server_url: env::var("OPENHANDS_AGENT_SERVER_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "http://127.0.0.1:8000".to_owned()),
+            workspace_mode: env::var("OPENHANDS_WORKSPACE_MODE")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "local".to_owned()),
+            session_api_key: OpenHandsKeyState {
+                configured: env_token_configured,
+                source: if env_token_configured { "env" } else { "none" }.to_owned(),
+                secret: None,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenHandsSettingsPatch {
+    pub enabled: Option<bool>,
+    pub server_url: Option<String>,
+    pub workspace_mode: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_value")]
+    pub session_api_key: Option<Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenHandsSettingsResponse {
+    pub settings: OpenHandsSettings,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenHandsSettingsSaveResponse {
+    pub settings: OpenHandsSettings,
+    pub status: OpenHandsStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenHandsStatus {
+    pub enabled: bool,
+    pub configured: bool,
+    pub status: String,
+    pub server_url: String,
+    pub workspace_mode: String,
+    pub credential_configured: bool,
+    pub credential_source: String,
+    pub detail: String,
+    pub version: Option<String>,
+    pub capabilities: Vec<String>,
+}
+
+fn deserialize_optional_value<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Serialize)]
@@ -4931,6 +5047,199 @@ fn apply_provider_settings_patch(settings: &mut ProviderSettings, patch: Provide
             );
         }
     }
+}
+
+fn apply_openhands_settings_patch(settings: &mut OpenHandsSettings, patch: OpenHandsSettingsPatch) {
+    if let Some(enabled) = patch.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(server_url) = patch.server_url {
+        let server_url = server_url.trim();
+        if !server_url.is_empty() {
+            settings.server_url = server_url.trim_end_matches('/').to_owned();
+        }
+    }
+    if let Some(workspace_mode) = patch.workspace_mode {
+        let workspace_mode = normalize_openhands_workspace_mode(&workspace_mode);
+        if !workspace_mode.is_empty() {
+            settings.workspace_mode = workspace_mode;
+        }
+    }
+    if let Some(session_api_key) = patch.session_api_key {
+        if session_api_key.is_null() {
+            settings.session_api_key = openhands_env_key_state();
+        } else {
+            let text = session_api_key.as_str().map(str::trim).unwrap_or_default();
+            if !text.is_empty() && !text.chars().all(|ch| ch == '*') {
+                settings.session_api_key = OpenHandsKeyState {
+                    configured: true,
+                    source: "settings".to_owned(),
+                    secret: Some(text.to_owned()),
+                };
+            }
+        }
+    }
+}
+
+async fn openhands_status_for_settings(settings: &OpenHandsSettings) -> OpenHandsStatus {
+    let (credential_configured, credential_source, token) = openhands_credential(settings);
+    let server_url = sanitize_provider_endpoint(&settings.server_url);
+    let base_status = |status: &str, configured: bool, detail: String| OpenHandsStatus {
+        enabled: settings.enabled,
+        configured,
+        status: status.to_owned(),
+        server_url: server_url.clone(),
+        workspace_mode: settings.workspace_mode.clone(),
+        credential_configured,
+        credential_source: credential_source.clone(),
+        detail: redact_provider_error(
+            &detail,
+            &[
+                token.as_deref().unwrap_or_default(),
+                settings
+                    .session_api_key
+                    .secret
+                    .as_deref()
+                    .unwrap_or_default(),
+            ],
+        ),
+        version: None,
+        capabilities: Vec::new(),
+    };
+
+    if !settings.enabled {
+        return base_status(
+            "not_configured",
+            false,
+            "OpenHands is disabled in Settings.".to_owned(),
+        );
+    }
+    if settings.server_url.trim().is_empty() {
+        return base_status(
+            "not_configured",
+            false,
+            "OpenHands server URL is empty.".to_owned(),
+        );
+    }
+    if reqwest::Url::parse(&settings.server_url).is_err() {
+        return base_status(
+            "failed",
+            false,
+            "OpenHands server URL must start with http:// or https://.".to_owned(),
+        );
+    }
+
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .no_proxy()
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return base_status(
+                "failed",
+                true,
+                format!("OpenHands status client could not be created: {error}"),
+            );
+        }
+    };
+    let health_url = format!("{}/health", settings.server_url.trim_end_matches('/'));
+    let mut request = client.get(&health_url);
+    if let Some(token) = &token {
+        request = request
+            .bearer_auth(token)
+            .header("X-Session-API-Key", token);
+    }
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return base_status(
+                "failed",
+                true,
+                format!("OpenHands server is not reachable: {error}"),
+            );
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        let detail = if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            format!("OpenHands authentication failed with HTTP {status}.")
+        } else {
+            format!("OpenHands health check returned HTTP {status}.")
+        };
+        return base_status("failed", true, detail);
+    }
+    let payload = response.json::<Value>().await.unwrap_or(Value::Null);
+    let (version, capabilities) = openhands_health_metadata(&payload);
+    OpenHandsStatus {
+        enabled: settings.enabled,
+        configured: true,
+        status: "connected".to_owned(),
+        server_url,
+        workspace_mode: settings.workspace_mode.clone(),
+        credential_configured,
+        credential_source,
+        detail: "OpenHands health check succeeded.".to_owned(),
+        version,
+        capabilities,
+    }
+}
+
+fn openhands_credential(settings: &OpenHandsSettings) -> (bool, String, Option<String>) {
+    if let Some(secret) = settings
+        .session_api_key
+        .secret
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return (true, "settings".to_owned(), Some(secret.to_owned()));
+    }
+    if let Some(secret) = env::var("OPENHANDS_SESSION_API_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return (true, "env".to_owned(), Some(secret));
+    }
+    (false, "none".to_owned(), None)
+}
+
+fn openhands_env_key_state() -> OpenHandsKeyState {
+    let configured = env::var("OPENHANDS_SESSION_API_KEY")
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+    OpenHandsKeyState {
+        configured,
+        source: if configured { "env" } else { "none" }.to_owned(),
+        secret: None,
+    }
+}
+
+fn normalize_openhands_workspace_mode(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "local" => "local".to_owned(),
+        "ephemeral" => "ephemeral".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+fn openhands_health_metadata(payload: &Value) -> (Option<String>, Vec<String>) {
+    let version = payload
+        .get("version")
+        .or_else(|| payload.get("server_version"))
+        .or_else(|| payload.get("git_version"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let capabilities = match payload.get("capabilities") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        Some(Value::Object(items)) => items.keys().cloned().collect(),
+        _ => Vec::new(),
+    };
+    (version, capabilities)
 }
 
 fn apply_provider_settings_to_project_config(
@@ -7908,6 +8217,129 @@ mod tests {
         assert!(remove_body["settings"]["api_keys"]["deepseek"].is_null());
     }
 
+    #[tokio::test]
+    async fn openhands_settings_endpoints_store_secret_refs_and_test_status() {
+        let previous_session_key = env::var_os("OPENHANDS_SESSION_API_KEY");
+        let previous_server_url = env::var_os("OPENHANDS_AGENT_SERVER_URL");
+        let previous_enabled = env::var_os("OPENHANDS_ENABLED");
+        let previous_workspace_mode = env::var_os("OPENHANDS_WORKSPACE_MODE");
+        env::remove_var("OPENHANDS_SESSION_API_KEY");
+        env::remove_var("OPENHANDS_AGENT_SERVER_URL");
+        env::remove_var("OPENHANDS_ENABLED");
+        env::remove_var("OPENHANDS_WORKSPACE_MODE");
+
+        async fn health(headers: axum::http::HeaderMap) -> impl IntoResponse {
+            let authorized = headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value == "Bearer session-secret")
+                .unwrap_or(false)
+                || headers
+                    .get("x-session-api-key")
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| value == "session-secret")
+                    .unwrap_or(false);
+            if !authorized {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error": "missing token"})),
+                )
+                    .into_response();
+            }
+            Json(json!({
+                "status": "ok",
+                "version": "test-openhands",
+                "capabilities": ["conversations", "events"]
+            }))
+            .into_response()
+        }
+
+        let app = router(ApiState::new(RunStore::new(temp_root())));
+        let openhands_app = Router::new().route("/health", axum::routing::get(health));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, openhands_app).await.unwrap();
+        });
+        let server_url = format!("http://{addr}");
+
+        let initial = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/openhands/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let initial_body = response_json(initial).await;
+        assert_eq!(
+            initial_body["settings"]["server_url"],
+            "http://127.0.0.1:8000"
+        );
+        assert_eq!(
+            initial_body["settings"]["session_api_key"]["configured"],
+            false
+        );
+
+        let save = post_json(
+            app.clone(),
+            "/api/v3/openhands/settings",
+            json!({
+                "enabled": true,
+                "server_url": server_url,
+                "workspace_mode": "local",
+                "session_api_key": "session-secret"
+            }),
+        )
+        .await;
+        assert_eq!(save.status(), StatusCode::OK);
+        let save_body = response_json(save).await;
+        assert_eq!(save_body["settings"]["enabled"], true);
+        assert_eq!(save_body["settings"]["session_api_key"]["configured"], true);
+        assert_eq!(
+            save_body["settings"]["session_api_key"]["source"],
+            "settings"
+        );
+        assert_eq!(save_body["status"]["status"], "connected");
+        assert_eq!(save_body["status"]["version"], "test-openhands");
+        assert_eq!(save_body["status"]["capabilities"][0], "conversations");
+        assert!(!save_body.to_string().contains("session-secret"));
+
+        let status_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/openhands/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status_body = response_json(status_response).await;
+        assert_eq!(status_body["status"], "connected");
+        assert_eq!(status_body["credential_source"], "settings");
+        assert!(!status_body.to_string().contains("session-secret"));
+
+        let clear = post_json(
+            app,
+            "/api/v3/openhands/settings",
+            json!({"session_api_key": null}),
+        )
+        .await;
+        let clear_body = response_json(clear).await;
+        assert_eq!(
+            clear_body["settings"]["session_api_key"]["configured"],
+            false
+        );
+        assert_eq!(clear_body["status"]["status"], "failed");
+        restore_env_var("OPENHANDS_SESSION_API_KEY", previous_session_key);
+        restore_env_var("OPENHANDS_AGENT_SERVER_URL", previous_server_url);
+        restore_env_var("OPENHANDS_ENABLED", previous_enabled);
+        restore_env_var("OPENHANDS_WORKSPACE_MODE", previous_workspace_mode);
+    }
+
     #[test]
     fn provider_settings_patch_updates_clears_and_overrides_env_fallback() {
         let env_name = "CODER_TEST_PROVIDER_KEY_OVERRIDE";
@@ -9861,6 +10293,14 @@ diff --git a/tracked.txt b/tracked.txt
         )
         .await
         .unwrap()
+    }
+
+    fn restore_env_var(name: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            env::set_var(name, value);
+        } else {
+            env::remove_var(name);
+        }
     }
 
     async fn response_json(response: axum::response::Response) -> Value {
