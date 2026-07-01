@@ -5857,14 +5857,11 @@ impl ModelPlannerConversationEngine {
                     &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
                 )
             })?;
+        let request_body = planner_chat_completion_body(&provider, &model_name, messages);
         let response = client
             .post(&url)
             .bearer_auth(&api_key)
-            .json(&json!({
-                "model": model_name,
-                "messages": messages,
-                "temperature": 0.2
-            }))
+            .json(&request_body)
             .send()
             .await
             .map_err(|error| {
@@ -5893,6 +5890,19 @@ impl ModelPlannerConversationEngine {
             .filter(|message| !message.is_empty())
             .map(str::to_owned))
     }
+}
+
+fn planner_chat_completion_body(provider: &str, model_name: &str, messages: Vec<Value>) -> Value {
+    let mut body = json!({
+        "model": model_name,
+        "messages": messages,
+        "temperature": 0.2,
+        "max_tokens": 2048
+    });
+    if normalize_provider(provider) == "deepseek" {
+        body["thinking"] = json!({"type": "disabled"});
+    }
+    body
 }
 
 fn planner_model_profile(request: &PlannerConversationRequest) -> &ConfigModelSpec {
@@ -8585,6 +8595,27 @@ mod tests {
         let generic =
             provider_test_chat_completion_body("openai-compatible", "gpt-compatible-test");
         assert_eq!(generic["model"], "gpt-compatible-test");
+        assert!(generic.get("thinking").is_none());
+    }
+
+    #[test]
+    fn planner_chat_body_bounds_tokens_and_disables_deepseek_thinking() {
+        let messages = vec![json!({
+            "role": "user",
+            "content": "challenge question"
+        })];
+        let deepseek =
+            planner_chat_completion_body("deepseek", "deepseek-v4-flash", messages.clone());
+        assert_eq!(deepseek["model"], "deepseek-v4-flash");
+        assert_eq!(deepseek["temperature"], 0.2);
+        assert_eq!(deepseek["max_tokens"], 2048);
+        assert_eq!(deepseek["thinking"]["type"], "disabled");
+        assert_eq!(deepseek["messages"], json!(messages));
+
+        let generic =
+            planner_chat_completion_body("openai-compatible", "gpt-compatible-test", Vec::new());
+        assert_eq!(generic["model"], "gpt-compatible-test");
+        assert_eq!(generic["max_tokens"], 2048);
         assert!(generic.get("thinking").is_none());
     }
 
