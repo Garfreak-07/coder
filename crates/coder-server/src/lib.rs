@@ -7009,6 +7009,9 @@ mod tests {
         assert_eq!(unready["execution_allowed"], false);
         assert_eq!(unready["should_start_workflow"], false);
         assert_eq!(unready["run_preview"], Value::Null);
+        assert!(unready.get("run_id").is_none());
+        assert!(unready.get("events_url").is_none());
+        assert!(unready.get("timeline_url").is_none());
         assert!(!unready["open_questions"].as_array().unwrap().is_empty());
 
         let unconfirmed_response = post_json(
@@ -7026,6 +7029,9 @@ mod tests {
         assert_eq!(unconfirmed["execution_allowed"], false);
         assert_eq!(unconfirmed["should_start_workflow"], false);
         assert_eq!(unconfirmed["run_preview"], Value::Null);
+        assert!(unconfirmed.get("run_id").is_none());
+        assert!(unconfirmed.get("events_url").is_none());
+        assert!(unconfirmed.get("timeline_url").is_none());
         let deprecated_confirmation_event = ["work", "confirmation", "requested"].join(".");
         assert!(!unconfirmed["events"]
             .as_array()
@@ -7047,6 +7053,9 @@ mod tests {
         assert_eq!(confirmed["execution_allowed"], false);
         assert_eq!(confirmed["should_start_workflow"], false);
         assert_eq!(confirmed["run_preview"], Value::Null);
+        assert!(confirmed.get("run_id").is_none());
+        assert!(confirmed.get("events_url").is_none());
+        assert!(confirmed.get("timeline_url").is_none());
         assert_eq!(
             confirmed["plan_draft"]["affected_paths"][0],
             "crates/coder-server/src/lib.rs"
@@ -9415,6 +9424,12 @@ diff --git a/tracked.txt b/tracked.txt
         assert_eq!(turn_response.status(), StatusCode::OK);
         let turn_body = response_json(turn_response).await;
         assert_eq!(turn_body["ready"], true);
+        assert_eq!(turn_body["execution_allowed"], false);
+        assert_eq!(turn_body["should_start_workflow"], false);
+        assert_eq!(turn_body["run_preview"], Value::Null);
+        assert!(turn_body.get("run_id").is_none());
+        assert!(turn_body.get("events_url").is_none());
+        assert!(turn_body.get("timeline_url").is_none());
         assert!(store.list_run_summaries().unwrap().is_empty());
 
         let start_response = post_json(

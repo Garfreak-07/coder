@@ -212,6 +212,32 @@ test("frontend API client stays on Rust v3 without Python switch", () => {
   assert.ok(apiSource.includes("legacyCanvasToWorkflowSpec(input.agent_workflow)"));
 });
 
+test("Planner Chat API keeps execution behind Start Work", () => {
+  const apiSource = readFileSync("src/api.ts", "utf8");
+  const appSource = readFileSync("src/App.tsx", "utf8");
+  const chatTurnSource = sourceBetween(
+    apiSource,
+    "async function sendRustPlannerChatTurn",
+    "async function startRustAgentRun"
+  );
+  const startWorkSource = sourceBetween(
+    apiSource,
+    "export function startPlannerSessionWork",
+    "export function getPlannerChatSession"
+  );
+
+  assert.ok(chatTurnSource.includes("/api/v3/planner-chat/sessions/${encodeURIComponent(input.session_id)}/turn"));
+  assert.ok(chatTurnSource.includes("confirmed: false"));
+  assert.ok(chatTurnSource.includes('mode: "discuss"'));
+  assert.ok(chatTurnSource.includes("run_id: null"));
+  assert.ok(!chatTurnSource.includes("/api/v3/runs"));
+  assert.ok(startWorkSource.includes("/start-work"));
+  assert.ok(!startWorkSource.includes('"/api/v3/runs"'));
+  assert.ok(appSource.includes("const response = await sendPlannerChatTurn({"));
+  assert.ok(appSource.includes("const response = await startPlannerSessionWork({"));
+  assert.ok(!appSource.includes("startLiveAgentRun"));
+});
+
 test("desktop skeleton keeps API fallback and desktop scripts opt-in", () => {
   const apiSource = readFileSync("src/api.ts", "utf8");
   const rootPackage = readFileSync("../package.json", "utf8");
@@ -929,4 +955,12 @@ function findElementByPlaceholder(
   }
   if (element.props?.placeholder === placeholder) return element;
   return findElementByPlaceholder(element.props?.children, placeholder);
+}
+
+function sourceBetween(source: string, startNeedle: string, endNeedle: string): string {
+  const start = source.indexOf(startNeedle);
+  const end = source.indexOf(endNeedle, start + startNeedle.length);
+  assert.ok(start >= 0);
+  assert.ok(end > start);
+  return source.slice(start, end);
 }
