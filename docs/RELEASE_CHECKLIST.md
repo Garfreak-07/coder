@@ -141,6 +141,21 @@ succeeds or safely reports conflict/unsupported, and `secrets_check: passed`.
 A skipped result is not a live pass, and a run that edits the file but reports
 `blocked` is not a live pass.
 
+Full path DeepSeek + OpenHands smoke:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\live-full-path-smoke.ps1 -Live -LoadLocalEnv -WorkRoot .tmp\live-full-path-smoke -OpenHandsServerUrl http://127.0.0.1:8000 -OpenHandsSessionApiKey "..."
+```
+
+Expected live result when DeepSeek credentials, the provider proxy, and an
+OpenHands Agent Server are available: provider `deepseek`, provider test mode
+`live`, OpenHands settings `connected`, Planner Chat retains two
+user/assistant turns, Start Work returns a completed run id, timeline includes
+`Executor backend: OpenHands`, public ReAct items, and a final summary, final
+report status is `completed`, Review Changes includes
+`docs/FULL_PATH_SMOKE_RESULT.md`, Undo reports `undone` or a supported safe
+status, and `secrets_check: passed`. A skipped result is not a live pass.
+
 Latest local live result recorded for this checklist:
 
 ```text
@@ -154,6 +169,25 @@ status: ok
 final_report: completed
 timeline_items: 77
 timeline_react_items: 64
+review_changes: 1
+undo_status: undone
+secrets_check: passed
+```
+
+Latest local full path live result:
+
+```text
+timestamp: 2026-07-01 22:40:53 +08:00
+server_url: http://127.0.0.1:8000
+provider: deepseek
+model: deepseek-v4-flash
+session_id: pcs_80292578-8ad9-4039-a9ef-2875f1182aeb
+run_id: c7b74fe1-7b93-4233-b377-da003e3d995e
+status: ok
+start_work_status: completed
+timeline_items: 145
+timeline_react_items: 98
+final_summary_items: 1
 review_changes: 1
 undo_status: undone
 secrets_check: passed

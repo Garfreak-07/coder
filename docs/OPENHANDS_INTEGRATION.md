@@ -141,6 +141,40 @@ The current live smoke intentionally requires a documentation-only file edit so
 Review Changes and Undo are exercised. CI must keep using fake adapter tests and
 must not require this live smoke.
 
+## Full Path Live Smoke
+
+Use `scripts/live-full-path-smoke.ps1` when the full Planner Chat to OpenHands
+path needs live validation. This script exercises the Coder API surface instead
+of calling the workflow runner directly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\live-full-path-smoke.ps1 -Live -LoadLocalEnv -WorkRoot .tmp\live-full-path-smoke -OpenHandsServerUrl http://127.0.0.1:8000 -OpenHandsSessionApiKey "..."
+```
+
+The script loads local provider credentials only when `-LoadLocalEnv` is passed.
+It reads the provider proxy from `HTTPS_PROXY` or `HTTP_PROXY`, sends that proxy
+through Provider Settings for the selected provider, and forces
+`NO_PROXY=127.0.0.1,localhost,::1` for local Coder/OpenHands traffic.
+
+The live task is documentation-only and explicitly tells OpenHands not to
+commit, push, publish, or clean the working tree. The result document must be
+left as an uncommitted diff so Review Changes and Undo can be verified through
+Coder. If OpenHands commits the change, the script fails with a clear error.
+
+The script verifies:
+
+- live provider test mode for the configured provider
+- OpenHands settings connectivity
+- two Planner Chat turns retained in the session
+- Start Work completes through the configured OpenHands executor
+- Timeline contains backend, public ReAct, and final summary items
+- final report preview is completed
+- `docs/FULL_PATH_SMOKE_RESULT.md` is updated and left uncommitted
+- Review Changes returns a diff for the updated document
+- Undo succeeds or safely reports a supported state
+- serialized API artifacts and stored report/event files do not contain the
+  configured provider or OpenHands session keys
+
 ## Local Live Compatibility Record
 
 Latest validated local run:
@@ -171,3 +205,18 @@ Compatibility details from that run:
 - The smoke workflow is single-round so an executor completion ends the run.
 - The smoke uses `max_events: 100`; this avoids a local OpenHands
   `/events/search?limit=200` HTTP 500 observed during validation.
+
+Latest validated full path run:
+
+```text
+timestamp: 2026-07-01 22:40:53 +08:00
+OpenHands Agent Server: http://127.0.0.1:8000
+provider: deepseek
+model: deepseek-v4-flash
+session_id: pcs_80292578-8ad9-4039-a9ef-2875f1182aeb
+run_id: c7b74fe1-7b93-4233-b377-da003e3d995e
+result: status ok, Start Work completed, final report completed
+timeline: 145 items, 98 public ReAct items, 1 final summary
+review/undo: 1 Review Changes entry, undo_status undone
+secrets_check: passed
+```

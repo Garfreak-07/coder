@@ -43,6 +43,7 @@ commits after that run had not yet been pushed when this file was written.
 | --- | --- | --- |
 | DeepSeek live smoke | Passed | Ran with `.local-env.ps1`, `DEEPSEEK_API_KEY`, and proxy `http://127.0.0.1:7890`. Result: `status: ok`, provider `deepseek`, model `deepseek-v4-flash`, provider test `live`, 4 Planner turns, Start Work returned `needs_clarification` without starting a run. |
 | OpenHands live smoke | Passed | Recorded 2026-07-01 20:47:45 +08:00 on local base commit `27ab5509`. Command used `OPENHANDS_LIVE_SMOKE=1`, local Agent Server `http://127.0.0.1:8000`, OpenAI-compatible DeepSeek model `deepseek-v4-flash`, and local proxy bypass `NO_PROXY=127.0.0.1,localhost,::1`. Result: `status: ok`, run `2718536d-950b-4415-970d-20f50844ecf2`, final report `Status: completed`, `backend_selected: 1`, `timeline_items: 77`, `timeline_react_items: 64`, `react_events: 63`, `raw_openhands_events: 31`, `result_doc_changed: 1`, `review_changes: 1`, `undo_status: undone`, and `secrets_check: passed`. No API key was written to the recorded events, report, timeline, or changes output. |
+| Full path DeepSeek + OpenHands smoke | Passed | Recorded 2026-07-01 22:40:53 +08:00 after the clippy cleanup. Command used `scripts/live-full-path-smoke.ps1 -Live -LoadLocalEnv`, local Agent Server `http://127.0.0.1:8000`, provider `deepseek`, model `deepseek-v4-flash`, and proxy `http://127.0.0.1:7890` with local bypass `NO_PROXY=127.0.0.1,localhost,::1`. Result: `status: ok`, Planner session `pcs_80292578-8ad9-4039-a9ef-2875f1182aeb`, run `c7b74fe1-7b93-4233-b377-da003e3d995e`, Start Work `completed`, `events: 209`, `timeline_items: 145`, `timeline_react_items: 98`, `final_summary_items: 1`, final report `completed`, `result_doc_changed: 1`, `review_changes: 1`, `undo_status: undone`, and `secrets_check: passed`. |
 
 ### OpenHands Live Smoke Notes
 
@@ -55,6 +56,7 @@ The successful live smoke used the current OpenHands Agent Server API shape:
 - OpenHands finish-tool events are recognized as `executor.completed`
 - the smoke workflow is single-round so `executor.completed` ends the run instead of starting a second executor pass
 - event polling uses `max_events: 100`; `limit=200` was observed to trigger HTTP 500 on this local OpenHands server
+- the full path smoke drives Planner Chat in `work` mode, then starts the configured workflow and verifies Timeline, Review Changes, Undo, and secret redaction from the Coder API surface
 
 ## npm Audit Note
 
