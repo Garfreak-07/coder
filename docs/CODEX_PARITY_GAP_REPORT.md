@@ -53,6 +53,9 @@ Coder splits Codex into Planner and Executor:
 - OpenHands stays the preferred executor backend when configured.
 - Environment variables remain developer/headless fallback; normal users use
   Provider Settings.
+- Planner Chat stays on Coder's direct provider path in this phase; the
+  OpenHands reuse decision is recorded in
+  `docs/OPENHANDS_PLANNER_REUSE_DECISION.md`.
 - GPU support is optional future provider capability, not core runtime.
 
 ## Non-Blocking

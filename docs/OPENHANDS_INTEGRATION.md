@@ -12,6 +12,9 @@ backend:
 - publish normalized public Coder events for the Start Work timeline
 - produce an evidence-backed final report
 
+Planner Chat does not currently run through OpenHands. The decision and future
+adapter boundary are recorded in `docs/OPENHANDS_PLANNER_REUSE_DECISION.md`.
+
 ## Settings UI
 
 Normal users configure OpenHands from Settings under
