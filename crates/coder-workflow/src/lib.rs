@@ -413,11 +413,6 @@ impl WorkflowRunner {
                     agent.model, node.agent
                 ))
             })?;
-            let backend = self
-                .backends
-                .backend_for(&harness.backend)
-                .ok_or_else(|| WorkflowError::BackendNotFound(harness.backend.clone()))?;
-
             self.emit(
                 &run_id,
                 &mut sequence,
@@ -431,36 +426,145 @@ impl WorkflowRunner {
                 }),
             )?;
 
-            let backend_result = match backend
-                .run(HarnessRunRequest {
-                    run_id: run_id.clone(),
-                    workflow_id: options.workflow_id.clone(),
-                    node_id: node.id.clone(),
-                    agent_id: node.agent.clone(),
-                    harness_id: node.harness.clone(),
-                    repo_root: options.repo_root.display().to_string(),
-                    task: options.task.clone(),
-                    backend_context: harness_backend_context(OpenHandsConversationPayloadInput {
-                        run_id: &run_id,
-                        repo_root: &request.repo_root,
-                        workflow_id: &options.workflow_id,
-                        workflow,
+            let requested_backend = harness.backend.clone();
+            let fallback_allowed =
+                requested_backend == "openhands" && options.allow_native_fallback_for_openhands;
+            let mut effective_backend = requested_backend.clone();
+            let mut effective_harness = harness.clone();
+            let mut backend = match self.backends.backend_for(&requested_backend) {
+                Some(backend) => {
+                    self.emit_backend_selected(
+                        &run_id,
+                        &mut sequence,
+                        round,
                         node,
-                        agent_id: &node.agent,
-                        agent,
-                        harness_id: &node.harness,
-                        harness,
-                        model,
-                        plan_context: options.plan_context.as_ref(),
-                    }),
-                })
+                        &requested_backend,
+                        &requested_backend,
+                        None,
+                        fallback_allowed,
+                    )?;
+                    backend
+                }
+                None if fallback_allowed => {
+                    self.emit_backend_blocked(
+                        &run_id,
+                        &mut sequence,
+                        round,
+                        node,
+                        &requested_backend,
+                        "OpenHands backend is not configured for this run.",
+                        true,
+                    )?;
+                    effective_backend = "native-rust".to_owned();
+                    effective_harness = native_fallback_harness(harness);
+                    self.emit_backend_selected(
+                        &run_id,
+                        &mut sequence,
+                        round,
+                        node,
+                        &effective_backend,
+                        &requested_backend,
+                        Some(&requested_backend),
+                        true,
+                    )?;
+                    self.backends
+                        .backend_for(&effective_backend)
+                        .ok_or_else(|| WorkflowError::BackendNotFound(effective_backend.clone()))?
+                }
+                None => return Err(WorkflowError::BackendNotFound(requested_backend)),
+            };
+
+            let mut backend_result = match backend
+                .run(build_harness_run_request(
+                    &run_id,
+                    &request.repo_root,
+                    &options,
+                    workflow,
+                    node,
+                    agent,
+                    &effective_harness,
+                    model,
+                ))
                 .await
             {
                 Ok(result) => result,
-                Err(HarnessError::Unavailable(message)) => HarnessRunResult::blocked(format!(
-                    "backend '{}' unavailable: {message}",
-                    harness.backend
-                )),
+                Err(HarnessError::Unavailable(message))
+                    if requested_backend == "openhands" && fallback_allowed =>
+                {
+                    self.emit_backend_blocked(
+                        &run_id,
+                        &mut sequence,
+                        round,
+                        node,
+                        &requested_backend,
+                        &message,
+                        true,
+                    )?;
+                    effective_backend = "native-rust".to_owned();
+                    effective_harness = native_fallback_harness(harness);
+                    backend = self
+                        .backends
+                        .backend_for(&effective_backend)
+                        .ok_or_else(|| WorkflowError::BackendNotFound(effective_backend.clone()))?;
+                    self.emit_backend_selected(
+                        &run_id,
+                        &mut sequence,
+                        round,
+                        node,
+                        &effective_backend,
+                        &requested_backend,
+                        Some(&requested_backend),
+                        true,
+                    )?;
+                    match backend
+                        .run(build_harness_run_request(
+                            &run_id,
+                            &request.repo_root,
+                            &options,
+                            workflow,
+                            node,
+                            agent,
+                            &effective_harness,
+                            model,
+                        ))
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(HarnessError::Unavailable(message)) => HarnessRunResult::blocked(
+                            format!("backend 'native-rust' unavailable: {message}"),
+                        ),
+                        Err(error) => HarnessRunResult {
+                            status: "failed".to_owned(),
+                            report: Some(FinalReport::failed(
+                                "Harness backend failed.",
+                                error.to_string(),
+                            )),
+                            events: vec![HarnessRunEvent::new(
+                                "backend.failed",
+                                json!({
+                                    "backend": "native-rust",
+                                    "requested_backend": requested_backend,
+                                    "error": error.to_string()
+                                }),
+                            )],
+                        },
+                    }
+                }
+                Err(HarnessError::Unavailable(message)) => {
+                    self.emit_backend_blocked(
+                        &run_id,
+                        &mut sequence,
+                        round,
+                        node,
+                        &requested_backend,
+                        &message,
+                        false,
+                    )?;
+                    HarnessRunResult::blocked(format!(
+                        "backend '{}' unavailable: {message}",
+                        requested_backend
+                    ))
+                }
                 Err(error) => HarnessRunResult {
                     status: "failed".to_owned(),
                     report: Some(FinalReport::failed(
@@ -470,12 +574,18 @@ impl WorkflowRunner {
                     events: vec![HarnessRunEvent::new(
                         "backend.failed",
                         json!({
-                            "backend": harness.backend,
+                            "backend": effective_backend,
+                            "requested_backend": requested_backend,
                             "error": error.to_string()
                         }),
                     )],
                 },
             };
+            if effective_backend != requested_backend && backend_result.report.is_none() {
+                backend_result.report = Some(FinalReport::completed(format!(
+                    "Native fallback handled executor backend request for '{requested_backend}'."
+                )));
+            }
 
             for backend_event in backend_result.events {
                 self.emit_harness_event(&run_id, &mut sequence, backend_event)?;
@@ -485,7 +595,7 @@ impl WorkflowRunner {
             let signal = WorkflowSignal::from_status(&raw_status);
             checks.push(format!(
                 "node {} via {}: {}",
-                node.id, harness.backend, raw_status
+                node.id, effective_backend, raw_status
             ));
             if let Some(report) = backend_result.report {
                 evidence_refs.extend(report.evidence_refs);
@@ -713,6 +823,62 @@ impl WorkflowRunner {
         self.store.append_event(run_id, &event)?;
         *sequence += 1;
         Ok(())
+    }
+
+    fn emit_backend_selected(
+        &self,
+        run_id: &RunId,
+        sequence: &mut u64,
+        round: u32,
+        node: &WorkflowNodeSpec,
+        backend: &str,
+        requested_backend: &str,
+        fallback_for: Option<&str>,
+        fallback_allowed: bool,
+    ) -> Result<(), WorkflowError> {
+        let mut payload = json!({
+            "round": round,
+            "node_id": node.id,
+            "agent_id": node.agent,
+            "harness_id": node.harness,
+            "backend": backend,
+            "requested_backend": requested_backend,
+            "status": "selected",
+            "fallback_allowed": fallback_allowed,
+            "summary": backend_selection_summary(backend, fallback_for)
+        });
+        if let Some(fallback_for) = fallback_for {
+            payload["fallback_for"] = json!(fallback_for);
+        }
+        self.emit(run_id, sequence, "backend.selected", payload)
+    }
+
+    fn emit_backend_blocked(
+        &self,
+        run_id: &RunId,
+        sequence: &mut u64,
+        round: u32,
+        node: &WorkflowNodeSpec,
+        backend: &str,
+        reason: &str,
+        fallback_allowed: bool,
+    ) -> Result<(), WorkflowError> {
+        self.emit(
+            run_id,
+            sequence,
+            "backend.blocked",
+            json!({
+                "round": round,
+                "node_id": node.id,
+                "agent_id": node.agent,
+                "harness_id": node.harness,
+                "backend": backend,
+                "status": "blocked",
+                "fallback_allowed": fallback_allowed,
+                "reason": reason,
+                "summary": backend_blocked_summary(backend, reason, fallback_allowed)
+            }),
+        )
     }
 
     fn emit_node_outcome(
@@ -994,6 +1160,83 @@ fn harness_backend_context(input: OpenHandsConversationPayloadInput<'_>) -> Valu
     }
 }
 
+fn build_harness_run_request(
+    run_id: &RunId,
+    repo_root: &str,
+    options: &WorkflowRunOptions,
+    workflow: &WorkflowSpec,
+    node: &WorkflowNodeSpec,
+    agent: &AgentSpec,
+    harness: &HarnessSpec,
+    model: &ModelSpec,
+) -> HarnessRunRequest {
+    HarnessRunRequest {
+        run_id: run_id.clone(),
+        workflow_id: options.workflow_id.clone(),
+        node_id: node.id.clone(),
+        agent_id: node.agent.clone(),
+        harness_id: node.harness.clone(),
+        repo_root: options.repo_root.display().to_string(),
+        task: options.task.clone(),
+        backend_context: harness_backend_context(OpenHandsConversationPayloadInput {
+            run_id,
+            repo_root,
+            workflow_id: &options.workflow_id,
+            workflow,
+            node,
+            agent_id: &node.agent,
+            agent,
+            harness_id: &node.harness,
+            harness,
+            model,
+            plan_context: options.plan_context.as_ref(),
+        }),
+    }
+}
+
+fn native_fallback_harness(harness: &HarnessSpec) -> HarnessSpec {
+    let mut fallback = harness.clone();
+    fallback.backend = "native-rust".to_owned();
+    fallback.openhands = None;
+    fallback.tools.clear();
+    fallback
+}
+
+fn backend_selection_summary(backend: &str, fallback_for: Option<&str>) -> String {
+    if backend == "native-rust" && fallback_for == Some("openhands") {
+        return "Executor backend: native fallback".to_owned();
+    }
+    format!("Executor backend: {}", backend_display_name(backend))
+}
+
+fn backend_blocked_summary(backend: &str, reason: &str, fallback_allowed: bool) -> String {
+    if backend == "openhands" {
+        let suffix = if fallback_allowed {
+            " Native fallback is enabled."
+        } else {
+            ""
+        };
+        return format!(
+            "Executor backend: blocked - OpenHands not reachable. {}{}",
+            reason, suffix
+        );
+    }
+    format!(
+        "Executor backend: blocked - {}. {}",
+        backend_display_name(backend),
+        reason
+    )
+}
+
+fn backend_display_name(backend: &str) -> &'static str {
+    match backend {
+        "openhands" => "OpenHands",
+        "native-rust" | "native_mock" | "mock" => "native fallback",
+        "planner-model" => "Planner",
+        _ => "unknown",
+    }
+}
+
 fn model_reference(agent: &AgentSpec, model: &ModelSpec) -> Value {
     json!({
         "profile_ref": &agent.model,
@@ -1037,6 +1280,7 @@ pub struct WorkflowRunOptions {
     pub dry_run: bool,
     pub max_rounds_override: Option<u32>,
     pub plan_context: Option<Value>,
+    pub allow_native_fallback_for_openhands: bool,
 }
 
 impl WorkflowRunOptions {
@@ -1048,6 +1292,7 @@ impl WorkflowRunOptions {
             dry_run: false,
             max_rounds_override: None,
             plan_context: None,
+            allow_native_fallback_for_openhands: false,
         }
     }
 }
@@ -3303,6 +3548,7 @@ fn openhands_server_config_from_harness(config: &OpenHandsHarnessConfig) -> Open
     OpenHandsServerConfig {
         server_url: config.server_url.clone(),
         session_api_key_env: config.session_api_key_env.clone(),
+        session_api_key: config.session_api_key.clone(),
         api_paths: openhands_api_paths_from_config(&config.api_paths),
         run_start_strategy: openhands_run_strategy_from_config(config.run_start_strategy),
     }
@@ -3910,11 +4156,77 @@ diff --git a/tracked.txt b/tracked.txt
         let output = runner.run(options).await.unwrap();
 
         assert_eq!(output.report.status, ReportStatus::Blocked);
+        let events = store.read_events(&output.run_id).unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "backend.selected"
+                && event.payload["backend"].as_str() == Some("openhands")
+                && event.payload["fallback_allowed"].as_bool() == Some(false)
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "backend.blocked"
+                && event.payload["backend"].as_str() == Some("openhands")
+                && event.payload["fallback_allowed"].as_bool() == Some(false)
+        }));
+        assert!(!events.iter().any(|event| {
+            event.kind == "backend.selected"
+                && event.payload["backend"].as_str() == Some("native-rust")
+                && event.payload["fallback_for"].as_str() == Some("openhands")
+        }));
         assert!(output
             .report
             .blockers
             .iter()
             .any(|blocker| blocker.contains("backend 'openhands' unavailable")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn workflow_runner_uses_native_fallback_when_openhands_unavailable_and_allowed() {
+        let (mut config, root, store) = fixture();
+        let workflow = config.workflows.get_mut("planner-led").unwrap();
+        workflow.nodes = vec![WorkflowNodeSpec {
+            id: "executor".to_owned(),
+            agent: "executor".to_owned(),
+            harness: "openhands-code-edit".to_owned(),
+        }];
+        workflow.edges.clear();
+        let openhands = config
+            .harnesses
+            .get_mut("openhands-code-edit")
+            .unwrap()
+            .openhands
+            .as_mut()
+            .unwrap();
+        openhands.server_url = "http://127.0.0.1:1".to_owned();
+        let runner = WorkflowRunner::new(config, store.clone());
+        let mut options = WorkflowRunOptions::new("planner-led", "needs openhands");
+        options.repo_root = root.clone();
+        options.allow_native_fallback_for_openhands = true;
+
+        let output = runner.run(options).await.unwrap();
+
+        assert_eq!(output.report.status, ReportStatus::Completed);
+        assert!(output
+            .report
+            .checks
+            .iter()
+            .any(|check| check == "node executor via native-rust: completed"));
+        let events = store.read_events(&output.run_id).unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "backend.selected"
+                && event.payload["backend"].as_str() == Some("openhands")
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "backend.blocked"
+                && event.payload["backend"].as_str() == Some("openhands")
+                && event.payload["fallback_allowed"].as_bool() == Some(true)
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "backend.selected"
+                && event.payload["backend"].as_str() == Some("native-rust")
+                && event.payload["fallback_for"].as_str() == Some("openhands")
+                && event.payload["summary"].as_str() == Some("Executor backend: native fallback")
+        }));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4472,6 +4784,7 @@ diff --git a/tracked.txt b/tracked.txt
         OpenHandsHarnessConfig {
             server_url,
             session_api_key_env: None,
+            session_api_key: None,
             workspace_mode: Some("local".to_owned()),
             prefer_websocket: false,
             poll_interval_ms,

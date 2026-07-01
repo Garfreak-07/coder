@@ -1070,12 +1070,14 @@ export interface OpenHandsSettings {
   enabled: boolean;
   server_url: string;
   workspace_mode: string;
+  allow_native_fallback: boolean;
   session_api_key: OpenHandsKeyState;
 }
 
 export interface OpenHandsStatus {
   enabled: boolean;
   configured: boolean;
+  allow_native_fallback: boolean;
   status: "connected" | "failed" | "not_configured" | string;
   server_url: string;
   workspace_mode: string;
@@ -1091,6 +1093,7 @@ export interface OpenHandsFormState {
   server_url: string;
   session_api_key: string;
   workspace_mode: string;
+  allow_native_fallback: boolean;
 }
 
 export interface WorkflowSummary {

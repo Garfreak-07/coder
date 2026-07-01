@@ -367,6 +367,7 @@ async fn run_openhands_recorded(
     let client = OpenHandsClient::new(OpenHandsServerConfig {
         server_url: input.server_url,
         session_api_key_env: input.session_api_key_env,
+        session_api_key: None,
         api_paths: input.api_paths,
         run_start_strategy: input.run_start_strategy,
     });

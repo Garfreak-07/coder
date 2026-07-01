@@ -149,6 +149,14 @@ export function ProviderSettingsPanel({
           />
           OpenHands enabled
         </label>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={openHandsForm.allow_native_fallback}
+            onChange={(event) => onOpenHandsChange({ allow_native_fallback: event.target.checked })}
+          />
+          Allow native fallback when OpenHands is unavailable
+        </label>
         <label>
           Server URL
           <input
@@ -185,6 +193,7 @@ export function ProviderSettingsPanel({
           <div className={`provider-test-result openhands-status-${openHandsStatus.status}`}>
             <strong>OpenHands {openHandsStatus.status}</strong>
             <span>{openHandsStatus.enabled ? "enabled" : "disabled"}</span>
+            <span>{openHandsStatus.allow_native_fallback ? "native fallback allowed" : "native fallback off"}</span>
             <span>{openHandsStatus.credential_source}</span>
             <span>{openHandsStatus.server_url}</span>
             <span>Workspace: {openHandsStatus.workspace_mode}</span>

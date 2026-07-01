@@ -32,6 +32,7 @@ Settings include:
 - `server_url`, defaulting to `http://127.0.0.1:8000`
 - masked `session_api_key`
 - `workspace_mode`, currently `local` or `ephemeral`
+- `allow_native_fallback`, defaulting to `false`
 
 The session key is stored only in the Rust server's in-memory settings or read
 from `OPENHANDS_SESSION_API_KEY` as a headless fallback. Settings responses
@@ -41,6 +42,13 @@ plaintext key.
 The Test OpenHands action performs a direct `GET /health` request with proxy
 bypass, so local OpenHands agent servers are not accidentally routed through a
 system proxy.
+
+When an `openhands` executor harness runs, Coder emits a public
+`backend.selected` event before execution. If OpenHands is not reachable, Coder
+emits `backend.blocked`. Native Rust fallback is only used when
+`allow_native_fallback` is explicitly enabled; otherwise the run remains
+blocked and the timeline shows `Executor backend: blocked - OpenHands not
+reachable`.
 
 ## Raw Events
 
@@ -81,6 +89,12 @@ OpenHands command-shaped events also emit command timeline events:
 OpenHands file or patch-shaped events emit `patch.applied` with a sanitized
 `files` list. The server timeline projector turns these into public
 `command_execution` and `file_change` items.
+
+Backend selection events are projected as public `executor_step` items:
+
+- `Executor backend: OpenHands`
+- `Executor backend: native fallback`
+- `Executor backend: blocked - OpenHands not reachable`
 
 ## Test Boundary
 

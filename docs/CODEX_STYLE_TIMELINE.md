@@ -67,11 +67,13 @@ must say when evidence is missing rather than fabricating checks or changes.
 Executor entries should reflect the public ReAct loop:
 
 ```text
-Reasoning summary -> action selected -> tool started/completed -> observation -> next step
+backend selected -> Reasoning summary -> action selected -> tool started/completed -> observation -> next step
 ```
 
 The public executor lifecycle event kinds are:
 
+- `backend.selected`
+- `backend.blocked`
 - `executor.reasoning_summary`
 - `executor.action_selected`
 - `tool.started`
@@ -88,5 +90,7 @@ the payload carries `workflow_id`, `node_id`, `agent_id`, `harness_id`,
 evidence refs when available.
 
 OpenHands remains the preferred backend for full coding-agent tool loops.
-Native Rust events are limited deterministic fallback for tests and local smoke
-checks.
+Native Rust events are limited deterministic fallback for tests, local smoke
+checks, or explicit user-enabled fallback. If OpenHands is unavailable and
+fallback is not enabled, the timeline must show `Executor backend: blocked -
+OpenHands not reachable` rather than silently switching runtimes.

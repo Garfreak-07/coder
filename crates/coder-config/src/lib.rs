@@ -73,6 +73,8 @@ pub struct HarnessSpec {
 pub struct OpenHandsHarnessConfig {
     pub server_url: String,
     pub session_api_key_env: Option<String>,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub session_api_key: Option<String>,
     pub workspace_mode: Option<String>,
     #[serde(default = "default_prefer_websocket")]
     pub prefer_websocket: bool,

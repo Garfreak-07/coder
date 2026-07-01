@@ -793,6 +793,8 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(panelSource.includes("custom"));
   assert.ok(panelSource.includes("Execution Backend / OpenHands"));
   assert.ok(panelSource.includes("OpenHands enabled"));
+  assert.ok(panelSource.includes("Allow native fallback when OpenHands is unavailable"));
+  assert.ok(panelSource.includes("native fallback allowed"));
   assert.ok(panelSource.includes("Session API key / token"));
   assert.ok(panelSource.includes("Workspace mode"));
   assert.ok(panelSource.includes("Test OpenHands"));
@@ -807,6 +809,8 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
   assert.ok(hookSource.includes("buildProviderSettingsPayload(providerForm, providerSettings)"));
   assert.ok(hookSource.includes("Saving provider ${provider} before test"));
   assert.ok(openHandsHookSource.includes("http://127.0.0.1:8000"));
+  assert.ok(openHandsHookSource.includes("allow_native_fallback: false"));
+  assert.ok(openHandsHookSource.includes("allow_native_fallback: form.allow_native_fallback"));
   assert.ok(openHandsHookSource.includes("session_api_key: null"));
   assert.ok(apiSource.includes("/api/v3/openhands/settings"));
   assert.ok(apiSource.includes("/api/v3/openhands/status"));

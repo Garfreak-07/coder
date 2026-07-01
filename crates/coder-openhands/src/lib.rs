@@ -11,6 +11,8 @@ use thiserror::Error;
 pub struct OpenHandsServerConfig {
     pub server_url: String,
     pub session_api_key_env: Option<String>,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub session_api_key: Option<String>,
     #[serde(default)]
     pub api_paths: OpenHandsApiPaths,
     #[serde(default)]
@@ -22,6 +24,7 @@ impl OpenHandsServerConfig {
         Self {
             server_url: server_url.into(),
             session_api_key_env,
+            session_api_key: None,
             api_paths: OpenHandsApiPaths::default(),
             run_start_strategy: OpenHandsRunStartStrategy::default(),
         }
@@ -31,6 +34,7 @@ impl OpenHandsServerConfig {
         Self {
             server_url: server_url.into(),
             session_api_key_env,
+            session_api_key: None,
             api_paths: OpenHandsApiPaths::legacy_sdk(),
             run_start_strategy: OpenHandsRunStartStrategy::PostRunEndpoint,
         }
@@ -401,9 +405,15 @@ impl OpenHandsClient {
 
     fn session_api_key(&self) -> Option<String> {
         self.config
-            .session_api_key_env
+            .session_api_key
             .as_deref()
-            .and_then(|name| env::var(name).ok())
+            .map(str::to_owned)
+            .or_else(|| {
+                self.config
+                    .session_api_key_env
+                    .as_deref()
+                    .and_then(|name| env::var(name).ok())
+            })
             .filter(|value| !value.trim().is_empty())
     }
 

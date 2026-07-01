@@ -20,6 +20,9 @@ use axum::{
 use coder_config::{
     validate_project_config, AgentSpec as ConfigAgentSpec, HarnessSpec as ConfigHarnessSpec,
     MemoryScope as ConfigMemoryScope, ModelSpec as ConfigModelSpec,
+    OpenHandsApiPaths as ConfigOpenHandsApiPaths,
+    OpenHandsHarnessConfig as ConfigOpenHandsHarnessConfig,
+    OpenHandsRunStartStrategy as ConfigOpenHandsRunStartStrategy,
     PermissionDecision as ConfigPermissionDecision, ProjectConfig, ValidationIssue,
     ValidationLevel, ValidationReport, WorkflowNodeSpec as ConfigWorkflowNodeSpec,
 };
@@ -994,7 +997,9 @@ async fn start_planner_chat_work(
         .clone()
         .unwrap_or_else(default_project_config);
     let provider_settings = state.provider_settings.lock().unwrap().clone();
+    let openhands_settings = state.openhands_settings.lock().unwrap().clone();
     apply_provider_settings_to_project_config(&mut config, &provider_settings);
+    apply_openhands_settings_to_project_config(&mut config, &openhands_settings);
     let runtime =
         resolve_planner_runtime(&config, &workflow_id, request.planner_agent_id.as_deref())?;
     let runtime_for_summary = runtime.clone();
@@ -1080,6 +1085,7 @@ async fn start_planner_chat_work(
     let mut options = WorkflowRunOptions::new(&workflow_id, &task);
     options.repo_root = PathBuf::from(&repo_root);
     options.plan_context = Some(plan_context);
+    options.allow_native_fallback_for_openhands = openhands_settings.allow_native_fallback;
     let runner = WorkflowRunner::new(config, state.store.clone());
     let mut output = runner.run(options).await?;
     maybe_polish_final_summary(
@@ -2187,13 +2193,16 @@ async fn run_workflow(
     Json(request): Json<MockRunRequest>,
 ) -> Result<Json<MockRunResponse>, ApiError> {
     let provider_settings = state.provider_settings.lock().unwrap().clone();
+    let openhands_settings = state.openhands_settings.lock().unwrap().clone();
     let mut config = request.config;
     apply_provider_settings_to_project_config(&mut config, &provider_settings);
+    apply_openhands_settings_to_project_config(&mut config, &openhands_settings);
     let mut options = WorkflowRunOptions::new(&request.workflow_id, &request.task);
     if let Some(repo_root) = &request.repo_root {
         options.repo_root = PathBuf::from(repo_root);
     }
     options.plan_context = request.plan_context.clone();
+    options.allow_native_fallback_for_openhands = openhands_settings.allow_native_fallback;
     let runner = WorkflowRunner::new(config, state.store);
     let output = runner.run(options).await?;
     Ok(Json(MockRunResponse {
@@ -3570,6 +3579,7 @@ pub struct OpenHandsSettings {
     pub enabled: bool,
     pub server_url: String,
     pub workspace_mode: String,
+    pub allow_native_fallback: bool,
     pub session_api_key: OpenHandsKeyState,
 }
 
@@ -3592,6 +3602,10 @@ impl Default for OpenHandsSettings {
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "local".to_owned()),
+            allow_native_fallback: env::var("OPENHANDS_ALLOW_NATIVE_FALLBACK")
+                .ok()
+                .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+                .unwrap_or(false),
             session_api_key: OpenHandsKeyState {
                 configured: env_token_configured,
                 source: if env_token_configured { "env" } else { "none" }.to_owned(),
@@ -3606,6 +3620,7 @@ pub struct OpenHandsSettingsPatch {
     pub enabled: Option<bool>,
     pub server_url: Option<String>,
     pub workspace_mode: Option<String>,
+    pub allow_native_fallback: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_value")]
     pub session_api_key: Option<Value>,
 }
@@ -3625,6 +3640,7 @@ pub struct OpenHandsSettingsSaveResponse {
 pub struct OpenHandsStatus {
     pub enabled: bool,
     pub configured: bool,
+    pub allow_native_fallback: bool,
     pub status: String,
     pub server_url: String,
     pub workspace_mode: String,
@@ -4370,6 +4386,19 @@ fn project_timeline_items(
                     created_at,
                 }));
             }
+            "backend.selected" | "backend.blocked" => {
+                items.push(TimelineItem::ExecutorStep(ExecutorStepItem {
+                    id: timeline_id(event, "backend"),
+                    agent_id: payload_string(&event.payload, "agent_id")
+                        .unwrap_or_else(|| "executor".to_owned()),
+                    title: backend_timeline_title(&event.kind, &event.payload),
+                    status: timeline_status(event),
+                    summary: payload_string(&event.payload, "summary")
+                        .or_else(|| payload_string(&event.payload, "reason"))
+                        .map(|value| public_preview(&value, 500)),
+                    created_at,
+                }));
+            }
             "observation.recorded" => {
                 let summary = payload_string(&event.payload, "summary")
                     .unwrap_or_else(|| "Observation recorded.".to_owned());
@@ -4912,6 +4941,31 @@ fn executor_event_summary(payload: &Value) -> Option<String> {
         .or_else(|| payload_string(payload, "based_on_observation"))
 }
 
+fn backend_timeline_title(kind: &str, payload: &Value) -> String {
+    let backend = payload_string(payload, "backend").unwrap_or_else(|| "backend".to_owned());
+    if kind == "backend.blocked" && backend == "openhands" {
+        return "Executor backend: blocked - OpenHands not reachable".to_owned();
+    }
+    if backend == "native-rust"
+        && payload_string(payload, "fallback_for").as_deref() == Some("openhands")
+    {
+        return "Executor backend: native fallback".to_owned();
+    }
+    format!(
+        "Executor backend: {}",
+        timeline_backend_display_name(&backend)
+    )
+}
+
+fn timeline_backend_display_name(backend: &str) -> &'static str {
+    match backend {
+        "openhands" => "OpenHands",
+        "native-rust" | "native_mock" | "mock" => "native fallback",
+        "planner-model" => "Planner",
+        _ => "unknown",
+    }
+}
+
 fn status_from_event_kind(kind: &str) -> String {
     if kind.ends_with(".failed") || kind == "run.failed" {
         "failed".to_owned()
@@ -5053,6 +5107,9 @@ fn apply_openhands_settings_patch(settings: &mut OpenHandsSettings, patch: OpenH
     if let Some(enabled) = patch.enabled {
         settings.enabled = enabled;
     }
+    if let Some(allow_native_fallback) = patch.allow_native_fallback {
+        settings.allow_native_fallback = allow_native_fallback;
+    }
     if let Some(server_url) = patch.server_url {
         let server_url = server_url.trim();
         if !server_url.is_empty() {
@@ -5081,12 +5138,63 @@ fn apply_openhands_settings_patch(settings: &mut OpenHandsSettings, patch: OpenH
     }
 }
 
+fn apply_openhands_settings_to_project_config(
+    config: &mut ProjectConfig,
+    settings: &OpenHandsSettings,
+) {
+    if !settings.enabled {
+        return;
+    }
+    let (_, _, token) = openhands_credential(settings);
+    for harness in config.harnesses.values_mut() {
+        if harness.backend != "openhands" {
+            continue;
+        }
+        let openhands = harness
+            .openhands
+            .get_or_insert_with(|| openhands_harness_config_from_settings(settings));
+        openhands.server_url = settings.server_url.trim_end_matches('/').to_owned();
+        openhands.workspace_mode = Some(settings.workspace_mode.clone());
+        openhands.session_api_key = token.clone();
+    }
+}
+
+fn openhands_harness_config_from_settings(
+    settings: &OpenHandsSettings,
+) -> ConfigOpenHandsHarnessConfig {
+    ConfigOpenHandsHarnessConfig {
+        server_url: settings.server_url.trim_end_matches('/').to_owned(),
+        session_api_key_env: None,
+        session_api_key: None,
+        workspace_mode: Some(settings.workspace_mode.clone()),
+        prefer_websocket: true,
+        poll_interval_ms: 1000,
+        max_event_poll_seconds: 300,
+        max_events: 1000,
+        terminal_event_kinds: vec![
+            "completed".to_owned(),
+            "done".to_owned(),
+            "finished".to_owned(),
+            "failed".to_owned(),
+            "error".to_owned(),
+            "cancelled".to_owned(),
+            "canceled".to_owned(),
+            "run.completed".to_owned(),
+            "run.failed".to_owned(),
+            "run.cancelled".to_owned(),
+        ],
+        api_paths: ConfigOpenHandsApiPaths::default(),
+        run_start_strategy: ConfigOpenHandsRunStartStrategy::default(),
+    }
+}
+
 async fn openhands_status_for_settings(settings: &OpenHandsSettings) -> OpenHandsStatus {
     let (credential_configured, credential_source, token) = openhands_credential(settings);
     let server_url = sanitize_provider_endpoint(&settings.server_url);
     let base_status = |status: &str, configured: bool, detail: String| OpenHandsStatus {
         enabled: settings.enabled,
         configured,
+        allow_native_fallback: settings.allow_native_fallback,
         status: status.to_owned(),
         server_url: server_url.clone(),
         workspace_mode: settings.workspace_mode.clone(),
@@ -5174,6 +5282,7 @@ async fn openhands_status_for_settings(settings: &OpenHandsSettings) -> OpenHand
     OpenHandsStatus {
         enabled: settings.enabled,
         configured: true,
+        allow_native_fallback: settings.allow_native_fallback,
         status: "connected".to_owned(),
         server_url,
         workspace_mode: settings.workspace_mode.clone(),
@@ -8236,10 +8345,12 @@ mod tests {
         let previous_server_url = env::var_os("OPENHANDS_AGENT_SERVER_URL");
         let previous_enabled = env::var_os("OPENHANDS_ENABLED");
         let previous_workspace_mode = env::var_os("OPENHANDS_WORKSPACE_MODE");
+        let previous_allow_fallback = env::var_os("OPENHANDS_ALLOW_NATIVE_FALLBACK");
         env::remove_var("OPENHANDS_SESSION_API_KEY");
         env::remove_var("OPENHANDS_AGENT_SERVER_URL");
         env::remove_var("OPENHANDS_ENABLED");
         env::remove_var("OPENHANDS_WORKSPACE_MODE");
+        env::remove_var("OPENHANDS_ALLOW_NATIVE_FALLBACK");
 
         async fn health(headers: axum::http::HeaderMap) -> impl IntoResponse {
             let authorized = headers
@@ -8295,6 +8406,7 @@ mod tests {
             initial_body["settings"]["session_api_key"]["configured"],
             false
         );
+        assert_eq!(initial_body["settings"]["allow_native_fallback"], false);
 
         let save = post_json(
             app.clone(),
@@ -8303,6 +8415,7 @@ mod tests {
                 "enabled": true,
                 "server_url": server_url,
                 "workspace_mode": "local",
+                "allow_native_fallback": true,
                 "session_api_key": "session-secret"
             }),
         )
@@ -8310,12 +8423,14 @@ mod tests {
         assert_eq!(save.status(), StatusCode::OK);
         let save_body = response_json(save).await;
         assert_eq!(save_body["settings"]["enabled"], true);
+        assert_eq!(save_body["settings"]["allow_native_fallback"], true);
         assert_eq!(save_body["settings"]["session_api_key"]["configured"], true);
         assert_eq!(
             save_body["settings"]["session_api_key"]["source"],
             "settings"
         );
         assert_eq!(save_body["status"]["status"], "connected");
+        assert_eq!(save_body["status"]["allow_native_fallback"], true);
         assert_eq!(save_body["status"]["version"], "test-openhands");
         assert_eq!(save_body["status"]["capabilities"][0], "conversations");
         assert!(!save_body.to_string().contains("session-secret"));
@@ -8351,6 +8466,7 @@ mod tests {
         restore_env_var("OPENHANDS_AGENT_SERVER_URL", previous_server_url);
         restore_env_var("OPENHANDS_ENABLED", previous_enabled);
         restore_env_var("OPENHANDS_WORKSPACE_MODE", previous_workspace_mode);
+        restore_env_var("OPENHANDS_ALLOW_NATIVE_FALLBACK", previous_allow_fallback);
     }
 
     #[test]
@@ -9648,6 +9764,39 @@ diff --git a/tracked.txt b/tracked.txt
                 &coder_events::CoderEvent::new(
                     run_id.clone(),
                     2,
+                    "backend.selected",
+                    json!({"agent_id": "executor", "backend": "openhands", "status": "selected", "summary": "Executor backend: OpenHands"}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    3,
+                    "backend.blocked",
+                    json!({"agent_id": "executor", "backend": "openhands", "status": "blocked", "summary": "Executor backend: blocked - OpenHands not reachable"}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    4,
+                    "backend.selected",
+                    json!({"agent_id": "executor", "backend": "native-rust", "fallback_for": "openhands", "status": "selected", "summary": "Executor backend: native fallback"}),
+                ),
+            )
+            .unwrap();
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    5,
                     "command.completed",
                     json!({"command": "cargo test", "returncode": 0, "output": "ok"}),
                 ),
@@ -9658,7 +9807,7 @@ diff --git a/tracked.txt b/tracked.txt
                 &run_id,
                 &coder_events::CoderEvent::new(
                     run_id.clone(),
-                    3,
+                    6,
                     "patch.applied",
                     json!({"files": [{"new_path": "README.md", "status": "modified"}]}),
                 ),
@@ -9669,7 +9818,7 @@ diff --git a/tracked.txt b/tracked.txt
                 &run_id,
                 &coder_events::CoderEvent::new(
                     run_id.clone(),
-                    4,
+                    7,
                     "executor.reasoning_summary",
                     json!({"agent_id": "executor", "summary": "Need inspect repo state."}),
                 ),
@@ -9680,7 +9829,7 @@ diff --git a/tracked.txt b/tracked.txt
                 &run_id,
                 &coder_events::CoderEvent::new(
                     run_id.clone(),
-                    5,
+                    8,
                     "executor.action_selected",
                     json!({"agent_id": "executor", "tool_name": "repo_find_files", "status": "selected"}),
                 ),
@@ -9691,7 +9840,7 @@ diff --git a/tracked.txt b/tracked.txt
                 &run_id,
                 &coder_events::CoderEvent::new(
                     run_id.clone(),
-                    6,
+                    9,
                     "tool.completed",
                     json!({"agent_id": "executor", "tool_name": "repo_find_files", "status": "completed", "summary": "Found README.md"}),
                 ),
@@ -9702,7 +9851,7 @@ diff --git a/tracked.txt b/tracked.txt
                 &run_id,
                 &coder_events::CoderEvent::new(
                     run_id.clone(),
-                    7,
+                    10,
                     "observation.recorded",
                     json!({"agent_id": "executor", "tool_name": "repo_find_files", "summary": "Found README.md"}),
                 ),
@@ -9713,7 +9862,7 @@ diff --git a/tracked.txt b/tracked.txt
                 &run_id,
                 &coder_events::CoderEvent::new(
                     run_id.clone(),
-                    8,
+                    11,
                     "backend.openhands.ActionEvent",
                     json!({"raw": {"api_key": "raw-secret-value"}, "raw_ref": "blob://sha256/raw"}),
                 ),
@@ -9741,6 +9890,16 @@ diff --git a/tracked.txt b/tracked.txt
         let body = response_json(response).await;
         let items = body["items"].as_array().unwrap();
         assert!(items.iter().any(|item| item["type"] == "reasoning_summary"));
+        assert!(items.iter().any(|item| {
+            item["type"] == "executor_step" && item["title"] == "Executor backend: OpenHands"
+        }));
+        assert!(items.iter().any(|item| {
+            item["type"] == "executor_step"
+                && item["title"] == "Executor backend: blocked - OpenHands not reachable"
+        }));
+        assert!(items.iter().any(|item| {
+            item["type"] == "executor_step" && item["title"] == "Executor backend: native fallback"
+        }));
         assert!(items
             .iter()
             .any(|item| item["type"] == "executor_step" && item["title"] == "Action selected"));
