@@ -244,6 +244,7 @@ test("run summary recognizes backend approval request events", () => {
 
 test("Planner Chat page uses Start Work timeline and hides legacy draft controls", () => {
   const source = readFileSync("src/features/planner-chat/PlannerChatPage.tsx", "utf8");
+  const css = readFileSync("src/styles.css", "utf8");
   const legacyDraftLabel = ["Draft", "Plan"].join(" ");
   const legacyDraftLowerLabel = ["Draft", "plan"].join(" ");
 
@@ -257,6 +258,10 @@ test("Planner Chat page uses Start Work timeline and hides legacy draft controls
   assert.ok(!source.includes(legacyDraftLabel));
   assert.ok(!source.includes("Discuss"));
   assert.ok(!source.includes("plannerInteractionMode"));
+  assert.ok(!css.includes("message-status"));
+  assert.ok(!css.includes("planner-state-card"));
+  assert.ok(!css.includes("planner-state-strip"));
+  assert.ok(!css.includes("memory-proposal-list"));
   const appSource = readFileSync("src/App.tsx", "utf8");
   assert.ok(!appSource.includes(["start", "if", "ready"].join("_")));
   assert.ok(!appSource.includes(["interaction_mode:", '"discuss"'].join(" ")));
