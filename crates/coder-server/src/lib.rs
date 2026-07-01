@@ -9146,6 +9146,36 @@ diff --git a/tracked.txt b/tracked.txt
     }
 
     #[tokio::test]
+    async fn timeline_endpoint_returns_empty_items_for_empty_run() {
+        let root = temp_root();
+        let store = RunStore::new(&root);
+        let run_id = RunId::from_string("run-empty");
+        let state = RunState::new(run_id.clone(), coder_core::WorkflowId::new("workflow"));
+        store.write_metadata(&state).unwrap();
+        let app = router(ApiState::new(store));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-empty/timeline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let object = body.as_object().unwrap();
+        assert_eq!(object.len(), 2);
+        assert_eq!(body["run_id"], "run-empty");
+        assert_eq!(body["items"].as_array().unwrap().len(), 0);
+        assert!(body.get("events").is_none());
+        assert!(body.get("timeline").is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn timeline_projects_public_items_without_raw_payloads() {
         let root = temp_root();
         let store = RunStore::new(&root);
@@ -9362,6 +9392,109 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(!events_text.contains(secret));
         assert!(events_text.contains("[REDACTED]"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn changes_endpoint_returns_empty_changes_for_no_change_run() {
+        let repo = temp_root();
+        let store_root = temp_root();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("tracked.txt"), "base\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "coder@example.test"]);
+        run_git(&repo, &["config", "user.name", "Coder Test"]);
+        run_git(&repo, &["add", "tracked.txt"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+
+        let store = RunStore::new(&store_root);
+        let run_id = RunId::from_string("run-clean");
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "run.started",
+                    json!({"repo_root": repo.display().to_string(), "task": "inspect only"}),
+                ),
+            )
+            .unwrap();
+        store
+            .write_report(&run_id, &FinalReport::completed("No changes"))
+            .unwrap();
+        let app = router(ApiState::new(store));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-clean/changes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        let object = body.as_object().unwrap();
+        assert_eq!(object.len(), 2);
+        assert_eq!(body["run_id"], "run-clean");
+        assert_eq!(body["changes"].as_array().unwrap().len(), 0);
+        assert!(body.get("change_sets").is_none());
+        assert!(body.get("items").is_none());
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn timeline_and_changes_missing_runs_return_structured_errors() {
+        let app = test_router();
+        let missing_timeline = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/missing-run/timeline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let missing_changes = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/missing-run/changes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let malformed_timeline = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/bad*run/timeline")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(missing_timeline.status(), StatusCode::NOT_FOUND);
+        assert_eq!(missing_changes.status(), StatusCode::NOT_FOUND);
+        assert_eq!(malformed_timeline.status(), StatusCode::BAD_REQUEST);
+
+        let missing_timeline_body = response_json(missing_timeline).await;
+        let missing_changes_body = response_json(missing_changes).await;
+        let malformed_timeline_body = response_json(malformed_timeline).await;
+        assert!(missing_timeline_body["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing-run"));
+        assert!(missing_changes_body["error"]
+            .as_str()
+            .unwrap()
+            .contains("missing-run"));
+        assert!(malformed_timeline_body["error"].is_string());
     }
 
     #[tokio::test]

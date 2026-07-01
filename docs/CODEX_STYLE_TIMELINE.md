@@ -6,6 +6,19 @@ Coder projects run events through:
 GET /api/v3/runs/{run_id}/timeline
 ```
 
+The endpoint contract is:
+
+```json
+{
+  "run_id": "run-id",
+  "items": []
+}
+```
+
+`items` is always an array. Empty or just-created runs return an empty array,
+not `null`, and normal responses do not include alternate field names such as
+`timeline`, raw event envelopes, or backend payload JSON.
+
 The response contains stable public items:
 
 - `planner_message`

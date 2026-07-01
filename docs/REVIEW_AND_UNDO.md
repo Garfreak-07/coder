@@ -9,6 +9,19 @@ POST /api/v3/runs/{run_id}/changes/{change_set_id}/accept
 POST /api/v3/runs/{run_id}/changes/{change_set_id}/undo
 ```
 
+The list endpoint contract is:
+
+```json
+{
+  "run_id": "run-id",
+  "changes": []
+}
+```
+
+`changes` is always an array. Runs with no reviewable diff return an empty
+array, not `null`, and normal responses do not include alternate names such as
+`change_sets` or raw backend payload JSON.
+
 The current baseline builds a conservative changeset from the run's repo root,
 final report, and current git diff. Opening the review records that diff in a
 run artifact. Review Changes is hidden when a run has no actual changes.
