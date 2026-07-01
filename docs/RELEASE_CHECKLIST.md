@@ -132,7 +132,9 @@ $env:OPENHANDS_AGENT_SERVER_URL="http://127.0.0.1:8000"
 powershell -ExecutionPolicy Bypass -File .\scripts\live-openhands-smoke.ps1 -SkipIfMissingOpenHands
 ```
 
-Expected live result when an OpenHands Agent Server is available: raw OpenHands
-events are stored, public ReAct events are projected, final report preview is
-readable, and Review Changes is checked when files change. A skipped result is
-not a live pass.
+Expected live result when an OpenHands Agent Server is available:
+`backend_selected >= 1`, `timeline_backend_items >= 1`,
+`timeline_react_items >= 1`, `result_doc_changed >= 1`,
+`review_changes >= 1`, raw OpenHands events are stored, final report preview is
+readable, Undo succeeds or safely reports conflict/unsupported, and
+`secrets_check: passed`. A skipped result is not a live pass.

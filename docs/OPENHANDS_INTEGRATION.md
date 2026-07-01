@@ -119,10 +119,17 @@ The smoke creates a temporary git repository under `.tmp/`, runs a
 documentation-only task through the configured `openhands` harness, and checks:
 
 - OpenHands server health
+- `backend.selected` recorded with `backend=openhands`
+- `docs/OPENHANDS_LIVE_SMOKE_RESULT.md` updated in the temporary repo
+- timeline API includes `Executor backend: OpenHands`
 - public ReAct timeline events such as executor, tool, command, or patch events
 - raw OpenHands event refs in the run store
-- final report summary
-- Review Changes when the temporary repository has file changes
+- final report preview and summary
+- Review Changes includes the OpenHands result-doc change
+- Undo succeeds or safely reports a supported conflict/unsupported state for that
+  change
+- no configured API key appears in events, reports, timeline, or changes output
 
-If the live run changes no files, Review Changes is not required. CI must keep
-using fake adapter tests and must not require this live smoke.
+The current live smoke intentionally requires a documentation-only file edit so
+Review Changes and Undo are exercised. CI must keep using fake adapter tests and
+must not require this live smoke.

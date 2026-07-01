@@ -42,7 +42,7 @@ commits after that run had not yet been pushed when this file was written.
 | Live test | Result | Notes |
 | --- | --- | --- |
 | DeepSeek live smoke | Passed | Ran with `.local-env.ps1`, `DEEPSEEK_API_KEY`, and proxy `http://127.0.0.1:7890`. Result: `status: ok`, provider `deepseek`, model `deepseek-v4-flash`, provider test `live`, 4 Planner turns, Start Work returned `needs_clarification` without starting a run. |
-| OpenHands live smoke | Skipped | `scripts/live-openhands-smoke.ps1 -SkipIfMissingOpenHands` returned `status: skipped` because `OPENHANDS_LIVE_SMOKE=1` was not set. This is not a live OpenHands pass. |
+| OpenHands live smoke | Skipped | `scripts/live-openhands-smoke.ps1 -SkipIfMissingOpenHands` returned `status: skipped` because `OPENHANDS_LIVE_SMOKE=1` was not set. This is not a live OpenHands pass. The opt-in script now requires `backend.selected=openhands`, timeline backend/ReAct items, result-doc modification, final report preview, Review Changes/Undo, and `secrets_check: passed`. |
 
 ## npm Audit Note
 

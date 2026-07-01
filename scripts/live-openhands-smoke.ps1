@@ -116,12 +116,20 @@ Set-Content -LiteralPath (Join-Path $repoPath "README.md") -Value @(
   "This temporary repository is used by Coder's opt-in live OpenHands smoke."
   "The task is documentation-only and must not commit or push."
 ) -Encoding UTF8
+$docsPath = Join-Path $repoPath "docs"
+New-Item -ItemType Directory -Force -Path $docsPath | Out-Null
+$resultDocPath = Join-Path $docsPath "OPENHANDS_LIVE_SMOKE_RESULT.md"
+Set-Content -LiteralPath $resultDocPath -Value @(
+  "# OpenHands Live Smoke Result"
+  ""
+  "Initial fixture. The live OpenHands smoke must update this file."
+) -Encoding UTF8
 
 $git = (Get-Command git).Source
 Invoke-Native -FilePath $git -Arguments @("-C", $repoPath, "init")
 Invoke-Native -FilePath $git -Arguments @("-C", $repoPath, "config", "user.email", "coder-smoke@example.invalid")
 Invoke-Native -FilePath $git -Arguments @("-C", $repoPath, "config", "user.name", "Coder Smoke")
-Invoke-Native -FilePath $git -Arguments @("-C", $repoPath, "add", "README.md")
+Invoke-Native -FilePath $git -Arguments @("-C", $repoPath, "add", "README.md", "docs/OPENHANDS_LIVE_SMOKE_RESULT.md")
 Invoke-Native -FilePath $git -Arguments @("-C", $repoPath, "commit", "-m", "initial smoke fixture")
 
 $sessionLine = if ([string]::IsNullOrWhiteSpace($SessionApiKeyEnv)) {
@@ -243,7 +251,7 @@ if ($LASTEXITCODE -ne 0) {
   throw "OpenHands doctor failed for the configured server."
 }
 
-$task = "Live OpenHands smoke: inspect README.md in repo root '$repoPath'. If a small documentation-only edit is necessary, make it in README.md only. Do not commit, push, or publish. Return a concise final summary with evidence."
+$task = "Live OpenHands smoke: update docs/OPENHANDS_LIVE_SMOKE_RESULT.md in repo root '$repoPath' with a short dated smoke result. Keep the task documentation-only. Run the harmless verification command 'git status --short'. Do not commit, push, or publish. Return a concise final summary with evidence."
 $runArgs = @(
   "run", "-p", "coder-cli", "--bin", "coder-rust", "--",
   "workflow", "run",
@@ -303,41 +311,183 @@ if ([string]::IsNullOrWhiteSpace($report.summary)) {
   throw "Final report did not include a summary."
 }
 
+if (-not (Test-Path -LiteralPath $resultDocPath)) {
+  throw "OpenHands did not leave docs/OPENHANDS_LIVE_SMOKE_RESULT.md in the temporary repo."
+}
 $changed = @(git -C $repoPath status --porcelain)
-$reviewChangesCount = 0
-if ($changed.Count -gt 0) {
-  $outLog = Join-Path $workRootPath "server.out.log"
-  $errLog = Join-Path $workRootPath "server.err.log"
-  $server = Start-Process -FilePath $cargo `
-    -ArgumentList @("run", "-p", "coder-cli", "--bin", "coder-rust", "--", "server", "--host", $HostName, "--port", "$Port", "--store", $storePath) `
-    -WorkingDirectory $repoRoot `
-    -RedirectStandardOutput $outLog `
-    -RedirectStandardError $errLog `
-    -WindowStyle Hidden `
-    -PassThru
+$resultDocChanged = @($changed | Where-Object {
+  $_ -match "docs/OPENHANDS_LIVE_SMOKE_RESULT\.md$"
+})
+if ($resultDocChanged.Count -lt 1) {
+  throw "OpenHands did not update docs/OPENHANDS_LIVE_SMOKE_RESULT.md."
+}
+
+$backendSelected = @($events | Where-Object {
+  $_.kind -eq "backend.selected" -and $_.payload.backend -eq "openhands"
+})
+if ($backendSelected.Count -lt 1) {
+  throw "OpenHands run did not record backend.selected with backend=openhands."
+}
+$runStarted = @($events | Where-Object { $_.kind -eq "run.started" })
+if ($runStarted.Count -lt 1) {
+  throw "OpenHands run did not record run.started."
+}
+
+function Get-HttpErrorStatus {
+  param([object]$ErrorRecord)
+  $response = $ErrorRecord.Exception.Response
+  if ($null -eq $response) {
+    return $null
+  }
   try {
-    $base = "http://${HostName}:${Port}"
-    $health = $null
-    foreach ($attempt in 1..90) {
-      try {
-        $health = Invoke-RestMethod -Method Get -Uri "$base/api/v3/health"
-        break
-      } catch {
-        Start-Sleep -Milliseconds 500
-      }
+    return [int]$response.StatusCode
+  } catch {
+    try {
+      return [int]$response.StatusCode.value__
+    } catch {
+      return $null
     }
-    if ($null -eq $health -or $health.status -ne "ok") {
-      throw "Rust v3 health check failed while checking Review Changes. See $errLog"
+  }
+}
+
+function Get-HttpErrorText {
+  param([object]$ErrorRecord)
+  $response = $ErrorRecord.Exception.Response
+  if ($null -eq $response) {
+    return $ErrorRecord.Exception.Message
+  }
+  try {
+    $stream = $response.GetResponseStream()
+    if ($null -ne $stream) {
+      $reader = [System.IO.StreamReader]::new($stream)
+      return $reader.ReadToEnd()
     }
-    $review = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$runId/changes"
-    $reviewChangesCount = @($review.changes).Count
-    if ($reviewChangesCount -lt 1) {
-      throw "Files changed, but Review Changes returned no changes."
+  } catch {
+  }
+  return $ErrorRecord.Exception.Message
+}
+
+function Assert-NoSecretLeak {
+  param(
+    [string]$Text,
+    [string[]]$SecretNames
+  )
+  $seen = @{}
+  foreach ($name in $SecretNames) {
+    if ([string]::IsNullOrWhiteSpace($name)) {
+      continue
     }
-  } finally {
-    if ($server -and -not $server.HasExited) {
-      Stop-Process -Id $server.Id -Force
+    $value = [Environment]::GetEnvironmentVariable($name, "Process")
+    if ([string]::IsNullOrWhiteSpace($value) -or $value.Length -lt 8) {
+      continue
     }
+    if ($seen.ContainsKey($value)) {
+      continue
+    }
+    $seen[$value] = $true
+    if ($Text.Contains($value)) {
+      throw "Secret value from $name appeared in live smoke artifacts."
+    }
+  }
+}
+
+$reviewChangesCount = 0
+$undoStatus = "not_run"
+$timelineItemCount = 0
+$timelineBackendCount = 0
+$timelineReactCount = 0
+$reportPreviewStatus = ""
+$outLog = Join-Path $workRootPath "server.out.log"
+$errLog = Join-Path $workRootPath "server.err.log"
+$server = Start-Process -FilePath $cargo `
+  -ArgumentList @("run", "-p", "coder-cli", "--bin", "coder-rust", "--", "server", "--host", $HostName, "--port", "$Port", "--store", $storePath) `
+  -WorkingDirectory $repoRoot `
+  -RedirectStandardOutput $outLog `
+  -RedirectStandardError $errLog `
+  -WindowStyle Hidden `
+  -PassThru
+try {
+  $base = "http://${HostName}:${Port}"
+  $health = $null
+  foreach ($attempt in 1..90) {
+    try {
+      $health = Invoke-RestMethod -Method Get -Uri "$base/api/v3/health"
+      break
+    } catch {
+      Start-Sleep -Milliseconds 500
+    }
+  }
+  if ($null -eq $health -or $health.status -ne "ok") {
+    throw "Rust v3 health check failed while checking timeline and Review Changes. See $errLog"
+  }
+
+  $timeline = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$runId/timeline"
+  $timelineItems = @($timeline.items)
+  $timelineItemCount = $timelineItems.Count
+  if ($timelineItemCount -lt 1) {
+    throw "Run timeline was empty."
+  }
+  $timelineBackendCount = @($timelineItems | Where-Object {
+    $_.type -eq "executor_step" -and $_.title -eq "Executor backend: OpenHands"
+  }).Count
+  if ($timelineBackendCount -lt 1) {
+    throw "Run timeline did not show Executor backend: OpenHands."
+  }
+  $timelineReactCount = @($timelineItems | Where-Object {
+    $_.type -in @("reasoning_summary", "tool_call", "command_execution", "file_change", "verification") -or
+      ($_.type -eq "executor_step" -and $_.title -match "Action selected|Observation recorded|Next step|Executor completed|Executor blocked|Executor failed")
+  }).Count
+  if ($timelineReactCount -lt 1) {
+    throw "Run timeline did not include public ReAct items."
+  }
+
+  $reportPreview = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$runId/report/preview"
+  $reportPreviewStatus = $reportPreview.report.status
+  if ([string]::IsNullOrWhiteSpace($reportPreview.report.summary)) {
+    throw "Report preview did not include a readable summary."
+  }
+
+  $review = Invoke-RestMethod -Method Get -Uri "$base/api/v3/runs/$runId/changes"
+  $reviewChanges = @($review.changes)
+  $reviewChangesCount = $reviewChanges.Count
+  if ($reviewChangesCount -lt 1) {
+    throw "OpenHands updated the result doc, but Review Changes returned no changes."
+  }
+  $changeSetId = $reviewChanges[0].change_set_id
+  try {
+    $undo = Invoke-RestMethod -Method Post -Uri "$base/api/v3/runs/$runId/changes/$changeSetId/undo"
+    $undoStatus = $undo.status
+    if ($undoStatus -ne "undone") {
+      throw "Undo returned unexpected status: $undoStatus"
+    }
+  } catch {
+    $statusCode = Get-HttpErrorStatus -ErrorRecord $_
+    $errorText = Get-HttpErrorText -ErrorRecord $_
+    if ($statusCode -in @(400, 409) -and $errorText -match "conflict|unsupported|refus") {
+      $undoStatus = "safe_${statusCode}"
+    } else {
+      throw
+    }
+  }
+
+  $artifactText = @(
+    Get-Content -LiteralPath $eventsPath -Raw
+    Get-Content -LiteralPath $reportPath -Raw
+    ($timeline | ConvertTo-Json -Depth 20)
+    ($reportPreview | ConvertTo-Json -Depth 20)
+    ($review | ConvertTo-Json -Depth 20)
+  ) -join "`n"
+  Assert-NoSecretLeak -Text $artifactText -SecretNames @(
+    $SessionApiKeyEnv,
+    "OPENHANDS_SESSION_API_KEY",
+    "SESSION_API_KEY",
+    "LLM_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENAI_API_KEY"
+  )
+} finally {
+  if ($server -and -not $server.HasExited) {
+    Stop-Process -Id $server.Id -Force
   }
 }
 
@@ -347,11 +497,20 @@ if ($changed.Count -gt 0) {
   api_profile = $ApiProfile
   run_id = $runId
   events = $events.Count
+  backend_selected = $backendSelected.Count
+  timeline_items = $timelineItemCount
+  timeline_backend_items = $timelineBackendCount
+  timeline_react_items = $timelineReactCount
   react_events = $reactEvents.Count
   raw_openhands_events = $rawOpenHandsEvents.Count
+  report_preview_status = $reportPreviewStatus
   final_summary = $report.summary
   files_changed = $changed.Count
+  result_doc_changed = $resultDocChanged.Count
   review_changes = $reviewChangesCount
+  undo_status = $undoStatus
+  secrets_check = "passed"
+  result_doc = $resultDocPath
   repo = $repoPath
   store = $storePath
 } | ConvertTo-Json -Depth 10
