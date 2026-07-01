@@ -5849,7 +5849,8 @@ fn model_provider_config_error(
     None
 }
 
-const PLANNER_MODEL_CONFIG_ERROR: &str = "Planner model provider is not configured. Configure Provider Settings, or set LLM_BASE_URL and LLM_API_KEY for developer/headless fallback.";
+const PLANNER_MODEL_CONFIG_ERROR: &str =
+    "Configure a provider in Settings before I can plan or execute work.";
 
 fn planner_model_config_error() -> String {
     PLANNER_MODEL_CONFIG_ERROR.to_owned()
@@ -5894,10 +5895,13 @@ impl PlannerConversationEngine for ModelPlannerConversationEngine {
 
 fn planner_provider_setup_required_response(message: String) -> PlannerConversationResponse {
     PlannerConversationResponse {
-        assistant_message: format!("{message} Open Settings and save a provider API key, then send the Planner message again."),
+        assistant_message: message,
         plan_draft: None,
         readiness: PlannerReadiness::Blocked,
-        open_questions: vec!["Configure a provider API key in Settings.".to_owned()],
+        open_questions: vec![
+            "Open Settings, save a provider API key, then send the Planner message again."
+                .to_owned(),
+        ],
         acceptance_criteria: Vec::new(),
         risks: Vec::new(),
         suggested_mode: "discuss".to_owned(),
@@ -7122,7 +7126,7 @@ mod tests {
         assert!(body["assistant_message"]
             .as_str()
             .unwrap()
-            .contains("Planner model provider is not configured"));
+            .contains("Configure a provider in Settings before I can plan or execute work."));
         assert_eq!(body["readiness"], "blocked");
         assert_eq!(body["ready"], false);
         assert_eq!(body["execution_allowed"], false);
@@ -9571,7 +9575,7 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(body["assistant_message"]
             .as_str()
             .unwrap()
-            .contains("Planner model provider is not configured"));
+            .contains("Configure a provider in Settings before I can plan or execute work."));
         assert_eq!(body["session"]["readiness"], "blocked");
         assert!(store.list_run_summaries().unwrap().is_empty());
         let _ = fs::remove_dir_all(root);

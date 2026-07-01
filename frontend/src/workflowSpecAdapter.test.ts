@@ -789,13 +789,15 @@ test("Provider Settings exposes DeepSeek preset and exact test result UI", () =>
 test("Planner Chat shows provider setup before chat when credentials are missing", () => {
   const tree = renderPlannerChat(null, {
     providerSetupRequired: true,
-    providerSetupMessage: "Configure an API key for openai-compatible."
+    providerSetupMessage: "Configure a provider in Settings before I can plan or execute work."
   });
   const text = collectReactTreeText(tree);
+  const composer = findElementByPlaceholder(tree, "Message the Planner...");
 
   assert.ok(text.includes("Provider setup required"));
-  assert.ok(text.includes("Configure an API key for openai-compatible."));
+  assert.ok(text.includes("Configure a provider in Settings before I can plan or execute work."));
   assert.ok(text.includes("Open Settings"));
+  assert.equal(Boolean(composer?.props?.disabled), true);
 });
 
 function renderPlannerChat(

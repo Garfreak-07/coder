@@ -774,7 +774,7 @@ export function App() {
     providerStatus?.default_status.provider !== "ollama" &&
     !providerStatus?.default_status.credential_configured;
   const providerSetupMessage = providerStatus
-    ? `Configure an API key for ${providerStatus.default_provider} (${providerStatus.default_model}) before using live Planner Chat.`
+    ? `Configure a provider in Settings before I can plan or execute work. Current provider: ${providerStatus.default_provider} (${providerStatus.default_model}).`
     : "Provider settings are still loading.";
   const debugEvidence = debugUiEnabled ? (
     <div className="chat-evidence-stack">

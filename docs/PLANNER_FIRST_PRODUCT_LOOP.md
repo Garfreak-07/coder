@@ -57,8 +57,7 @@ deterministic engine is only used in mock/test mode. In product mode, missing
 model provider configuration returns:
 
 ```text
-Planner model provider is not configured.
-Set LLM_BASE_URL and LLM_API_KEY or configure provider settings.
+Configure a provider in Settings before I can plan or execute work.
 ```
 
 PlanDraft includes `memory_proposals`. These are not writes. Durable project

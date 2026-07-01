@@ -72,11 +72,12 @@ export function PlannerChatPage({
   onSubmitRequest,
   onUndoChangeSet
 }: PlannerChatPageProps) {
-  const inputDisabled = runLoading;
+  const inputDisabled = runLoading || providerSetupRequired;
   const canSend = request.trim().length > 0 && !inputDisabled;
   const canStartWork =
     Boolean(plannerSession) &&
     !runLoading &&
+    !providerSetupRequired &&
     plannerSession?.task_state.readiness === "ready_to_execute" &&
     !activeRunId;
   const sessionMessages = plannerSession?.messages ?? [];

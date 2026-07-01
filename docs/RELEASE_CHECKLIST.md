@@ -70,7 +70,8 @@ cd ..
 
 The frontend suite must include the Provider Settings test that checks the
 DeepSeek preset, provider test button, proxy URL field, mock-mode debug gate,
-and redacted password input.
+redacted password input, and product-mode setup blocking when credentials are
+missing.
 
 Review/Undo targeted backend test:
 
