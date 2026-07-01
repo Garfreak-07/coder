@@ -8,6 +8,11 @@ is the release focus: `Planner Chat -> Start Work -> Timeline -> Review`.
 Developer debug UI is enabled only with `?debug=1` or
 `localStorage.coder_debug_ui=1`.
 
+Release rule: the ordinary product sidebar must not render `Plugins & Skills`.
+Only the debug-gated `showExtensions` path may expose it, and the core release
+claim must stay focused on Planner Chat, Start Work, Timeline, Review, and
+Settings.
+
 Frontend files:
 
 ```text

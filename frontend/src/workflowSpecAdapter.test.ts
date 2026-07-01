@@ -326,6 +326,7 @@ test("App navigation hides Plugins & Skills outside debug UI", () => {
     showExtensions: true
   });
   const appSource = readFileSync("src/App.tsx", "utf8");
+  const pluginDocs = readFileSync("../docs/PLUGIN_AND_SKILLS_PAGE.md", "utf8");
 
   assert.ok(collectReactTreeText(defaultTree).includes("Planner Chat"));
   assert.ok(collectReactTreeText(defaultTree).includes("Settings"));
@@ -340,6 +341,8 @@ test("App navigation hides Plugins & Skills outside debug UI", () => {
   assert.ok(appSource.includes('activeSection === "extensions" && debugUiEnabled'));
   assert.ok(appSource.includes('get("debug") === "1"'));
   assert.ok(appSource.includes('window.localStorage.getItem("coder_debug_ui") === "1"'));
+  assert.ok(pluginDocs.includes("ordinary product sidebar must not render `Plugins & Skills`"));
+  assert.ok(pluginDocs.includes("Only the debug-gated `showExtensions` path may expose it"));
 });
 
 test("Work timeline renders public ReAct items without raw backend details", () => {
