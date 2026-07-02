@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { ChangeSet, PlannerChatSession, TimelineItem } from "../../types";
+import type { ChangeSet, PlannerArtifact, PlannerChatMessage, PlannerChatSession, TimelineItem } from "../../types";
 import { ReviewChangesCard } from "../review-changes/ReviewChangesCard";
 import { WorkTimeline } from "../work-timeline/WorkTimeline";
 
@@ -126,10 +126,7 @@ export function PlannerChatPage({
                   key={`${message.created_at ?? index}-${message.role}`}
                   className={`chat-message ${message.role === "user" ? "user-message" : "planner-message"}`}
                 >
-                  <div className="message-bubble">
-                    <div className="message-role">{message.role === "user" ? "You" : "Planner"}</div>
-                    <p>{message.content}</p>
-                  </div>
+                  <PlannerMessageBubble message={message} />
                 </article>
               ))
             ) : (
@@ -223,6 +220,95 @@ export function PlannerChatPage({
         </div>
       </section>
     </main>
+  );
+}
+
+function PlannerMessageBubble({ message }: { message: PlannerChatMessage }) {
+  return (
+    <div className="message-bubble">
+      <div className="message-role">{message.role === "user" ? "You" : "Planner"}</div>
+      <p>{message.content}</p>
+      {message.response_truncated && (
+        <div className="planner-truncation-notice" role="status">
+          Planner summarized a long response. Ask for details if needed.
+        </div>
+      )}
+      <PlannerArtifacts artifacts={message.artifacts} largeArtifacts={message.large_artifacts} />
+    </div>
+  );
+}
+
+function PlannerArtifacts({
+  artifacts,
+  largeArtifacts
+}: {
+  artifacts?: PlannerArtifact[];
+  largeArtifacts?: boolean;
+}) {
+  const safeArtifacts = Array.isArray(artifacts) ? artifacts : [];
+  if (safeArtifacts.length === 0) return null;
+  return (
+    <div className="planner-artifacts">
+      {safeArtifacts.map((artifact, index) => (
+        <PlannerArtifactCard
+          artifact={artifact}
+          collapsed={Boolean(largeArtifacts || artifact.collapsed)}
+          key={`${artifact.type}-${artifact.title}-${index}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+function PlannerArtifactCard({
+  artifact,
+  collapsed
+}: {
+  artifact: PlannerArtifact;
+  collapsed: boolean;
+}) {
+  return (
+    <details className="planner-artifact-card" open={!collapsed}>
+      <summary>{artifact.title}</summary>
+      {artifact.type === "table" && <PlannerTableArtifact artifact={artifact} />}
+      {artifact.type === "notes" && (
+        <ul>
+          {artifact.items.map((item, index) => (
+            <li key={`${artifact.title}-${index}`}>{item}</li>
+          ))}
+        </ul>
+      )}
+      {artifact.type === "text" && <p>{artifact.content}</p>}
+    </details>
+  );
+}
+
+function PlannerTableArtifact({
+  artifact
+}: {
+  artifact: Extract<PlannerArtifact, { type: "table" }>;
+}) {
+  return (
+    <div className="planner-artifact-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            {artifact.columns.map((column, index) => (
+              <th key={`${column}-${index}`}>{column}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {artifact.rows.map((row, rowIndex) => (
+            <tr key={`${artifact.title}-${rowIndex}`}>
+              {artifact.columns.map((_, columnIndex) => (
+                <td key={`${artifact.title}-${rowIndex}-${columnIndex}`}>{row[columnIndex] ?? ""}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

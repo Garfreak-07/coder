@@ -367,6 +367,76 @@ label {
   background: #151c27;
 }
 
+.planner-truncation-notice {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  color: #cbd5e1;
+  font-size: 12px;
+  padding: 8px;
+}
+
+.planner-artifacts {
+  display: grid;
+  gap: 8px;
+}
+
+.planner-artifact-card {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+
+.planner-artifact-card summary {
+  color: #bfdbfe;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.planner-artifact-card ul {
+  color: #d1d5db;
+  display: grid;
+  font-size: 13px;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.planner-artifact-card p {
+  color: #d1d5db;
+  font-size: 13px;
+}
+
+.planner-artifact-table-wrap {
+  overflow-x: auto;
+}
+
+.planner-artifact-table-wrap table {
+  border-collapse: collapse;
+  color: #d1d5db;
+  font-size: 12px;
+  min-width: 100%;
+}
+
+.planner-artifact-table-wrap th,
+.planner-artifact-table-wrap td {
+  border: 1px solid #334155;
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.planner-artifact-table-wrap th {
+  background: #111827;
+  color: #f8fafc;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .chat-loading-row {
   align-items: center;
   background: #101826;

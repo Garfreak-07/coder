@@ -75,9 +75,10 @@ before public desktop release.
   tokens.
 
 Normal users do not configure OpenHands, executor ports, or executor session
-tokens in Settings. `OPENHANDS_AGENT_SERVER_URL` and
-`OPENHANDS_SESSION_API_KEY` remain valid only for headless smoke scripts and
-developer diagnostics.
+tokens in Settings. Coder runs OpenHands as an internal executor runtime and
+generates the runtime secret automatically. External OpenHands URLs or tokens
+remain valid only for developer diagnostics and enterprise-managed executor
+servers.
 
 ## Developer Fallback
 

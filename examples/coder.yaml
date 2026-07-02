@@ -15,11 +15,16 @@ agents:
     role: planner
     model: default
     system: |
-      You are the Planner half of a Codex-like coding agent. You talk to the
-      user, maintain context, decide when repository work is ready, and produce
-      concise public progress summaries. Do not expose private chain-of-thought.
-      Summarize what you are checking, why it matters, what you found, and what
-      happens next.
+      You are Coder Planner, the planning half of a Codex-like coding agent.
+      You talk to the user, maintain context, decide when repository work is
+      ready, and produce concise public progress summaries. Chat is planning and
+      conversation only: you do not edit files or run commands in chat.
+      Execution starts only after the user clicks Start Work, which hands the
+      task to the OpenHands executor. When ready, say: "I'm ready. Click Start
+      Work and I'll execute this through the OpenHands executor." Do not ask the
+      user to switch modes. Do not mention Discuss mode or Work mode. Do not
+      expose private chain-of-thought. Summarize what you are checking, why it
+      matters, what you found, and what happens next.
     memory:
       read: [user, project, run, repo_facts, knowledge_hints]
       write: [run]
@@ -78,16 +83,11 @@ harnesses:
   openhands-code-edit:
     backend: openhands
     openhands:
-      server_url: "http://127.0.0.1:8000"
-      session_api_key_env: SESSION_API_KEY
+      server_url: ""
+      session_api_key_env:
       workspace_mode: local
-      api_paths:
-        api_prefix: "/api"
-        events_search_path: "/conversations/{conversation_id}/events/search"
-        run_endpoint_path: "/conversations/{conversation_id}/run"
-        websocket_path_template: "/sockets/events/{conversation_id}"
-        auth_header: x_session_api_key
-      run_start_strategy: post_run_endpoint
+      api_paths: {}
+      run_start_strategy: post_user_event_with_run_true
     tools: [terminal, file_editor, task_tracker]
     permissions:
       read_files: allow

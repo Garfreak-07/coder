@@ -144,17 +144,17 @@ A skipped result is not a live pass, and a run that edits the file but reports
 Full path DeepSeek + OpenHands smoke:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\live-full-path-smoke.ps1 -Live -LoadLocalEnv -WorkRoot .tmp\live-full-path-smoke -OpenHandsServerUrl http://127.0.0.1:8000 -OpenHandsSessionApiKey "..."
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\live-snake-game-smoke.ps1 -Live -LoadLocalEnv -Force
 ```
 
-Expected live result when DeepSeek credentials, the provider proxy, and an
-OpenHands Agent Server are available: provider `deepseek`, provider test mode
-`live`, OpenHands settings `connected`, Planner Chat retains two
-user/assistant turns, Start Work returns a completed run id, timeline includes
-`Executor backend: OpenHands`, public ReAct items, and a final summary, final
-report status is `completed`, Review Changes includes
-`docs/FULL_PATH_SMOKE_RESULT.md`, Undo reports `undone` or a supported safe
-status, and `secrets_check: passed`. A skipped result is not a live pass.
+Expected live result when DeepSeek credentials and the managed executor runtime
+are available: provider `deepseek`, provider test mode `live`, OpenHands
+settings `connected`, Planner Chat retains two user/assistant turns, Start Work
+returns a completed run id, timeline includes `Executor backend: OpenHands`,
+public ReAct items, and a final summary, final report status is `completed`,
+Review Changes includes `README.md`, `index.html`, `main.js`, and `style.css`,
+`node --check main.js` passes, and `secrets_check: passed`. A skipped result is
+not a live pass.
 
 Latest local live result recorded for this checklist:
 

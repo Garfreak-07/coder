@@ -2,9 +2,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     io::Write,
-    net::SocketAddr,
+    net::{SocketAddr, TcpListener},
     path::{Path as FsPath, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -21,10 +21,12 @@ use coder_config::{
     validate_project_config, AgentSpec as ConfigAgentSpec, HarnessSpec as ConfigHarnessSpec,
     MemoryScope as ConfigMemoryScope, ModelSpec as ConfigModelSpec,
     OpenHandsApiPaths as ConfigOpenHandsApiPaths,
+    OpenHandsAuthHeaderMode as ConfigOpenHandsAuthHeaderMode,
     OpenHandsHarnessConfig as ConfigOpenHandsHarnessConfig,
     OpenHandsRunStartStrategy as ConfigOpenHandsRunStartStrategy,
     PermissionDecision as ConfigPermissionDecision, ProjectConfig, ValidationIssue,
     ValidationLevel, ValidationReport, WorkflowNodeSpec as ConfigWorkflowNodeSpec,
+    WorkflowSpec as ConfigWorkflowSpec,
 };
 use coder_core::{FinalReport, ReportStatus, RunId, RunState, RunStatus};
 use coder_extensions::{
@@ -58,13 +60,21 @@ use coder_tools::{
     PatchApplyRequest as ToolPatchApplyRequest, PatchPreviewEvidence, RepoFileEvidence,
     RepoFileRef, RepoReadSnippet, RepoSearchMatch, RepoToolConfig, RepoToolError,
 };
-use coder_workflow::{MockWorkflowRunner, WorkflowError, WorkflowRunOptions, WorkflowRunner};
+use coder_workflow::{
+    build_openhands_conversation_payload, MockWorkflowRunner, OpenHandsConversationPayloadInput,
+    WorkflowError, WorkflowRunOptions, WorkflowRunner,
+};
 use reqwest::{Client, Proxy};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
+use uuid::Uuid;
 
 const MCP_OUTPUT_INLINE_LIMIT: usize = 1024;
+const PLANNER_NORMAL_WORD_LIMIT: usize = 600;
+const PLANNER_READY_WORD_LIMIT: usize = 120;
+const PLANNER_TRUNCATED_NOTICE: &str =
+    "That response was too long, so I summarized it. Ask for details if needed.";
 
 #[derive(Debug, Clone)]
 pub struct ApiState {
@@ -76,6 +86,7 @@ pub struct ApiState {
     skill_extra_roots: Arc<Mutex<Vec<SkillExtraRoot>>>,
     provider_settings: Arc<Mutex<ProviderSettings>>,
     openhands_settings: Arc<Mutex<OpenHandsSettings>>,
+    executor_runtime: Arc<ExecutorRuntime>,
 }
 
 impl ApiState {
@@ -96,7 +107,342 @@ impl ApiState {
             skill_extra_roots: Arc::new(Mutex::new(Vec::new())),
             provider_settings: Arc::new(Mutex::new(ProviderSettings::default())),
             openhands_settings: Arc::new(Mutex::new(OpenHandsSettings::default())),
+            executor_runtime: Arc::new(ExecutorRuntime::new()),
         }
+    }
+
+    pub fn start_managed_executor_runtime(&self) {
+        let settings = self.openhands_settings.lock().unwrap().clone();
+        self.executor_runtime.ensure_openhands_started(&settings);
+    }
+}
+
+#[derive(Debug)]
+struct ExecutorRuntime {
+    openhands: ManagedOpenHandsRuntime,
+}
+
+impl ExecutorRuntime {
+    fn new() -> Self {
+        Self {
+            openhands: ManagedOpenHandsRuntime::new(),
+        }
+    }
+
+    fn ensure_openhands_started(&self, settings: &OpenHandsSettings) {
+        self.openhands.ensure_started(settings);
+    }
+
+    fn openhands_connection(&self, settings: &OpenHandsSettings) -> OpenHandsRuntimeConnection {
+        self.openhands.connection(settings)
+    }
+}
+
+#[derive(Debug)]
+struct ManagedOpenHandsRuntime {
+    runtime_secret: String,
+    state: Mutex<ManagedOpenHandsRuntimeState>,
+}
+
+#[derive(Debug)]
+struct ManagedOpenHandsRuntimeState {
+    server_url: String,
+    backend_port: u16,
+    automation_port: u16,
+    frontend_port: u16,
+    child: Option<Child>,
+    startup_attempted: bool,
+    startup_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ManagedOpenHandsCommand {
+    program: String,
+    args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct OpenHandsRuntimeConnection {
+    mode: String,
+    server_url: String,
+    public_server_url: String,
+    credential_configured: bool,
+    credential_source: String,
+    token: Option<String>,
+    startup_error: Option<String>,
+}
+
+impl ManagedOpenHandsRuntime {
+    fn new() -> Self {
+        let ports = allocate_distinct_loopback_ports(4);
+        let ingress_port = ports.first().copied().unwrap_or(8000);
+        Self {
+            runtime_secret: generate_executor_runtime_secret(),
+            state: Mutex::new(ManagedOpenHandsRuntimeState {
+                server_url: format!("http://127.0.0.1:{ingress_port}"),
+                backend_port: ports.get(1).copied().unwrap_or(18000),
+                automation_port: ports.get(2).copied().unwrap_or(18001),
+                frontend_port: ports.get(3).copied().unwrap_or(3001),
+                child: None,
+                startup_attempted: false,
+                startup_error: None,
+            }),
+        }
+    }
+
+    fn ensure_started(&self, settings: &OpenHandsSettings) {
+        if openhands_runtime_mode(settings) != "managed" {
+            return;
+        }
+        let mut state = self.state.lock().unwrap();
+        if state
+            .child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok())
+            .flatten()
+            .is_some()
+        {
+            state.child = None;
+        }
+        if state.child.is_some() || state.startup_attempted {
+            return;
+        }
+        state.startup_attempted = true;
+        let port = managed_openhands_port_from_url(&state.server_url);
+        let Some(command) = managed_openhands_command(port) else {
+            state.startup_error =
+                Some("Coder could not find its bundled OpenHands executor runtime.".to_owned());
+            return;
+        };
+        let mut process = Command::new(&command.program);
+        process.args(&command.args);
+        process.env("OPENHANDS_SESSION_API_KEY", &self.runtime_secret);
+        process.env("SESSION_API_KEY", &self.runtime_secret);
+        process.env("LOCAL_BACKEND_API_KEY", &self.runtime_secret);
+        process.env("OH_SECRET_KEY", &self.runtime_secret);
+        let state_dir = managed_openhands_state_dir(port);
+        process.env("OH_CANVAS_SAFE_STATE_DIR", &state_dir);
+        process.env("UV_CACHE_DIR", managed_openhands_uv_cache_dir(&state_dir));
+        process.env("UV_TOOL_DIR", managed_openhands_uv_tool_dir(&state_dir));
+        if let Some(python) = managed_openhands_python() {
+            process.env("UV_PYTHON", python);
+        }
+        process.env(
+            "OH_CANVAS_SAFE_BACKEND_PORT",
+            state.backend_port.to_string(),
+        );
+        process.env(
+            "OH_CANVAS_SAFE_AUTOMATION_PORT",
+            state.automation_port.to_string(),
+        );
+        process.env("OH_CANVAS_SAFE_VITE_PORT", state.frontend_port.to_string());
+        process.env("NO_PROXY", "127.0.0.1,localhost,::1");
+        process.env("no_proxy", "127.0.0.1,localhost,::1");
+        process.stdin(Stdio::null());
+        process.stdout(Stdio::null());
+        process.stderr(Stdio::null());
+        match process.spawn() {
+            Ok(child) => {
+                state.child = Some(child);
+                state.startup_error = None;
+            }
+            Err(error) => {
+                state.startup_error = Some(format!(
+                    "Coder could not start its internal OpenHands executor runtime: {error}"
+                ));
+            }
+        }
+    }
+
+    fn connection(&self, settings: &OpenHandsSettings) -> OpenHandsRuntimeConnection {
+        let mode = openhands_runtime_mode(settings);
+        if mode == "external" {
+            let (configured, source, token) = external_openhands_credential(settings);
+            let server_url = settings.server_url.trim_end_matches('/').to_owned();
+            return OpenHandsRuntimeConnection {
+                mode,
+                public_server_url: sanitize_provider_endpoint(&server_url),
+                server_url,
+                credential_configured: configured,
+                credential_source: source,
+                token,
+                startup_error: None,
+            };
+        }
+        let state = self.state.lock().unwrap();
+        OpenHandsRuntimeConnection {
+            mode,
+            server_url: state.server_url.clone(),
+            public_server_url: "managed".to_owned(),
+            credential_configured: true,
+            credential_source: "managed_runtime".to_owned(),
+            token: Some(self.runtime_secret.clone()),
+            startup_error: state.startup_error.clone(),
+        }
+    }
+}
+
+impl Drop for ManagedOpenHandsRuntime {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(mut child) = state.child.take() {
+                terminate_managed_child_process(&mut child);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn terminate_managed_child_process(child: &mut Child) {
+    let pid = child.id().to_string();
+    let stopped = Command::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if !stopped {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+#[cfg(not(windows))]
+fn terminate_managed_child_process(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn generate_executor_runtime_secret() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+fn allocate_distinct_loopback_ports(count: usize) -> Vec<u16> {
+    let mut listeners = Vec::new();
+    let mut ports = Vec::new();
+    for _ in 0..count {
+        if let Ok(listener) = TcpListener::bind("127.0.0.1:0") {
+            if let Ok(addr) = listener.local_addr() {
+                ports.push(addr.port());
+                listeners.push(listener);
+            }
+        }
+    }
+    drop(listeners);
+    ports
+}
+
+fn managed_openhands_port_from_url(server_url: &str) -> u16 {
+    reqwest::Url::parse(server_url)
+        .ok()
+        .and_then(|url| url.port())
+        .unwrap_or(8000)
+}
+
+fn managed_openhands_command(port: u16) -> Option<ManagedOpenHandsCommand> {
+    if let Some(program) = env::var_os("CODER_OPENHANDS_COMMAND")
+        .and_then(|value| value.into_string().ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+    {
+        let args = env::var_os("CODER_OPENHANDS_ARGS")
+            .and_then(|value| value.into_string().ok())
+            .map(|value| expand_openhands_command_args(split_shell_words(&value), port))
+            .unwrap_or_else(|| default_agent_canvas_args(port));
+        return Some(ManagedOpenHandsCommand { program, args });
+    }
+    find_executable_on_path("agent-canvas").map(|program| ManagedOpenHandsCommand {
+        program,
+        args: default_agent_canvas_args(port),
+    })
+}
+
+fn default_agent_canvas_args(port: u16) -> Vec<String> {
+    vec![
+        "--backend-only".to_owned(),
+        "--port".to_owned(),
+        port.to_string(),
+    ]
+}
+
+fn expand_openhands_command_args(args: Vec<String>, port: u16) -> Vec<String> {
+    args.into_iter()
+        .map(|arg| arg.replace("{port}", &port.to_string()))
+        .collect()
+}
+
+fn managed_openhands_state_dir(port: u16) -> String {
+    env::temp_dir()
+        .join(format!(
+            "coder-openhands-managed-{}-{port}",
+            std::process::id()
+        ))
+        .to_string_lossy()
+        .to_string()
+}
+
+fn managed_openhands_uv_cache_dir(state_dir: &str) -> String {
+    FsPath::new(state_dir)
+        .join("uv-cache")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn managed_openhands_uv_tool_dir(state_dir: &str) -> String {
+    FsPath::new(state_dir)
+        .join("uv-tools")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn managed_openhands_python() -> Option<String> {
+    env::var_os("CODER_OPENHANDS_PYTHON")
+        .or_else(|| env::var_os("UV_PYTHON"))
+        .and_then(|value| value.into_string().ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn split_shell_words(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn find_executable_on_path(name: &str) -> Option<String> {
+    let path = env::var_os("PATH")?;
+    let extensions = executable_extensions();
+    for dir in env::split_paths(&path) {
+        for extension in &extensions {
+            let candidate = dir.join(format!("{name}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn executable_extensions() -> Vec<String> {
+    if cfg!(windows) {
+        env::var_os("PATHEXT")
+            .and_then(|value| value.into_string().ok())
+            .map(|value| {
+                value
+                    .split(';')
+                    .filter(|part| !part.trim().is_empty())
+                    .map(|part| part.trim().to_owned())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|items| !items.is_empty())
+            .unwrap_or_else(|| vec![".exe".to_owned(), ".cmd".to_owned(), ".bat".to_owned()])
+    } else {
+        vec![String::new()]
     }
 }
 
@@ -314,6 +660,7 @@ pub fn router(state: ApiState) -> Router {
 }
 
 pub async fn serve(addr: SocketAddr, state: ApiState) -> std::io::Result<()> {
+    state.start_managed_executor_runtime();
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, router(state)).await
 }
@@ -626,7 +973,9 @@ fn planner_turn_events(
         "type": "planner.message.completed",
         "session_id": session.session_id,
         "workflow_id": session.workflow_id,
-        "readiness": response.readiness
+        "readiness": response.readiness,
+        "response_truncated": response.response_truncated,
+        "artifact_count": response.artifacts.len()
     })];
     if let Some(plan) = &response.plan_draft {
         events.push(json!({
@@ -931,14 +1280,12 @@ async fn planner_chat_turn(
         .map(|mode| normalize_planner_mode(Some(mode)))
         .unwrap_or_else(|| normalize_planner_mode(Some(&session.mode)));
     session.mode = mode;
-    session.turns.push(PlannerChatTurn {
-        role: "user".to_owned(),
-        content: request.message,
-    });
-    session.turns.push(PlannerChatTurn {
-        role: "assistant".to_owned(),
-        content: planner_response.assistant_message.clone(),
-    });
+    session.turns.push(planner_chat_user_turn(request.message));
+    session.turns.push(planner_chat_assistant_turn(
+        planner_response.assistant_message.clone(),
+        planner_response.artifacts.clone(),
+        planner_response.response_truncated,
+    ));
     session.plan_draft = planner_response.plan_draft.clone();
     session.readiness = planner_response.readiness;
     session.ready = planner_response.readiness == PlannerReadiness::Ready;
@@ -947,6 +1294,12 @@ async fn planner_chat_turn(
     session.risks = planner_response.risks.clone();
     let events = planner_turn_events(session, &planner_response);
     let session_snapshot = session.clone();
+    let ready_for_start_work = session.ready;
+    let missing_information = planner_response.open_questions.clone();
+    let concise_plan_summary = concise_plan_summary(
+        planner_response.plan_draft.as_ref(),
+        &planner_response.assistant_message,
+    );
     let response = PlannerChatTurnResponse {
         session: session_snapshot.clone(),
         assistant_message: planner_response.assistant_message,
@@ -958,8 +1311,15 @@ async fn planner_chat_turn(
         suggested_mode: planner_response.suggested_mode,
         should_start_workflow: false,
         ready: session.ready,
+        ready_for_start_work,
+        missing_information,
+        concise_plan_summary,
         execution_allowed: false,
         run_preview: None,
+        response_truncated: planner_response.response_truncated,
+        artifacts: planner_response.artifacts.clone(),
+        structured_artifacts: planner_response.artifacts,
+        large_artifacts: planner_response.large_artifacts,
         events,
     };
     drop(sessions);
@@ -999,7 +1359,14 @@ async fn start_planner_chat_work(
     let provider_settings = state.provider_settings.lock().unwrap().clone();
     let openhands_settings = state.openhands_settings.lock().unwrap().clone();
     apply_provider_settings_to_project_config(&mut config, &provider_settings);
-    apply_openhands_settings_to_project_config(&mut config, &openhands_settings);
+    state
+        .executor_runtime
+        .ensure_openhands_started(&openhands_settings);
+    apply_openhands_settings_to_project_config(
+        &mut config,
+        &openhands_settings,
+        &state.executor_runtime,
+    );
     let runtime =
         resolve_planner_runtime(&config, &workflow_id, request.planner_agent_id.as_deref())?;
     let runtime_for_summary = runtime.clone();
@@ -1012,10 +1379,11 @@ async fn start_planner_chat_work(
         || !session.open_questions.is_empty()
     {
         let assistant_message = start_work_clarification(&session);
-        session.turns.push(PlannerChatTurn {
-            role: "assistant".to_owned(),
-            content: assistant_message.clone(),
-        });
+        session.turns.push(planner_chat_assistant_turn(
+            assistant_message.clone(),
+            Vec::new(),
+            false,
+        ));
         session.ready = false;
         session.readiness = PlannerReadiness::NeedsClarification;
         state
@@ -1044,10 +1412,11 @@ async fn start_planner_chat_work(
         start_work_provider_config_error(&config, &workflow_id, &provider_settings)
     {
         let planner_response = planner_provider_setup_required_response(message);
-        session.turns.push(PlannerChatTurn {
-            role: "assistant".to_owned(),
-            content: planner_response.assistant_message.clone(),
-        });
+        session.turns.push(planner_chat_assistant_turn(
+            planner_response.assistant_message.clone(),
+            planner_response.artifacts.clone(),
+            planner_response.response_truncated,
+        ));
         session.ready = false;
         session.readiness = planner_response.readiness;
         session.open_questions = planner_response.open_questions;
@@ -1101,10 +1470,11 @@ async fn start_planner_chat_work(
     let run_id = output.run_id.to_string();
     let assistant_message = start_work_result_message(&workflow_id, &output.report);
     session.ready = false;
-    session.turns.push(PlannerChatTurn {
-        role: "assistant".to_owned(),
-        content: assistant_message.clone(),
-    });
+    session.turns.push(planner_chat_assistant_turn(
+        assistant_message.clone(),
+        Vec::new(),
+        false,
+    ));
     state
         .planner_sessions
         .lock()
@@ -1165,10 +1535,10 @@ async fn maybe_polish_final_summary(
     let Ok(Some(summary)) = engine.live_assistant_message(&request).await else {
         return;
     };
-    if !final_summary_polish_covers_required_sections(&summary) {
+    if !final_summary_polish_covers_required_sections(&summary.content) {
         return;
     }
-    report.summary = public_preview(&summary, 1200);
+    report.summary = public_preview(&summary.content, 1200);
     let _ = state.store.write_report(run_id, report);
 }
 
@@ -1189,7 +1559,7 @@ fn start_work_result_message(workflow_id: &str, report: &FinalReport) -> String 
         .any(|item| item.to_ascii_lowercase().contains("openhands"));
     if openhands_blocked {
         return format!(
-            "Start Work is blocked because OpenHands is the required execution backend and it is not available: {reason}. Check that the OpenHands Agent Server is running, the server URL/token are correct, and local traffic bypasses the proxy with NO_PROXY=127.0.0.1,localhost,::1."
+            "Start Work is blocked because the required Coder executor runtime is not available: {reason}. Restart Coder or check the local executor runtime installation."
         );
     }
     format!("Start Work is blocked: {reason}.")
@@ -2193,13 +2563,15 @@ async fn save_openhands_settings(
         apply_openhands_settings_patch(&mut settings, request);
         settings.clone()
     };
-    let status = openhands_status_for_settings(&settings).await;
+    state.executor_runtime.ensure_openhands_started(&settings);
+    let status = openhands_status_for_settings(&settings, &state.executor_runtime).await;
     Json(OpenHandsSettingsSaveResponse { settings, status })
 }
 
 async fn get_openhands_status(State(state): State<ApiState>) -> Json<OpenHandsStatus> {
     let settings = state.openhands_settings.lock().unwrap().clone();
-    Json(openhands_status_for_settings(&settings).await)
+    state.executor_runtime.ensure_openhands_started(&settings);
+    Json(openhands_status_for_settings(&settings, &state.executor_runtime).await)
 }
 
 async fn run_mock_workflow(
@@ -2224,7 +2596,14 @@ async fn run_workflow(
     let openhands_settings = state.openhands_settings.lock().unwrap().clone();
     let mut config = request.config;
     apply_provider_settings_to_project_config(&mut config, &provider_settings);
-    apply_openhands_settings_to_project_config(&mut config, &openhands_settings);
+    state
+        .executor_runtime
+        .ensure_openhands_started(&openhands_settings);
+    apply_openhands_settings_to_project_config(
+        &mut config,
+        &openhands_settings,
+        &state.executor_runtime,
+    );
     let mut options = WorkflowRunOptions::new(&request.workflow_id, &request.task);
     if let Some(repo_root) = &request.repo_root {
         options.repo_root = PathBuf::from(repo_root);
@@ -2699,7 +3078,7 @@ async fn undo_change_set(
         &change_set.change_set_id,
         json!({}),
     )?;
-    let current_diff = git_diff(&change_set.repo_root, usize::MAX)?.preview;
+    let current_diff = git_diff_including_untracked(&change_set.repo_root, usize::MAX)?.preview;
     if current_diff != change_set.after_diff {
         let conflict_reason = undo_conflict_summary(&change_set.after_diff, &current_diff);
         change_set.status = ChangeSetStatus::FailedToUndo;
@@ -3042,6 +3421,56 @@ pub struct PlannerRuntimeContext {
 pub struct PlannerChatTurn {
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub artifacts: Vec<PlannerArtifact>,
+    #[serde(default)]
+    pub response_truncated: bool,
+}
+
+fn planner_chat_user_turn(content: String) -> PlannerChatTurn {
+    PlannerChatTurn {
+        role: "user".to_owned(),
+        content,
+        artifacts: Vec::new(),
+        response_truncated: false,
+    }
+}
+
+fn planner_chat_assistant_turn(
+    content: String,
+    artifacts: Vec<PlannerArtifact>,
+    response_truncated: bool,
+) -> PlannerChatTurn {
+    PlannerChatTurn {
+        role: "assistant".to_owned(),
+        content,
+        artifacts,
+        response_truncated,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum PlannerArtifact {
+    Table {
+        title: String,
+        columns: Vec<String>,
+        rows: Vec<Vec<String>>,
+        #[serde(default)]
+        collapsed: bool,
+    },
+    Notes {
+        title: String,
+        items: Vec<String>,
+        #[serde(default)]
+        collapsed: bool,
+    },
+    Text {
+        title: String,
+        content: String,
+        #[serde(default)]
+        collapsed: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -3078,8 +3507,17 @@ pub struct PlannerChatTurnResponse {
     pub suggested_mode: String,
     pub should_start_workflow: bool,
     pub ready: bool,
+    pub ready_for_start_work: bool,
+    pub missing_information: Vec<String>,
+    pub concise_plan_summary: String,
     pub execution_allowed: bool,
     pub run_preview: Option<Value>,
+    pub response_truncated: bool,
+    #[serde(default)]
+    pub artifacts: Vec<PlannerArtifact>,
+    #[serde(default)]
+    pub structured_artifacts: Vec<PlannerArtifact>,
+    pub large_artifacts: bool,
     #[serde(default)]
     pub events: Vec<Value>,
 }
@@ -3178,6 +3616,10 @@ pub struct PlannerConversationResponse {
     pub risks: Vec<String>,
     pub suggested_mode: String,
     pub should_start_workflow: bool,
+    #[serde(default)]
+    pub artifacts: Vec<PlannerArtifact>,
+    pub response_truncated: bool,
+    pub large_artifacts: bool,
 }
 
 #[async_trait]
@@ -3608,29 +4050,43 @@ pub struct OpenHandsSettings {
     pub server_url: String,
     pub workspace_mode: String,
     pub allow_native_fallback: bool,
+    pub runtime_mode: String,
     pub session_api_key: OpenHandsKeyState,
 }
 
 impl Default for OpenHandsSettings {
     fn default() -> Self {
-        let env_token_configured = env::var("OPENHANDS_SESSION_API_KEY")
+        let external_server_url = env::var("OPENHANDS_AGENT_SERVER_URL")
             .ok()
-            .map(|value| !value.trim().is_empty())
-            .unwrap_or(false);
+            .map(|value| value.trim().trim_end_matches('/').to_owned())
+            .filter(|value| !value.is_empty());
+        let external_token_configured = external_server_url.is_some()
+            && env::var("OPENHANDS_SESSION_API_KEY")
+                .ok()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+        let external_mode = external_server_url.is_some();
         Self {
             enabled: true,
-            server_url: env::var("OPENHANDS_AGENT_SERVER_URL")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "http://127.0.0.1:8000".to_owned()),
+            server_url: external_server_url.unwrap_or_default(),
             workspace_mode: env::var("OPENHANDS_WORKSPACE_MODE")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| "local".to_owned()),
             allow_native_fallback: false,
+            runtime_mode: if external_mode {
+                "external".to_owned()
+            } else {
+                "managed".to_owned()
+            },
             session_api_key: OpenHandsKeyState {
-                configured: env_token_configured,
-                source: if env_token_configured { "env" } else { "none" }.to_owned(),
+                configured: external_token_configured,
+                source: if external_token_configured {
+                    "external_env"
+                } else {
+                    "none"
+                }
+                .to_owned(),
                 secret: None,
             },
         }
@@ -3643,6 +4099,7 @@ pub struct OpenHandsSettingsPatch {
     pub server_url: Option<String>,
     pub workspace_mode: Option<String>,
     pub allow_native_fallback: Option<bool>,
+    pub runtime_mode: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_value")]
     pub session_api_key: Option<Value>,
 }
@@ -3663,6 +4120,7 @@ pub struct OpenHandsStatus {
     pub enabled: bool,
     pub configured: bool,
     pub allow_native_fallback: bool,
+    pub runtime_mode: String,
     pub status: String,
     pub server_url: String,
     pub workspace_mode: String,
@@ -4575,6 +5033,126 @@ fn report_status_string(status: coder_core::ReportStatus) -> String {
     .to_owned()
 }
 
+fn git_diff_including_untracked(
+    repo_root: &str,
+    max_output_bytes: usize,
+) -> Result<GitDiffEvidence, ApiError> {
+    let mut diff = git_diff(repo_root, max_output_bytes)?;
+    let untracked = git_untracked_files(repo_root)?;
+    if untracked.is_empty() {
+        return Ok(diff);
+    }
+
+    let root = fs::canonicalize(repo_root).map_err(|error| {
+        ApiError::bad_request(format!("repo root '{repo_root}' is invalid: {error}"))
+    })?;
+    let mut preview = diff.preview;
+    let mut truncated = diff.truncated;
+    for relative_path in untracked {
+        if preview.len() >= max_output_bytes {
+            truncated = true;
+            break;
+        }
+        let addition =
+            synthetic_new_file_diff(&root, &relative_path, max_output_bytes - preview.len())?;
+        if addition.truncated {
+            truncated = true;
+        }
+        if !preview.trim().is_empty() && !preview.ends_with('\n') {
+            preview.push('\n');
+        }
+        preview.push_str(&addition.diff);
+    }
+    diff.preview = preview;
+    diff.truncated = truncated;
+    Ok(diff)
+}
+
+#[derive(Debug)]
+struct SyntheticDiff {
+    diff: String,
+    truncated: bool,
+}
+
+fn git_untracked_files(repo_root: &str) -> Result<Vec<String>, ApiError> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            repo_root,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()
+        .map_err(|error| ApiError::internal(format!("git ls-files failed: {error}")))?;
+    if !output.status.success() {
+        return Err(ApiError::internal(format!(
+            "git ls-files failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| line.replace('\\', "/"))
+        .collect())
+}
+
+fn synthetic_new_file_diff(
+    root: &FsPath,
+    relative_path: &str,
+    max_bytes: usize,
+) -> Result<SyntheticDiff, ApiError> {
+    let normalized_path = relative_path.replace('\\', "/");
+    let full_path = root.join(&normalized_path);
+    let canonical = fs::canonicalize(&full_path).map_err(|error| {
+        ApiError::internal(format!(
+            "untracked file '{}' could not be read: {error}",
+            normalized_path
+        ))
+    })?;
+    if !canonical.starts_with(root) {
+        return Err(ApiError::internal(format!(
+            "untracked file '{}' escapes repo root",
+            normalized_path
+        )));
+    }
+    let bytes = fs::read(&canonical).map_err(|error| {
+        ApiError::internal(format!(
+            "untracked file '{}' could not be read: {error}",
+            normalized_path
+        ))
+    })?;
+    if bytes.contains(&0) {
+        let diff = format!(
+            "diff --git a/{0} b/{0}\nnew file mode 100644\nindex 0000000..0000000\nBinary files /dev/null and b/{0} differ\n",
+            normalized_path
+        );
+        return Ok(SyntheticDiff {
+            truncated: diff.len() > max_bytes,
+            diff: public_preview(&diff, max_bytes),
+        });
+    }
+    let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut diff = format!(
+        "diff --git a/{0} b/{0}\nnew file mode 100644\nindex 0000000..0000000\n--- /dev/null\n+++ b/{0}\n@@ -0,0 +1,{1} @@\n",
+        normalized_path,
+        lines.len()
+    );
+    let mut truncated = false;
+    for line in lines {
+        let next = format!("+{line}\n");
+        if diff.len() + next.len() > max_bytes {
+            truncated = true;
+            break;
+        }
+        diff.push_str(&next);
+    }
+    Ok(SyntheticDiff { diff, truncated })
+}
+
 fn build_current_change_set(
     store: &RunStore,
     run_id: &RunId,
@@ -4588,7 +5166,7 @@ fn build_current_change_set(
     let Some(repo_root) = repo_root_from_events(&events) else {
         return Ok(None);
     };
-    let diff = git_diff(&repo_root, 1024 * 1024)?;
+    let diff = git_diff_including_untracked(&repo_root, 1024 * 1024)?;
     if diff.preview.trim().is_empty() {
         return Ok(None);
     }
@@ -4656,7 +5234,7 @@ fn current_change_set(store: &RunStore, run_id: &RunId) -> Result<Option<ChangeS
     let Some(stored) = read_stored_change_set(store, run_id, "changeset-current")? else {
         return build_current_change_set(store, run_id);
     };
-    let current_diff = git_diff(&stored.repo_root, 1024 * 1024)?.preview;
+    let current_diff = git_diff_including_untracked(&stored.repo_root, 1024 * 1024)?.preview;
     if current_diff.trim().is_empty() {
         return Ok(None);
     }
@@ -5126,10 +5704,25 @@ fn apply_provider_settings_patch(settings: &mut ProviderSettings, patch: Provide
 }
 
 fn apply_openhands_settings_patch(settings: &mut OpenHandsSettings, patch: OpenHandsSettingsPatch) {
+    if let Some(runtime_mode) = patch.runtime_mode {
+        let runtime_mode = normalize_openhands_runtime_mode(&runtime_mode);
+        if !runtime_mode.is_empty() {
+            if runtime_mode == "managed" {
+                settings.server_url.clear();
+                settings.session_api_key = OpenHandsKeyState {
+                    configured: false,
+                    source: "none".to_owned(),
+                    secret: None,
+                };
+            }
+            settings.runtime_mode = runtime_mode;
+        }
+    }
     if let Some(server_url) = patch.server_url {
         let server_url = server_url.trim();
         if !server_url.is_empty() {
             settings.server_url = server_url.trim_end_matches('/').to_owned();
+            settings.runtime_mode = "external".to_owned();
         }
     }
     if let Some(workspace_mode) = patch.workspace_mode {
@@ -5140,15 +5733,16 @@ fn apply_openhands_settings_patch(settings: &mut OpenHandsSettings, patch: OpenH
     }
     if let Some(session_api_key) = patch.session_api_key {
         if session_api_key.is_null() {
-            settings.session_api_key = openhands_env_key_state();
+            settings.session_api_key = external_openhands_env_key_state(settings);
         } else {
             let text = session_api_key.as_str().map(str::trim).unwrap_or_default();
             if !text.is_empty() && !text.chars().all(|ch| ch == '*') {
                 settings.session_api_key = OpenHandsKeyState {
                     configured: true,
-                    source: "settings".to_owned(),
+                    source: "external_settings".to_owned(),
                     secret: Some(text.to_owned()),
                 };
+                settings.runtime_mode = "external".to_owned();
             }
         }
     }
@@ -5159,8 +5753,9 @@ fn apply_openhands_settings_patch(settings: &mut OpenHandsSettings, patch: OpenH
 fn apply_openhands_settings_to_project_config(
     config: &mut ProjectConfig,
     settings: &OpenHandsSettings,
+    executor_runtime: &ExecutorRuntime,
 ) {
-    let (_, _, token) = openhands_credential(settings);
+    let connection = executor_runtime.openhands_connection(settings);
     for harness in config.harnesses.values_mut() {
         if harness.backend != "openhands" {
             continue;
@@ -5168,9 +5763,25 @@ fn apply_openhands_settings_to_project_config(
         let openhands = harness
             .openhands
             .get_or_insert_with(|| openhands_harness_config_from_settings(settings));
-        openhands.server_url = settings.server_url.trim_end_matches('/').to_owned();
+        openhands.server_url = connection.server_url.clone();
         openhands.workspace_mode = Some(settings.workspace_mode.clone());
-        openhands.session_api_key = token.clone();
+        openhands.session_api_key_env = None;
+        openhands.session_api_key = connection.token.clone();
+        if connection.mode == "managed" {
+            openhands.api_paths = managed_openhands_agent_canvas_api_paths();
+            openhands.run_start_strategy = ConfigOpenHandsRunStartStrategy::PostRunEndpoint;
+        }
+    }
+}
+
+fn managed_openhands_agent_canvas_api_paths() -> ConfigOpenHandsApiPaths {
+    ConfigOpenHandsApiPaths {
+        api_prefix: "/api".to_owned(),
+        conversations_path: "/conversations".to_owned(),
+        events_search_path: Some("/conversations/{conversation_id}/events/search".to_owned()),
+        run_endpoint_path: Some("/conversations/{conversation_id}/run".to_owned()),
+        websocket_path_template: Some("/sockets/events/{conversation_id}".to_owned()),
+        auth_header: ConfigOpenHandsAuthHeaderMode::XSessionApiKey,
     }
 }
 
@@ -5203,22 +5814,26 @@ fn openhands_harness_config_from_settings(
     }
 }
 
-async fn openhands_status_for_settings(settings: &OpenHandsSettings) -> OpenHandsStatus {
-    let (credential_configured, credential_source, token) = openhands_credential(settings);
-    let server_url = sanitize_provider_endpoint(&settings.server_url);
+async fn openhands_status_for_settings(
+    settings: &OpenHandsSettings,
+    executor_runtime: &ExecutorRuntime,
+) -> OpenHandsStatus {
+    let connection = executor_runtime.openhands_connection(settings);
+    let server_url = connection.public_server_url.clone();
     let base_status = |status: &str, configured: bool, detail: String| OpenHandsStatus {
         enabled: settings.enabled,
         configured,
         allow_native_fallback: settings.allow_native_fallback,
+        runtime_mode: connection.mode.clone(),
         status: status.to_owned(),
         server_url: server_url.clone(),
         workspace_mode: settings.workspace_mode.clone(),
-        credential_configured,
-        credential_source: credential_source.clone(),
+        credential_configured: connection.credential_configured,
+        credential_source: connection.credential_source.clone(),
         detail: redact_provider_error(
             &detail,
             &[
-                token.as_deref().unwrap_or_default(),
+                connection.token.as_deref().unwrap_or_default(),
                 settings
                     .session_api_key
                     .secret
@@ -5230,18 +5845,21 @@ async fn openhands_status_for_settings(settings: &OpenHandsSettings) -> OpenHand
         capabilities: Vec::new(),
     };
 
-    if settings.server_url.trim().is_empty() {
+    if let Some(error) = connection.startup_error.as_deref() {
+        return base_status("failed", false, error.to_owned());
+    }
+    if connection.server_url.trim().is_empty() {
         return base_status(
             "not_configured",
             false,
-            "OpenHands server URL is empty.".to_owned(),
+            "Coder internal executor runtime is not configured.".to_owned(),
         );
     }
-    if reqwest::Url::parse(&settings.server_url).is_err() {
+    if reqwest::Url::parse(&connection.server_url).is_err() {
         return base_status(
             "failed",
             false,
-            "OpenHands server URL must start with http:// or https://.".to_owned(),
+            "Coder internal executor endpoint is invalid.".to_owned(),
         );
     }
 
@@ -5259,9 +5877,9 @@ async fn openhands_status_for_settings(settings: &OpenHandsSettings) -> OpenHand
             );
         }
     };
-    let health_url = format!("{}/health", settings.server_url.trim_end_matches('/'));
+    let health_url = format!("{}/health", connection.server_url.trim_end_matches('/'));
     let mut request = client.get(&health_url);
-    if let Some(token) = &token {
+    if let Some(token) = &connection.token {
         request = request
             .bearer_auth(token)
             .header("X-Session-API-Key", token);
@@ -5272,7 +5890,7 @@ async fn openhands_status_for_settings(settings: &OpenHandsSettings) -> OpenHand
             return base_status(
                 "failed",
                 true,
-                format!("OpenHands server is not reachable: {error}"),
+                format!("Coder executor runtime is not reachable: {error}"),
             );
         }
     };
@@ -5291,44 +5909,62 @@ async fn openhands_status_for_settings(settings: &OpenHandsSettings) -> OpenHand
         enabled: settings.enabled,
         configured: true,
         allow_native_fallback: settings.allow_native_fallback,
+        runtime_mode: connection.mode,
         status: "connected".to_owned(),
         server_url,
         workspace_mode: settings.workspace_mode.clone(),
-        credential_configured,
-        credential_source,
-        detail: "OpenHands health check succeeded.".to_owned(),
+        credential_configured: connection.credential_configured,
+        credential_source: connection.credential_source,
+        detail: "Coder executor runtime health check succeeded.".to_owned(),
         version,
         capabilities,
     }
 }
 
-fn openhands_credential(settings: &OpenHandsSettings) -> (bool, String, Option<String>) {
+fn external_openhands_credential(settings: &OpenHandsSettings) -> (bool, String, Option<String>) {
     if let Some(secret) = settings
         .session_api_key
         .secret
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
-        return (true, "settings".to_owned(), Some(secret.to_owned()));
+        return (
+            true,
+            "external_settings".to_owned(),
+            Some(secret.to_owned()),
+        );
     }
     if let Some(secret) = env::var("OPENHANDS_SESSION_API_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
-        return (true, "env".to_owned(), Some(secret));
+        return (true, "external_env".to_owned(), Some(secret));
     }
     (false, "none".to_owned(), None)
 }
 
-fn openhands_env_key_state() -> OpenHandsKeyState {
-    let configured = env::var("OPENHANDS_SESSION_API_KEY")
-        .ok()
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
+fn external_openhands_env_key_state(settings: &OpenHandsSettings) -> OpenHandsKeyState {
+    let configured = openhands_runtime_mode(settings) == "external"
+        && env::var("OPENHANDS_SESSION_API_KEY")
+            .ok()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
     OpenHandsKeyState {
         configured,
-        source: if configured { "env" } else { "none" }.to_owned(),
+        source: if configured { "external_env" } else { "none" }.to_owned(),
         secret: None,
+    }
+}
+
+fn openhands_runtime_mode(settings: &OpenHandsSettings) -> String {
+    normalize_openhands_runtime_mode(&settings.runtime_mode)
+}
+
+fn normalize_openhands_runtime_mode(value: &str) -> String {
+    match value.trim().to_lowercase().as_str() {
+        "external" | "developer" | "enterprise" => "external".to_owned(),
+        "managed" | "" => "managed".to_owned(),
+        other => other.to_owned(),
     }
 }
 
@@ -5798,6 +6434,12 @@ struct ModelPlannerConversationEngine {
     fallback: DeterministicPlannerConversationEngine,
 }
 
+#[derive(Debug, Clone)]
+struct LivePlannerMessage {
+    content: String,
+    finish_reason: Option<String>,
+}
+
 impl ModelPlannerConversationEngine {
     fn new() -> Self {
         Self::default()
@@ -5806,7 +6448,7 @@ impl ModelPlannerConversationEngine {
     async fn live_assistant_message(
         &self,
         request: &PlannerConversationRequest,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<Option<LivePlannerMessage>, String> {
         if request.provider_settings.mock_mode {
             return Ok(None);
         }
@@ -5823,33 +6465,8 @@ impl ModelPlannerConversationEngine {
         let url = provider_chat_completions_endpoint(&base_url);
         let model_name = planner_model_name(request, model);
         let proxy_url = provider_proxy_url(&request.provider_settings, &provider);
-        let mut messages = vec![json!({
-            "role": "system",
-            "content": planner_system_prompt(&request.runtime)
-        })];
-        for turn in request
-            .history
-            .iter()
-            .rev()
-            .take(10)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-        {
-            let role = if turn.role == "assistant" {
-                "assistant"
-            } else {
-                "user"
-            };
-            messages.push(json!({
-                "role": role,
-                "content": &turn.content
-            }));
-        }
-        messages.push(json!({
-            "role": "user",
-            "content": &request.message
-        }));
+        let adapter = OpenHandsCompatiblePlannerAdapter::new();
+        let messages = adapter.provider_messages(request);
         let client = provider_http_client_builder(&url, proxy_url.as_deref())
             .map_err(|error| {
                 redact_provider_error(
@@ -5887,17 +6504,191 @@ impl ModelPlannerConversationEngine {
                 &[&api_key, &base_url, proxy_url.as_deref().unwrap_or("")],
             )
         })?;
-        Ok(payload
+        let choice = payload
             .get("choices")
             .and_then(Value::as_array)
             .and_then(|choices| choices.first())
+            .cloned();
+        let finish_reason = choice
+            .as_ref()
+            .and_then(|choice| choice.get("finish_reason"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Ok(choice
+            .as_ref()
             .and_then(|choice| choice.get("message"))
             .and_then(|message| message.get("content"))
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|message| !message.is_empty())
-            .map(str::to_owned))
+            .map(|content| LivePlannerMessage {
+                content: content.to_owned(),
+                finish_reason,
+            }))
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpenHandsCompatiblePlannerAdapter;
+
+impl OpenHandsCompatiblePlannerAdapter {
+    fn new() -> Self {
+        Self
+    }
+
+    fn provider_messages(&self, request: &PlannerConversationRequest) -> Vec<Value> {
+        self.openhands_message_events(request)
+            .into_iter()
+            .map(|event| {
+                json!({
+                    "role": event.get("role").and_then(Value::as_str).unwrap_or("user"),
+                    "content": openhands_event_text(&event)
+                })
+            })
+            .collect()
+    }
+
+    fn openhands_message_events(&self, request: &PlannerConversationRequest) -> Vec<Value> {
+        let context = self.context_payload(request);
+        let context_text = serde_json::to_string(&context).unwrap_or_else(|_| "{}".to_owned());
+        let mut events = vec![openhands_planner_message_event(
+            "system",
+            &format!(
+                "{}\n\nOpenHands-compatible planner context follows. It is redacted and tool-disabled; use it for session/context shape only, not execution.\n{}",
+                planner_system_prompt(&request.runtime),
+                context_text
+            ),
+        )];
+        for turn in request
+            .history
+            .iter()
+            .rev()
+            .take(10)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+        {
+            let role = if turn.role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
+            events.push(openhands_planner_message_event(role, &turn.content));
+        }
+        events.push(openhands_planner_message_event("user", &request.message));
+        events
+    }
+
+    fn context_payload(&self, request: &PlannerConversationRequest) -> Value {
+        let run_id = RunId::new();
+        let workflow = ConfigWorkflowSpec {
+            name: request.runtime.workflow_name.clone(),
+            max_rounds: 1,
+            nodes: vec![ConfigWorkflowNodeSpec {
+                id: request.runtime.node_id.clone(),
+                agent: request.runtime.agent_id.clone(),
+                harness: request.runtime.harness_id.clone(),
+            }],
+            edges: Vec::new(),
+            stop: Default::default(),
+        };
+        let node = ConfigWorkflowNodeSpec {
+            id: request.runtime.node_id.clone(),
+            agent: request.runtime.agent_id.clone(),
+            harness: request.runtime.harness_id.clone(),
+        };
+        let mut harness = request.runtime.harness.clone();
+        harness.backend = "planner-model".to_owned();
+        harness.openhands = None;
+        harness.tools.clear();
+        harness.permissions.read_files = ConfigPermissionDecision::Deny;
+        harness.permissions.write_files = ConfigPermissionDecision::Deny;
+        harness.permissions.run_commands = ConfigPermissionDecision::Deny;
+        harness.permissions.network = ConfigPermissionDecision::Deny;
+        harness.permissions.secrets = ConfigPermissionDecision::Deny;
+        harness.permissions.publish_external = ConfigPermissionDecision::Deny;
+        harness.permissions.git_commit = ConfigPermissionDecision::Deny;
+        harness.permissions.git_push = ConfigPermissionDecision::Deny;
+        harness.permissions.deploy = ConfigPermissionDecision::Deny;
+        let mut model = request.runtime.model.clone();
+        model.base_url_env = None;
+        model.api_key_env = None;
+        let plan_context = json!({
+            "contract": "coder.planner_chat.request.v1",
+            "session_id": &request.session_id,
+            "mode": &request.mode,
+            "current_plan": &request.current_plan,
+            "strict_output_contract": {
+                "assistant_message": "concise natural language only",
+                "ready_for_start_work": "boolean",
+                "missing_information": "string[]",
+                "concise_plan_summary": "string",
+                "structured_artifacts": "optional table/notes/text artifacts",
+                "response_truncated": "boolean"
+            },
+            "side_effect_free": true,
+            "execution_requires": "Start Work -> OpenHands executor"
+        });
+        let mut payload = build_openhands_conversation_payload(OpenHandsConversationPayloadInput {
+            run_id: &run_id,
+            repo_root: ".",
+            workflow_id: &request.workflow_id,
+            workflow: &workflow,
+            node: &node,
+            agent_id: &request.runtime.agent_id,
+            agent: &request.runtime.agent,
+            harness_id: &request.runtime.harness_id,
+            harness: &harness,
+            model: &model,
+            plan_context: Some(&plan_context),
+        });
+        payload["agent"]["tools"] = json!([]);
+        payload["agent"]["include_default_tools"] = json!([]);
+        json!({
+            "adapter": "openhands-compatible-planner",
+            "fully_openhands_backed": false,
+            "reason": "Planner Chat must not create OpenHands runs or server-side execution conversations.",
+            "planner_tool_policy": {
+                "tools": [],
+                "terminal": false,
+                "file_editor": false,
+                "command_execution": false,
+                "network_tools": false
+            },
+            "openhands_conversation": payload
+        })
+    }
+}
+
+fn openhands_planner_message_event(role: &str, text: &str) -> Value {
+    json!({
+        "role": role,
+        "content": [
+            {
+                "type": "text",
+                "text": text,
+                "cache_prompt": false
+            }
+        ],
+        "run": false,
+        "source": "coder-planner"
+    })
+}
+
+fn openhands_event_text(event: &Value) -> String {
+    event
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find_map(|item| {
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+            })
+        })
+        .or_else(|| event.get("message").and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn planner_chat_completion_body(provider: &str, model_name: &str, messages: Vec<Value>) -> Value {
@@ -5905,7 +6696,7 @@ fn planner_chat_completion_body(provider: &str, model_name: &str, messages: Vec<
         "model": model_name,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 2048
+        "max_tokens": 900
     });
     if normalize_provider(provider) == "deepseek" {
         body["thinking"] = json!({"type": "disabled"});
@@ -5989,14 +6780,13 @@ fn is_planner_model_config_error(error: &str) -> bool {
 
 fn planner_system_prompt(runtime: &PlannerRuntimeContext) -> String {
     format!(
-        "{}\n\nRuntime boundary:\n- workflow_id: {}\n- workflow_name: {}\n- node_id: {}\n- agent_id: {}\n- harness_id: {}\n- tools: {}\n- side effects: denied\n\nChat, clarify, remember only through explicit proposals, draft concise plans, and never claim execution happened during Planner Chat.",
+        "{}\n\nPlanner contract:\n- You are Coder Planner.\n- Chat is planning and conversation only.\n- You do not edit files or run commands in chat.\n- You prepare the task and decide whether it is ready for Start Work.\n- When the user asks you to do work, explain briefly that execution happens after Start Work.\n- When ready, say exactly: \"I'm ready. Click Start Work and I'll execute this through the OpenHands executor.\"\n- Do not ask the user to switch modes.\n- Do not mention Discuss mode or Work mode.\n- Do not produce long internal plans unless asked.\n- Keep normal replies under 250 visible words when possible and always under 600 words.\n- Keep readiness replies under 120 words.\n- Do not output markdown tables in chat; summarize them or return structured data.\n\nRuntime boundary:\n- workflow_id: {}\n- workflow_name: {}\n- node_id: {}\n- agent_id: {}\n- harness_id: {}\n- execution_tools: none\n- allowed_context: preloaded Coder Planner session and allowed memory/context only\n- terminal: disabled\n- file_editor: disabled\n- command_execution: disabled\n- network_tools: disabled\n- side effects: denied\n\nNever claim execution happened during Planner Chat.",
         runtime.agent.system,
         runtime.workflow_id,
         runtime.workflow_name,
         runtime.node_id,
         runtime.agent_id,
-        runtime.harness_id,
-        runtime.harness.tools.join(", ")
+        runtime.harness_id
     )
 }
 
@@ -6033,21 +6823,70 @@ fn planner_provider_setup_required_response(message: String) -> PlannerConversat
         risks: Vec::new(),
         suggested_mode: "discuss".to_owned(),
         should_start_workflow: false,
+        artifacts: Vec::new(),
+        response_truncated: false,
+        large_artifacts: false,
+    }
+}
+
+fn concise_plan_summary(plan: Option<&PlanDraft>, fallback_message: &str) -> String {
+    let Some(plan) = plan else {
+        return single_line_preview(fallback_message, 240);
+    };
+    let mut parts = Vec::new();
+    if !plan.goal.trim().is_empty() {
+        parts.push(format!("Goal: {}", single_line_preview(&plan.goal, 180)));
+    }
+    if !plan.scope.is_empty() {
+        parts.push(format!(
+            "Scope: {}",
+            plan.scope
+                .iter()
+                .take(3)
+                .map(|item| single_line_preview(item, 80))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !plan.acceptance_criteria.is_empty() {
+        parts.push(format!(
+            "Checks: {}",
+            plan.acceptance_criteria
+                .iter()
+                .take(2)
+                .map(|item| single_line_preview(item, 100))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if parts.is_empty() {
+        single_line_preview(fallback_message, 240)
+    } else {
+        parts.join(" ")
     }
 }
 
 fn deterministic_planner_response(
     request: &PlannerConversationRequest,
-    model_message: Option<String>,
+    model_message: Option<LivePlannerMessage>,
 ) -> PlannerConversationResponse {
     let mode = normalize_planner_mode(Some(&request.mode));
     let work_like = message_looks_like_work(&request.message) || request.current_plan.is_some();
     if mode == "discuss" && !work_like {
-        let assistant_message = model_message.unwrap_or_else(|| {
+        let raw_message = model_message
+            .as_ref()
+            .map(|message| message.content.clone())
+            .unwrap_or_else(|| {
             "I can discuss that. If you want repository work later, I will first turn it into a scoped plan and keep execution behind Start Work.".to_owned()
         });
+        let shaped = shape_planner_assistant_message(
+            raw_message,
+            PlannerReadiness::Casual,
+            None,
+            live_message_was_length_truncated(model_message.as_ref()),
+        );
         return PlannerConversationResponse {
-            assistant_message,
+            assistant_message: shaped.assistant_message,
             plan_draft: request.current_plan.clone(),
             readiness: PlannerReadiness::Casual,
             open_questions: Vec::new(),
@@ -6055,6 +6894,9 @@ fn deterministic_planner_response(
             risks: Vec::new(),
             suggested_mode: "discuss".to_owned(),
             should_start_workflow: false,
+            artifacts: shaped.artifacts,
+            response_truncated: shaped.response_truncated,
+            large_artifacts: shaped.large_artifacts,
         };
     }
 
@@ -6064,12 +6906,21 @@ fn deterministic_planner_response(
     } else {
         PlannerReadiness::NeedsClarification
     };
-    let assistant_message = model_message.unwrap_or_else(|| {
-        deterministic_planner_message(&mode, &plan, readiness, request.confirmed)
-    });
+    let raw_message = model_message
+        .as_ref()
+        .map(|message| message.content.clone())
+        .unwrap_or_else(|| {
+            deterministic_planner_message(&mode, &plan, readiness, request.confirmed)
+        });
+    let shaped = shape_planner_assistant_message(
+        raw_message,
+        readiness,
+        Some(&plan),
+        live_message_was_length_truncated(model_message.as_ref()),
+    );
 
     PlannerConversationResponse {
-        assistant_message,
+        assistant_message: shaped.assistant_message,
         open_questions: plan.open_questions.clone(),
         acceptance_criteria: plan.acceptance_criteria.clone(),
         risks: plan.risks.clone(),
@@ -6081,7 +6932,241 @@ fn deterministic_planner_response(
         should_start_workflow: false,
         readiness,
         plan_draft: Some(plan),
+        artifacts: shaped.artifacts,
+        response_truncated: shaped.response_truncated,
+        large_artifacts: shaped.large_artifacts,
     }
+}
+
+#[derive(Debug, Clone)]
+struct ShapedPlannerMessage {
+    assistant_message: String,
+    artifacts: Vec<PlannerArtifact>,
+    response_truncated: bool,
+    large_artifacts: bool,
+}
+
+fn shape_planner_assistant_message(
+    raw_message: String,
+    readiness: PlannerReadiness,
+    plan: Option<&PlanDraft>,
+    source_truncated: bool,
+) -> ShapedPlannerMessage {
+    let (message_without_tables, artifacts) = extract_planner_artifacts_from_markdown(&raw_message);
+    let mut response_truncated = source_truncated;
+    let mut assistant_message = if readiness == PlannerReadiness::Ready {
+        ready_start_work_message(plan)
+    } else if source_truncated {
+        match plan {
+            Some(plan) if !plan.open_questions.is_empty() => clarification_summary_message(plan),
+            _ => PLANNER_TRUNCATED_NOTICE.to_owned(),
+        }
+    } else {
+        message_without_tables.trim().to_owned()
+    };
+
+    if !artifacts.is_empty() && !source_truncated && readiness != PlannerReadiness::Ready {
+        assistant_message = append_sentence(
+            assistant_message,
+            "I moved structured details into artifacts so the chat stays readable.",
+        );
+    }
+
+    assistant_message = sanitize_planner_execution_claims(&assistant_message);
+    let max_words = if readiness == PlannerReadiness::Ready {
+        PLANNER_READY_WORD_LIMIT
+    } else {
+        PLANNER_NORMAL_WORD_LIMIT
+    };
+    let (bounded_message, bounded_truncated) = limit_visible_words(&assistant_message, max_words);
+    response_truncated |= bounded_truncated;
+    let assistant_message =
+        if response_truncated && !bounded_message.contains(PLANNER_TRUNCATED_NOTICE) {
+            append_sentence(PLANNER_TRUNCATED_NOTICE.to_owned(), &bounded_message)
+        } else {
+            bounded_message
+        };
+    let large_artifacts = artifacts.iter().any(planner_artifact_is_large);
+
+    ShapedPlannerMessage {
+        assistant_message,
+        artifacts,
+        response_truncated,
+        large_artifacts,
+    }
+}
+
+fn live_message_was_length_truncated(message: Option<&LivePlannerMessage>) -> bool {
+    message
+        .and_then(|message| message.finish_reason.as_deref())
+        .map(|reason| {
+            let normalized = reason.to_ascii_lowercase();
+            normalized == "length" || normalized == "max_tokens"
+        })
+        .unwrap_or(false)
+}
+
+fn ready_start_work_message(plan: Option<&PlanDraft>) -> String {
+    let mut parts = vec![
+        "I'm ready. Click Start Work and I'll execute this through the OpenHands executor."
+            .to_owned(),
+    ];
+    if let Some(plan) = plan {
+        if !plan.goal.trim().is_empty() {
+            parts.push(format!("Goal: {}", single_line_preview(&plan.goal, 180)));
+        }
+        if !plan.acceptance_criteria.is_empty() {
+            parts.push(format!(
+                "Checks: {}",
+                plan.acceptance_criteria
+                    .iter()
+                    .take(2)
+                    .map(|item| single_line_preview(item, 120))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+    }
+    parts.join("\n")
+}
+
+fn clarification_summary_message(plan: &PlanDraft) -> String {
+    format!(
+        "Before Start Work can run through the OpenHands executor, I need:\n{}",
+        numbered_lines(&plan.open_questions)
+    )
+}
+
+fn append_sentence(mut current: String, sentence: &str) -> String {
+    let sentence = sentence.trim();
+    if sentence.is_empty() {
+        return current;
+    }
+    if current.trim().is_empty() {
+        return sentence.to_owned();
+    }
+    if !current.ends_with('\n') {
+        current.push_str("\n\n");
+    }
+    current.push_str(sentence);
+    current
+}
+
+fn sanitize_planner_execution_claims(message: &str) -> String {
+    let mut sanitized = message
+        .replace("Discuss mode", "Planner Chat")
+        .replace("discuss mode", "Planner Chat")
+        .replace("Work mode", "Start Work")
+        .replace("work mode", "Start Work");
+    let lower = sanitized.to_ascii_lowercase();
+    let claimed_execution = [
+        "i edited",
+        "i have edited",
+        "i created",
+        "i have created",
+        "i updated",
+        "i have updated",
+        "i implemented",
+        "i have implemented",
+        "i ran ",
+        "i have run ",
+        "files are changed",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase));
+    if claimed_execution {
+        sanitized = "I can plan this here, but I do not edit files or run commands in chat. When this is ready, click Start Work and I will execute it through the OpenHands executor.".to_owned();
+    }
+    sanitized
+}
+
+fn limit_visible_words(message: &str, max_words: usize) -> (String, bool) {
+    let words = message.split_whitespace().collect::<Vec<_>>();
+    if words.len() <= max_words {
+        return (message.trim().to_owned(), false);
+    }
+    (words[..max_words].join(" "), true)
+}
+
+fn single_line_preview(value: &str, max_chars: usize) -> String {
+    let mut preview = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if preview.chars().count() > max_chars {
+        preview = preview
+            .chars()
+            .take(max_chars.saturating_sub(3))
+            .collect::<String>()
+            .trim_end()
+            .to_owned();
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn planner_artifact_is_large(artifact: &PlannerArtifact) -> bool {
+    match artifact {
+        PlannerArtifact::Table { rows, .. } => rows.len() > 8,
+        PlannerArtifact::Notes { items, .. } => items.len() > 8,
+        PlannerArtifact::Text { content, .. } => content.split_whitespace().count() > 120,
+    }
+}
+
+fn extract_planner_artifacts_from_markdown(message: &str) -> (String, Vec<PlannerArtifact>) {
+    let lines = message.lines().collect::<Vec<_>>();
+    let mut kept = Vec::new();
+    let mut artifacts = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        if index + 1 < lines.len()
+            && is_markdown_table_row(lines[index])
+            && is_markdown_table_separator(lines[index + 1])
+        {
+            let columns = split_markdown_table_row(lines[index]);
+            let mut rows = Vec::new();
+            index += 2;
+            while index < lines.len() && is_markdown_table_row(lines[index]) {
+                let row = split_markdown_table_row(lines[index]);
+                if !row.is_empty() {
+                    rows.push(row);
+                }
+                index += 1;
+            }
+            if !columns.is_empty() && !rows.is_empty() {
+                let collapsed = rows.len() > 6;
+                artifacts.push(PlannerArtifact::Table {
+                    title: format!("Planner table {}", artifacts.len() + 1),
+                    columns,
+                    rows,
+                    collapsed,
+                });
+                continue;
+            }
+        }
+        kept.push(lines[index]);
+        index += 1;
+    }
+    (kept.join("\n"), artifacts)
+}
+
+fn is_markdown_table_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.matches('|').count() >= 2
+}
+
+fn is_markdown_table_separator(line: &str) -> bool {
+    let trimmed = line.trim();
+    is_markdown_table_row(trimmed)
+        && trimmed
+            .chars()
+            .all(|ch| matches!(ch, '|' | '-' | ':' | ' '))
+}
+
+fn split_markdown_table_row(line: &str) -> Vec<String> {
+    line.trim()
+        .trim_matches('|')
+        .split('|')
+        .map(|cell| cell.trim().trim_matches('`').to_owned())
+        .filter(|cell| !cell.is_empty())
+        .collect()
 }
 
 fn deterministic_planner_message(
@@ -6811,11 +7896,14 @@ impl From<MemoryError> for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf, process::Command};
+    use std::{fs, path::PathBuf, process::Command, sync::Arc};
 
     use axum::{
         body::{to_bytes, Body},
+        extract::State,
         http::{Request, StatusCode},
+        routing::post,
+        Json,
     };
     use serde_json::{json, Value};
     use tower::ServiceExt;
@@ -7340,6 +8428,246 @@ mod tests {
         assert_eq!(second_body["should_start_workflow"], false);
         assert_eq!(second_body["execution_allowed"], false);
         assert_eq!(second_body["session"]["turns"].as_array().unwrap().len(), 4);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn planner_ready_response_mentions_start_work_and_openhands_boundary() {
+        let app = test_router();
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        let session_id = response_json(create_response).await["session"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let turn_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "Create a minimal Snake game in F:\\ccc\\coder-snake-game. Acceptance: index.html exists; main.js passes node --check.",
+                "confirmed": true
+            }),
+        )
+        .await;
+
+        assert_eq!(turn_response.status(), StatusCode::OK);
+        let body = response_json(turn_response).await;
+        let assistant = body["assistant_message"].as_str().unwrap();
+        assert_eq!(body["ready"], true);
+        assert_eq!(body["ready_for_start_work"], true);
+        assert!(body["missing_information"].as_array().unwrap().is_empty());
+        assert!(body["concise_plan_summary"]
+            .as_str()
+            .unwrap()
+            .contains("Snake game"));
+        assert!(body["structured_artifacts"].as_array().unwrap().is_empty());
+        assert!(assistant.contains("Click Start Work"));
+        assert!(assistant.contains("OpenHands executor"));
+        assert!(!assistant.contains("Discuss mode"));
+        assert!(!assistant.contains("Work mode"));
+        let lower = assistant.to_ascii_lowercase();
+        assert!(!lower.contains("i edited"));
+        assert!(!lower.contains("i ran "));
+        assert_eq!(body["should_start_workflow"], false);
+        assert_eq!(body["execution_allowed"], false);
+    }
+
+    #[test]
+    fn openhands_compatible_planner_adapter_uses_no_execution_tools() {
+        let mut config = default_project_config();
+        let model = config.models.get_mut("default").unwrap();
+        model.provider = "deepseek".to_owned();
+        model.model = "deepseek-v4-flash".to_owned();
+        model.base_url_env = Some("SHOULD_NOT_BE_USED_BASE_URL".to_owned());
+        model.api_key_env = Some("SHOULD_NOT_BE_USED_API_KEY".to_owned());
+        let runtime = resolve_planner_runtime(&config, "planner-led", Some("planner")).unwrap();
+        let request = PlannerConversationRequest {
+            session_id: "pcs-openhands-compatible".to_owned(),
+            workflow_id: "planner-led".to_owned(),
+            runtime,
+            mode: "discuss".to_owned(),
+            message: "Create a Snake game in F:\\ccc.".to_owned(),
+            confirmed: false,
+            history: Vec::new(),
+            current_plan: None,
+            provider_settings: ProviderSettings::default(),
+        };
+        let adapter = OpenHandsCompatiblePlannerAdapter::new();
+
+        let context = adapter.context_payload(&request);
+        let text = context.to_string();
+
+        assert_eq!(context["adapter"], "openhands-compatible-planner");
+        assert_eq!(context["fully_openhands_backed"], false);
+        assert_eq!(
+            context["planner_tool_policy"]["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            context["openhands_conversation"]["agent"]["tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            context["openhands_conversation"]["agent"]["include_default_tools"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            context["openhands_conversation"]["agent"]["llm"]["model"],
+            "openai/deepseek-v4-flash"
+        );
+        assert!(context["openhands_conversation"]["agent"]["llm"]
+            .get("api_key")
+            .is_none());
+        assert!(context["openhands_conversation"]["agent"]["llm"]
+            .get("base_url")
+            .is_none());
+        assert!(!text.contains("\"name\":\"terminal\""));
+        assert!(!text.contains("\"name\":\"file_editor\""));
+        assert!(!text.contains("\"name\":\"task_tracker\""));
+        assert!(
+            context["openhands_conversation"]["coder_context"]["harness"]["permissions"]
+                ["run_commands"]
+                .as_str()
+                .unwrap()
+                .eq_ignore_ascii_case("deny")
+        );
+
+        let events = adapter.openhands_message_events(&request);
+        assert!(events.iter().all(|event| event["run"] == false));
+        let system_text = events.first().unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .first()
+            .unwrap()["text"]
+            .as_str()
+            .unwrap();
+        assert!(system_text.contains("OpenHands-compatible planner context"));
+        assert!(system_text.contains("execution_tools: none"));
+        assert!(system_text.contains("file_editor: disabled"));
+        assert!(!system_text.contains("repo_search"));
+        assert!(!system_text.contains("git_diff"));
+        assert!(!system_text.contains("tools: memory_read"));
+        assert!(!system_text.contains("command_run"));
+    }
+
+    #[tokio::test]
+    async fn planner_provider_length_finish_reason_uses_controlled_message() {
+        let store_root = temp_root();
+        let long_content = (0..900)
+            .map(|index| format!("word{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let provider_base_url = spawn_openai_compatible_test_server_with_payload(json!({
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {
+                        "content": long_content
+                    }
+                }
+            ]
+        }))
+        .await;
+        let app = provider_backed_test_app(&store_root, provider_base_url);
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        let session_id = response_json(create_response).await["session"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let turn_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "hello planner"
+            }),
+        )
+        .await;
+
+        assert_eq!(turn_response.status(), StatusCode::OK);
+        let body = response_json(turn_response).await;
+        let assistant = body["assistant_message"].as_str().unwrap();
+        assert_eq!(body["response_truncated"], true);
+        assert!(assistant.contains(PLANNER_TRUNCATED_NOTICE));
+        assert!(assistant.split_whitespace().count() <= PLANNER_NORMAL_WORD_LIMIT + 20);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
+    async fn planner_markdown_table_response_becomes_structured_artifact() {
+        let store_root = temp_root();
+        let provider_base_url = spawn_openai_compatible_test_server_with_payload(json!({
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {
+                        "content": "Here is the compact plan:\n\n| File | Change |\n| --- | --- |\n| index.html | add shell |\n| main.js | add game loop |\n"
+                    }
+                }
+            ]
+        }))
+        .await;
+        let app = provider_backed_test_app(&store_root, provider_base_url);
+        let create_response = post_json(
+            app.clone(),
+            "/api/v3/planner-chat/sessions",
+            json!({
+                "workflow_id": "planner-led",
+                "mode": "discuss"
+            }),
+        )
+        .await;
+        let session_id = response_json(create_response).await["session"]["session_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let turn_response = post_json(
+            app,
+            &format!("/api/v3/planner-chat/sessions/{session_id}/turn"),
+            json!({
+                "message": "please compare options"
+            }),
+        )
+        .await;
+
+        assert_eq!(turn_response.status(), StatusCode::OK);
+        let body = response_json(turn_response).await;
+        let assistant = body["assistant_message"].as_str().unwrap();
+        assert!(!assistant.contains("| File | Change |"));
+        let artifacts = body["artifacts"].as_array().unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0]["type"], "table");
+        assert_eq!(artifacts[0]["columns"][0], "File");
+        assert_eq!(artifacts[0]["rows"][1][1], "add game loop");
+        let session_turns = body["session"]["turns"].as_array().unwrap();
+        let latest = session_turns.last().unwrap();
+        assert_eq!(latest["artifacts"][0]["type"], "table");
         let _ = fs::remove_dir_all(store_root);
     }
 
@@ -8416,10 +9744,8 @@ mod tests {
             .await
             .unwrap();
         let initial_body = response_json(initial).await;
-        assert_eq!(
-            initial_body["settings"]["server_url"],
-            "http://127.0.0.1:8000"
-        );
+        assert_eq!(initial_body["settings"]["runtime_mode"], "managed");
+        assert_eq!(initial_body["settings"]["server_url"], "");
         assert_eq!(
             initial_body["settings"]["session_api_key"]["configured"],
             false
@@ -8443,12 +9769,14 @@ mod tests {
         let save_body = response_json(save).await;
         assert_eq!(save_body["settings"]["enabled"], true);
         assert_eq!(save_body["settings"]["allow_native_fallback"], false);
+        assert_eq!(save_body["settings"]["runtime_mode"], "external");
         assert_eq!(save_body["settings"]["session_api_key"]["configured"], true);
         assert_eq!(
             save_body["settings"]["session_api_key"]["source"],
-            "settings"
+            "external_settings"
         );
         assert_eq!(save_body["status"]["status"], "connected");
+        assert_eq!(save_body["status"]["runtime_mode"], "external");
         assert_eq!(save_body["status"]["enabled"], true);
         assert_eq!(save_body["status"]["allow_native_fallback"], false);
         assert_eq!(save_body["status"]["version"], "test-openhands");
@@ -8467,7 +9795,7 @@ mod tests {
             .unwrap();
         let status_body = response_json(status_response).await;
         assert_eq!(status_body["status"], "connected");
-        assert_eq!(status_body["credential_source"], "settings");
+        assert_eq!(status_body["credential_source"], "external_settings");
         assert!(!status_body.to_string().contains("session-secret"));
 
         let clear = post_json(
@@ -8487,6 +9815,59 @@ mod tests {
         restore_env_var("OPENHANDS_ENABLED", previous_enabled);
         restore_env_var("OPENHANDS_WORKSPACE_MODE", previous_workspace_mode);
         restore_env_var("OPENHANDS_ALLOW_NATIVE_FALLBACK", previous_allow_fallback);
+    }
+
+    #[test]
+    fn managed_openhands_runtime_generates_internal_secret_and_injects_harness() {
+        let settings = OpenHandsSettings {
+            enabled: true,
+            server_url: String::new(),
+            workspace_mode: "local".to_owned(),
+            allow_native_fallback: false,
+            runtime_mode: "managed".to_owned(),
+            session_api_key: OpenHandsKeyState {
+                configured: false,
+                source: "none".to_owned(),
+                secret: None,
+            },
+        };
+        let first = ApiState::new(RunStore::new(temp_root()));
+        let second = ApiState::new(RunStore::new(temp_root()));
+        let first_connection = first.executor_runtime.openhands_connection(&settings);
+        let second_connection = second.executor_runtime.openhands_connection(&settings);
+
+        assert_eq!(first_connection.mode, "managed");
+        assert_eq!(first_connection.public_server_url, "managed");
+        assert_eq!(first_connection.credential_source, "managed_runtime");
+        let first_token = first_connection.token.clone().unwrap();
+        let second_token = second_connection.token.clone().unwrap();
+        assert!(first_token.len() >= 64);
+        assert_ne!(first_token, second_token);
+
+        let mut config = default_project_config();
+        apply_openhands_settings_to_project_config(&mut config, &settings, &first.executor_runtime);
+        let openhands = config
+            .harnesses
+            .get("openhands-code-edit")
+            .and_then(|harness| harness.openhands.as_ref())
+            .unwrap();
+        assert_eq!(openhands.server_url, first_connection.server_url);
+        assert_eq!(
+            openhands.session_api_key.as_deref(),
+            Some(first_token.as_str())
+        );
+        assert_eq!(openhands.session_api_key_env, None);
+        assert_eq!(openhands.api_paths.api_prefix, "/api");
+        assert_eq!(
+            openhands.api_paths.auth_header,
+            ConfigOpenHandsAuthHeaderMode::XSessionApiKey
+        );
+        assert_eq!(
+            openhands.run_start_strategy,
+            ConfigOpenHandsRunStartStrategy::PostRunEndpoint
+        );
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(!serialized.contains(&first_token));
     }
 
     #[test]
@@ -8618,14 +9999,14 @@ mod tests {
             planner_chat_completion_body("deepseek", "deepseek-v4-flash", messages.clone());
         assert_eq!(deepseek["model"], "deepseek-v4-flash");
         assert_eq!(deepseek["temperature"], 0.2);
-        assert_eq!(deepseek["max_tokens"], 2048);
+        assert_eq!(deepseek["max_tokens"], 900);
         assert_eq!(deepseek["thinking"]["type"], "disabled");
         assert_eq!(deepseek["messages"], json!(messages));
 
         let generic =
             planner_chat_completion_body("openai-compatible", "gpt-compatible-test", Vec::new());
         assert_eq!(generic["model"], "gpt-compatible-test");
-        assert_eq!(generic["max_tokens"], 2048);
+        assert_eq!(generic["max_tokens"], 900);
         assert!(generic.get("thinking").is_none());
     }
 
@@ -10098,6 +11479,64 @@ diff --git a/tracked.txt b/tracked.txt
     }
 
     #[tokio::test]
+    async fn changes_endpoint_includes_untracked_new_files() {
+        let repo = temp_root();
+        let store_root = temp_root();
+        fs::create_dir_all(&repo).unwrap();
+        fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&repo, &["init"]);
+        run_git(&repo, &["config", "user.email", "coder@example.test"]);
+        run_git(&repo, &["config", "user.name", "Coder Test"]);
+        run_git(&repo, &["add", "README.md"]);
+        run_git(&repo, &["commit", "-m", "base"]);
+        fs::write(repo.join("main.js"), "const score = 0;\n").unwrap();
+
+        let store = RunStore::new(&store_root);
+        let run_id = RunId::from_string("run-untracked");
+        store
+            .append_event(
+                &run_id,
+                &coder_events::CoderEvent::new(
+                    run_id.clone(),
+                    1,
+                    "run.started",
+                    json!({"repo_root": repo.display().to_string(), "task": "create new file"}),
+                ),
+            )
+            .unwrap();
+        store
+            .write_report(&run_id, &FinalReport::completed("Created main.js"))
+            .unwrap();
+        let app = router(ApiState::new(store));
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v3/runs/run-untracked/changes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list_body = response_json(list_response).await;
+        assert_eq!(list_body["changes"].as_array().unwrap().len(), 1);
+        let diff = list_body["changes"][0]["after_diff"].as_str().unwrap();
+        assert!(diff.contains("diff --git a/main.js b/main.js"));
+        assert!(diff.contains("new file mode"));
+        assert!(diff.contains("+const score = 0;"));
+        assert!(list_body["changes"][0]["changed_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file["path"] == "main.js"));
+        let _ = fs::remove_dir_all(repo);
+        let _ = fs::remove_dir_all(store_root);
+    }
+
+    #[tokio::test]
     async fn timeline_and_changes_missing_runs_return_structured_errors() {
         let app = test_router();
         let missing_timeline = app
@@ -10480,25 +11919,54 @@ diff --git a/tracked.txt b/tracked.txt
     }
 
     async fn spawn_openai_compatible_test_server() -> String {
-        async fn chat_completion() -> Json<Value> {
-            Json(json!({
-                "choices": [
-                    {
-                        "message": {
-                            "content": "Live provider response."
-                        }
+        spawn_openai_compatible_test_server_with_payload(json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "Live provider response."
                     }
-                ]
-            }))
+                }
+            ]
+        }))
+        .await
+    }
+
+    async fn spawn_openai_compatible_test_server_with_payload(payload: Value) -> String {
+        async fn chat_completion(State(payload): State<Arc<Value>>) -> Json<Value> {
+            Json((*payload).clone())
         }
 
-        let app = Router::new().route("/chat/completions", axum::routing::post(chat_completion));
+        let app = Router::new()
+            .route("/chat/completions", post(chat_completion))
+            .with_state(Arc::new(payload));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
         format!("http://{addr}")
+    }
+
+    fn provider_backed_test_app(store_root: &PathBuf, provider_base_url: String) -> Router {
+        let state = ApiState::new(RunStore::new(store_root));
+        {
+            let mut settings = state.provider_settings.lock().unwrap();
+            settings.mock_mode = false;
+            settings.default_provider = "openai-compatible".to_owned();
+            settings.default_model = "test-model".to_owned();
+            settings
+                .base_urls
+                .insert("openai-compatible".to_owned(), provider_base_url);
+            settings.api_keys.insert(
+                "openai-compatible".to_owned(),
+                ProviderKeyState {
+                    configured: true,
+                    source: "settings".to_owned(),
+                    secret: Some("provider-test-token".to_owned()),
+                },
+            );
+        }
+        router(state)
     }
 
     async fn post_json(app: Router, uri: &str, body: Value) -> axum::response::Response {

@@ -1,155 +1,137 @@
 # OpenHands Planner Reuse Decision
 
-Recorded: 2026-07-01
+Recorded: 2026-07-02
 
-Decision: do not route Planner Chat through OpenHands conversation/runtime in
-this phase. Keep the current Coder Planner provider path, and keep the boundary
-thin so a future OpenHands-backed provider adapter can replace it if OpenHands
-exposes a side-effect-free chat/provider surface.
+Decision: implement Path B, an OpenHands-compatible Planner adapter, now. Do
+not route Planner Chat through a live OpenHands conversation until OpenHands
+provides a no-run, no-tools chat/session contract that can be enforced by API.
 
-## Product Boundary
+## What Was Weak
 
-Planner Chat must remain side-effect free:
+The old Planner path was too easy for a general chat model to misuse:
 
-- talks to the user
-- uses configured provider credentials
-- may read bounded planning context and memory proposals
-- does not start workflow runs
-- does not edit files
-- does not run terminal commands
-- does not call OpenHands tools
+- Prompt issue: the boundary between chat and Start Work was appended as general
+  guidance, not a strict product contract.
+- Provider issue: Planner used a direct chat-completions request with a large
+  token budget and no finish-reason handling.
+- Context issue: Planner context did not use the same session/context shape as
+  OpenHands execution payloads.
+- Output contract issue: responses were only plain text plus loose readiness
+  fields, so tables and long answers leaked into chat.
+- Session loop issue: chat turns were stored as message strings without
+  structured artifacts or truncation metadata.
+- Reuse issue: Planner did not reuse OpenHands-compatible message/session/context
+  shapes, while Executor already did.
 
-Executor remains the OpenHands-backed runtime:
+## Implemented Now
 
-- starts only after Start Work
-- owns the ReAct loop
-- uses terminal, file editor, and task tracker tools through harness policy
-- emits evidence, timeline events, review changes, and undo state
+`crates/coder-server/src/lib.rs` now has
+`OpenHandsCompatiblePlannerAdapter`.
 
-## Current Implementation
+The adapter reuses OpenHands-compatible shapes without creating an OpenHands run:
 
-Coder already has a narrow Planner provider path in
-`crates/coder-server/src/lib.rs`:
+- OpenHands conversation payload shape from
+  `coder_workflow::build_openhands_conversation_payload`.
+- OpenHands context contract shape: `coder.openhands.conversation.v1` and
+  `coder.openhands.context.v1`.
+- OpenHands message event shape: role, text content, `cache_prompt=false`, and
+  `run=false`.
+- OpenHands model naming normalization through the shared payload builder, while
+  stripping `api_key_env` and `base_url_env` from the Planner context payload so
+  secrets are not embedded in prompts.
 
-- `ModelPlannerConversationEngine::live_assistant_message`
-- `provider_http_client_builder`
-- `provider_api_key`
-- `model_provider_base_url`
-- `planner_system_prompt`
+The Planner remains side-effect free:
 
-This path calls an OpenAI-compatible chat completions endpoint directly, applies
-provider settings from the UI, supports explicit provider proxy URLs, bypasses
-proxies for localhost providers, redacts configured secrets from errors, and
-falls back to deterministic planner responses only in mock mode.
+- no OpenHands server conversation is created
+- no `trigger_run`
+- no user event is posted to OpenHands
+- `run=false` on all compatible message events
+- `tools=[]`
+- `include_default_tools=[]`
+- terminal, file editor, task tracker, command execution, network tools, secrets,
+  git commit, git push, and deploy are denied in the Planner-compatible context
 
-OpenHands integration is currently execution-oriented:
+## Prompt And Contract
 
-- `coder-openhands::OpenHandsClient` creates or attaches conversations
-- it sends user events and starts runs
-- it polls or streams execution events
-- `coder-workflow::OpenHandsHarnessBackend` normalizes those events into public
-  ReAct timeline items
+Planner prompt now states:
 
-Those APIs are a good executor fit, but not a clean Planner Chat fit today.
+- Chat is planning and conversation only.
+- Planner does not edit files or run commands in chat.
+- Execution starts only when the user clicks Start Work.
+- When ready, Planner says: "I'm ready. Click Start Work and I'll execute this
+  through the OpenHands executor."
+- Planner must not mention Discuss/Work modes or expose internal readiness state.
+- Planner keeps normal answers bounded and avoids markdown tables in chat.
 
-## Reuse Questions
+Planner API responses now include:
 
-### Can Planner reuse the OpenHands provider adapter?
+- `assistant_message`
+- `ready_for_start_work`
+- `missing_information`
+- `concise_plan_summary`
+- `structured_artifacts`
+- `response_truncated`
 
-Not directly today. The reusable OpenHands Rust crate is a conversation/run/event
-client, not a standalone provider adapter. The current Planner path needs only a
-tool-less chat completion call, provider settings, proxy handling, and redacted
-errors. Reusing OpenHands by starting a conversation would add run semantics the
-Planner must avoid.
+The UI displays only the assistant message and compact artifact cards.
 
-Future-safe direction: extract Coder's provider request construction into a
-small `PlannerModelClient`/`ChatCompletionClient` interface. If OpenHands later
-exposes a side-effect-free provider adapter, implement that interface behind the
-same boundary.
+## Executor Runtime Boundary
 
-### Can Planner reuse the OpenHands conversation/session client?
+Planner reuse is separate from execution ownership. Coder now treats OpenHands
+as an internal executor runtime in managed mode:
 
-No for the product path in this phase. `OpenHandsClient` is designed around
-OpenHands conversations and run triggering. Even with tools disabled, the shape
-is still an execution conversation with server-side state outside the Planner
-session store. That would make it harder to prove that Planner turns cannot
-start work.
+- Coder generates an in-memory Executor Runtime Secret per server launch.
+- The secret is generated from OS-backed randomness and is different for each
+  runtime.
+- The secret is injected into the managed OpenHands child process only through
+  process environment, never through persisted config.
+- Start Work injects the runtime secret into `OpenHandsHarnessConfig` through
+  the existing skipped `session_api_key` field, so serialization and git diffs
+  do not contain it.
+- External OpenHands URLs and tokens remain a developer/enterprise mode, not
+  normal user setup.
 
-Future-safe direction: keep Planner sessions in Coder's session store and allow
-only a tool-less, no-run OpenHands conversation adapter if it can be proven to:
+Managed mode preserves the Planner boundary: Planner Chat still has no tools,
+no terminal, no file editor, and no command execution. Start Work is the only
+path that can hand work to the OpenHands executor.
 
-- never call `trigger_run`
-- never post user events with `run=true`
-- never expose terminal, file, browser, or task tools
-- persist only redacted message summaries into Coder state
+## Why Not Path A Yet
 
-### Can Planner reuse OpenHands event normalization?
+Path A would require Planner Chat to create a live OpenHands conversation. The
+current `coder-openhands::OpenHandsClient` is an execution client: it creates or
+attaches conversations, sends user events, can start runs, and polls execution
+events. Even if tools are omitted, it still introduces server-side
+conversation/runtime state outside Coder's canonical Planner session store.
 
-Partially. OpenHands raw execution event normalization is already reused for
-Executor timeline projection. Planner Chat should not emit OpenHands execution
-events, but it can mirror the same public-envelope discipline:
+Concrete blockers:
 
-- bounded public summaries
-- no raw provider payloads in normal UI
-- secret redaction before persistence
-- evidence refs instead of large raw JSON blobs
+- no documented no-run Planner conversation API
+- no enforced no-tools/no-default-tools contract at the OpenHands API boundary
+- no side-effect-free provider-only adapter exposed by OpenHands in this repo
+- no proof that OpenHands will not create executable runtime state for Planner
+  chat turns
 
-Implementation is already aligned conceptually; no new runtime code is needed
-for this phase.
+Until those blockers are removed, Path A would weaken the Planner/Executor
+split. Path B gives concrete reuse while preserving the product boundary.
 
-### Can Planner reuse OpenHands memory/context components?
+## Tests
 
-No concrete OpenHands memory adapter is available in this repository. Coder's
-Planner memory boundary is already explicit: project/long-term memory can be
-read or proposed only through planning-chat roles, and workflow agents cannot
-confirm long-term writes.
+Current tests prove:
 
-Future-safe direction: if OpenHands exposes reusable context summarization, it
-may feed bounded hints into Planner Chat, but memory writes must still go
-through Coder's planner-only propose/confirm endpoints.
+- Planner does not claim it edited or ran files in chat.
+- Planner tells the user to click Start Work when ready.
+- Planner can mark `Create a minimal Snake game in F:\ccc\coder-snake-game`
+  ready.
+- Planner can answer two turns through a real local provider test server.
+- Provider `finish_reason=length` produces a controlled truncated response.
+- Markdown table output becomes structured table artifacts.
+- The OpenHands-compatible Planner adapter has no terminal, file editor, task
+  tracker, default tools, command tools, or run-triggering message events.
+- Managed OpenHands runtime secrets are generated per server state, injected
+  only into the in-memory harness config, and not serialized.
 
-### Can Planner run through OpenHands with tools disabled?
+## Remaining Work
 
-Not safely enough for this phase. A tool-less OpenHands conversation could be
-made to work technically, but it would still create another session/run-shaped
-control plane beside Coder's Planner session model. The value is low while the
-risk to the Planner/Executor split is high.
-
-### Would that preserve side-effect-free planning?
-
-Only if OpenHands provides a no-run, no-tools mode with enforceable API
-contracts. The current local integration proved OpenHands Agent Server can run
-real executor work; it did not prove a side-effect-free Planner mode.
-
-### Would that simplify Coder?
-
-Not now. It would replace a small direct chat-completions call with a larger
-conversation/runtime adapter and more state synchronization. The simpler current
-path is to keep Planner's provider call direct and keep Executor on OpenHands.
-
-## Decision
-
-Keep the current Planner provider path for product mode.
-
-Do now:
-
-- document this decision
-- keep Planner provider code isolated behind `PlannerConversationEngine`
-- keep OpenHands event normalization limited to executor events
-- keep Provider Settings as the shared user configuration surface for Planner
-  provider calls and OpenHands executor settings
-
-Do later only if OpenHands exposes the right boundary:
-
-- introduce a thin `OpenHandsPlannerConversationAdapter`
-- make it tool-less and no-run by construction
-- reuse only provider/session/message pieces, not executor tools
-- keep Coder Planner session state canonical
-- add tests proving Planner Chat cannot start OpenHands runs
-
-## Acceptance Status
-
-This phase does not implement an OpenHands-backed Planner adapter because the
-safe reuse point is not present yet. The documented boundary keeps the future
-swap small while preserving the product split that was already validated by
-Planner Chat tests, Start Work tests, and the OpenHands live executor smoke.
+OpenHands-backed Planner Chat can replace Path B only after OpenHands exposes a
+tool-disabled, no-run chat/session/provider adapter with explicit guarantees.
+When that exists, Coder should keep its Planner session store canonical and use
+OpenHands only as the safe conversation/provider backend.

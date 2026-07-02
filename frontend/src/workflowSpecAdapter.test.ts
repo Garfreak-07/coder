@@ -317,6 +317,35 @@ test("Planner Chat page renders two turns without synthetic status cards", () =>
   assert.ok(!text.includes(["Work", "mode"].join(" ")));
 });
 
+test("Planner Chat renders structured table artifacts as compact cards", () => {
+  const tree = renderPlannerChat(plannerSessionFixture({
+    messages: [
+      { role: "user", content: "Compare files" },
+      {
+        role: "assistant",
+        content: "I summarized the structured details below.",
+        artifacts: [
+          {
+            type: "table",
+            title: "Planner table 1",
+            columns: ["File", "Change"],
+            rows: [["index.html", "add shell"], ["main.js", "add game loop"]]
+          }
+        ]
+      }
+    ]
+  }));
+  const text = collectReactTreeText(tree);
+  const classNames = collectReactTreeClassNames(tree);
+
+  assert.ok(text.includes("Planner table 1"));
+  assert.ok(text.includes("index.html"));
+  assert.ok(text.includes("add game loop"));
+  assert.ok(classNames.includes("planner-artifact-card"));
+  assert.ok(classNames.includes("planner-artifact-table-wrap"));
+  assert.ok(!text.includes("| File | Change |"));
+});
+
 test("Planner Chat shell exposes polished empty, loading, and Start Work states", () => {
   const emptyTree = renderPlannerChat(null);
   const readyTree = renderPlannerChat(plannerSessionFixture(), { request: "Implement the accepted plan." });

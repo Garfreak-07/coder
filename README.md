@@ -187,15 +187,17 @@ cargo run -p coder-cli --bin coder-rust -- server --host 127.0.0.1 --port 8766
 
 ## OpenHands
 
-OpenHands remains the preferred external Executor backend. Without a running
-OpenHands server, local development can use native Rust fallback capabilities
-and the mock workflow endpoint used by smoke tests.
+OpenHands is the required Start Work executor engine, but it is an internal
+Coder runtime detail. Normal users do not configure OpenHands ports, session
+keys, routes, profiles, or workspace modes. Coder starts or discovers the local
+executor runtime, generates an in-memory Executor Runtime Secret per launch,
+injects it into the child process, and shuts the runtime down with Coder.
 
-Optional live OpenHands validation is available when a server is configured:
+Optional external OpenHands validation remains available for developer
+compatibility checks:
 
 ```powershell
 $env:OPENHANDS_LIVE_SMOKE="1"
-$env:OPENHANDS_AGENT_SERVER_URL="http://127.0.0.1:8000"
 powershell -ExecutionPolicy Bypass -File .\scripts\live-openhands-smoke.ps1
 ```
 
@@ -206,10 +208,10 @@ Without `OPENHANDS_LIVE_SMOKE=1`, the script can be run with
 
 Use the app `Settings` page for DeepSeek or OpenAI-compatible API keys, model
 selection, base URLs, and provider proxy URLs. The normal user path does not
-require `LLM_BASE_URL`, `LLM_API_KEY`, or `SESSION_API_KEY`. See
+require `LLM_BASE_URL`, `LLM_API_KEY`, OpenHands URLs, or OpenHands tokens. See
 [`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md).
 
-For local OpenHands smoke tests and headless development, environment variables
+For local provider smoke tests and headless development, environment variables
 remain available as fallback. Prefer environment variables rather than committed
 files:
 
@@ -219,15 +221,14 @@ $env:DEEPSEEK_API_KEY="..."
 $env:LLM_API_KEY=$env:DEEPSEEK_API_KEY
 $env:LLM_BASE_URL="https://api.deepseek.com"
 $env:LLM_MODEL="deepseek-v4-flash"
-$env:CODER_ENABLE_OPENHANDS_RUNTIME="1"
 ```
 
-`examples/coder.yaml` shows the explicit compatibility profile for older
-SDK-style OpenHands servers.
+External OpenHands server settings are developer/enterprise compatibility
+options, not normal user setup.
 
 ## Guardrails
 
-- Keep the ordinary product path Planner-led and Rust-backed.
+- Keep the ordinary product path Planner-led and Coder-backed.
 - Keep Planner Chat LLM-backed in product mode.
 - Keep user interaction in `User <-> Planner`.
 - Keep Start Work as the only execution boundary.
@@ -235,7 +236,7 @@ SDK-style OpenHands servers.
   Advanced -> Developer -> Workflow editor surface.
 - Executors must not ask the user directly, commit, push, deploy, publish
   externally, or write long-term memory directly.
-- Keep OpenHands as an optional external backend.
+- Keep OpenHands as the required internal Start Work executor.
 - Keep marketplace/plugin UI deferred from the ordinary product path.
 - Keep environment variables as developer/headless fallback, not normal setup.
 - Keep GPU support optional and provider-scoped; it is not core runtime.

@@ -25,6 +25,7 @@ import type {
   PluginReadResponse,
   OpenHandsSettings,
   OpenHandsStatus,
+  PlannerArtifact,
   ProviderSettings,
   ProviderStatus,
   ProviderTestResult,
@@ -124,6 +125,9 @@ interface RustPlannerChatSession {
   turns: Array<{
     role: string;
     content: string;
+    artifacts?: PlannerArtifact[];
+    response_truncated?: boolean;
+    large_artifacts?: boolean;
   }>;
 }
 
@@ -162,7 +166,14 @@ interface RustPlannerChatTurnResponse {
   suggested_mode?: PlannerInteractionMode | string;
   should_start_workflow?: boolean;
   ready: boolean;
+  ready_for_start_work?: boolean;
+  missing_information?: string[];
+  concise_plan_summary?: string;
   execution_allowed: boolean;
+  response_truncated?: boolean;
+  artifacts?: PlannerArtifact[];
+  structured_artifacts?: PlannerArtifact[];
+  large_artifacts?: boolean;
   events?: Array<Record<string, unknown>>;
   run_preview?: {
     status?: string;
@@ -968,6 +979,13 @@ async function sendRustPlannerChatTurn(input: {
     status: mappedSession.status,
     run_id: null,
     turn,
+    ready_for_start_work: Boolean(payload.ready_for_start_work ?? payload.ready),
+    missing_information: Array.isArray(payload.missing_information) ? payload.missing_information : [],
+    concise_plan_summary: typeof payload.concise_plan_summary === "string" ? payload.concise_plan_summary : "",
+    response_truncated: Boolean(payload.response_truncated),
+    artifacts: normalizePlannerArtifacts(payload.artifacts ?? payload.structured_artifacts),
+    structured_artifacts: normalizePlannerArtifacts(payload.structured_artifacts ?? payload.artifacts),
+    large_artifacts: Boolean(payload.large_artifacts),
     session: {
       ...mappedSession,
       last_turn: turn,
@@ -1064,7 +1082,10 @@ function mapRustPlannerSession(
   const mode = session.mode === "work" ? "work" : "discuss";
   const messages = session.turns.map((turn) => ({
     role: normalizePlannerMessageRole(turn.role),
-    content: turn.content
+    content: turn.content,
+    artifacts: normalizePlannerArtifacts(turn.artifacts),
+    response_truncated: Boolean(turn.response_truncated),
+    large_artifacts: Boolean(turn.large_artifacts)
   }));
   const latestAssistant = [...session.turns].reverse().find((turn) => turn.role === "assistant");
   const taskState = rustPlannerTaskState(session, context?.scopes ?? []);
@@ -1093,6 +1114,9 @@ function mapRustPlannerSession(
             phase: ready ? "ready_to_start" : session.readiness === "casual" ? "understanding" : "checking_readiness",
             summary: latestAssistant.content
           },
+          response_truncated: Boolean(latestAssistant.response_truncated),
+          artifacts: normalizePlannerArtifacts(latestAssistant.artifacts),
+          large_artifacts: Boolean(latestAssistant.large_artifacts),
           task_state: taskState,
           handoff: ready
             ? {
@@ -1140,6 +1164,9 @@ function mapRustPlannerTurn(
       phase: ready ? "checking_readiness" : response.readiness === "casual" ? "understanding" : "understanding",
       summary: response.assistant_message
     },
+    response_truncated: Boolean(response.response_truncated),
+    artifacts: normalizePlannerArtifacts(response.artifacts ?? response.structured_artifacts),
+    large_artifacts: Boolean(response.large_artifacts),
     task_state: taskState,
     handoff: ready
       ? {
@@ -1150,6 +1177,15 @@ function mapRustPlannerTurn(
         }
       : null
   };
+}
+
+function normalizePlannerArtifacts(artifacts: unknown): PlannerArtifact[] {
+  if (!Array.isArray(artifacts)) return [];
+  return artifacts.filter((artifact): artifact is PlannerArtifact => {
+    if (!artifact || typeof artifact !== "object") return false;
+    const candidate = artifact as { type?: unknown };
+    return candidate.type === "table" || candidate.type === "notes" || candidate.type === "text";
+  });
 }
 
 function rustPlannerTaskState(

@@ -771,6 +771,11 @@ export interface PlannerWorkflowHandoff {
   risks: string[];
 }
 
+export type PlannerArtifact =
+  | { type: "table"; title: string; columns: string[]; rows: string[][]; collapsed?: boolean }
+  | { type: "notes"; title: string; items: string[]; collapsed?: boolean }
+  | { type: "text"; title: string; content: string; collapsed?: boolean };
+
 export interface PlannerChatTurn {
   artifact_id?: string | null;
   artifact_type: "planner_chat_turn";
@@ -785,12 +790,18 @@ export interface PlannerChatTurn {
   visible_thinking: PlannerVisibleThinking;
   task_state: PlannerTaskState;
   handoff?: PlannerWorkflowHandoff | null;
+  response_truncated?: boolean;
+  artifacts?: PlannerArtifact[];
+  large_artifacts?: boolean;
 }
 
 export interface PlannerChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   created_at?: string | null;
+  response_truncated?: boolean;
+  artifacts?: PlannerArtifact[];
+  large_artifacts?: boolean;
 }
 
 export interface PlannerChatSession {
@@ -819,6 +830,13 @@ export interface PlannerChatTurnResponse {
   run_id?: string | null;
   turn: PlannerChatTurn;
   session: PlannerChatSession;
+  ready_for_start_work?: boolean;
+  missing_information?: string[];
+  concise_plan_summary?: string;
+  response_truncated?: boolean;
+  artifacts?: PlannerArtifact[];
+  structured_artifacts?: PlannerArtifact[];
+  large_artifacts?: boolean;
 }
 
 export interface PlannerStartWorkResponse {
@@ -1071,6 +1089,7 @@ export interface OpenHandsSettings {
   server_url: string;
   workspace_mode: string;
   allow_native_fallback: boolean;
+  runtime_mode: "managed" | "external" | string;
   session_api_key: OpenHandsKeyState;
 }
 
@@ -1078,6 +1097,7 @@ export interface OpenHandsStatus {
   enabled: boolean;
   configured: boolean;
   allow_native_fallback: boolean;
+  runtime_mode: "managed" | "external" | string;
   status: "connected" | "failed" | "not_configured" | string;
   server_url: string;
   workspace_mode: string;

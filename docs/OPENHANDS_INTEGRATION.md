@@ -11,17 +11,19 @@ default product workflow. Coder owns the workflow boundary around that backend:
 - publish normalized public Coder events for the Start Work timeline
 - produce an evidence-backed final report
 
-Planner Chat does not currently run through OpenHands. The decision and future
-adapter boundary are recorded in `docs/OPENHANDS_PLANNER_REUSE_DECISION.md`.
+Planner Chat uses an OpenHands-compatible, tool-disabled adapter for
+provider/session/message/context shaping. It does not create live OpenHands
+conversations or runs. The decision and Path A blockers are recorded in
+`docs/OPENHANDS_PLANNER_REUSE_DECISION.md`.
 
 ## Runtime Boundary
 
 Normal users do not configure OpenHands, executor ports, or executor session
 tokens. OpenHands is an internal execution backend behind Start Work. Coder
-should own the runtime boundary: discover or launch the local executor, choose
-loopback ports, generate high-entropy session tokens, pass them only through
-process memory or a local secret store, and hide those details from the normal
-Settings UI.
+owns the runtime boundary: it discovers or launches the local executor, chooses
+loopback ports, generates a high-entropy Executor Runtime Secret, passes it only
+through process memory to the child runtime, and hides those details from the
+normal Settings UI.
 
 Editing `examples/coder.yaml` is only a developer/headless fallback.
 
@@ -35,8 +37,9 @@ GET  /api/v3/openhands/status
 
 Headless/developer settings include:
 
-- `server_url`, defaulting to `http://127.0.0.1:8000`
-- masked `session_api_key`
+- `runtime_mode`, normally `managed`; `external` is developer/enterprise only
+- `server_url`, used only for `external`
+- masked external `session_api_key`, used only for `external`
 - `workspace_mode`, currently `local` or `ephemeral`
 
 OpenHands is always enabled for Start Work. The settings API keeps legacy
@@ -44,10 +47,14 @@ OpenHands is always enabled for Start Work. The settings API keeps legacy
 the server forces `enabled=true` and `allow_native_fallback=false`. Normal users
 should not see controls that disable OpenHands or route work to native fallback.
 
-The session key is stored only in the Rust server's in-memory settings or read
-from `OPENHANDS_SESSION_API_KEY` as a headless fallback. Settings responses
-return only whether a key is configured and its source; they do not return the
-plaintext key.
+For managed runtime mode, Coder generates a different Executor Runtime Secret
+per server launch using OS-backed randomness. It is stored only in memory,
+never serialized, never logged, never shown in UI, and is dropped when Coder
+exits. `OPENHANDS_SESSION_API_KEY` is not part of the normal product setup.
+
+For external runtime mode, developer/headless tooling may supply an external
+session token. Settings responses return only whether an external key is
+configured and its source; they do not return the plaintext key.
 
 The developer status check performs a direct `GET /health` request with proxy
 bypass, so local OpenHands agent servers are not accidentally routed through a
@@ -115,14 +122,12 @@ need external services and credentials.
 
 ## Optional Live Smoke
 
-Use `scripts/live-openhands-smoke.ps1` only when a real OpenHands server is
-available. The script is gated by `OPENHANDS_LIVE_SMOKE=1`; without that flag it
-can report `skipped` and will not contact OpenHands.
+Use `scripts/live-openhands-smoke.ps1` only for external OpenHands
+compatibility checks. The script is gated by `OPENHANDS_LIVE_SMOKE=1`; without
+that flag it can report `skipped` and will not contact OpenHands.
 
 ```powershell
 $env:OPENHANDS_LIVE_SMOKE="1"
-$env:OPENHANDS_AGENT_SERVER_URL="http://127.0.0.1:8000"
-$env:OPENHANDS_SESSION_API_KEY="..."
 powershell -ExecutionPolicy Bypass -File .\scripts\live-openhands-smoke.ps1
 ```
 
@@ -156,7 +161,7 @@ path needs live validation. This script exercises the Coder API surface instead
 of calling the workflow runner directly:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\live-full-path-smoke.ps1 -Live -LoadLocalEnv -WorkRoot .tmp\live-full-path-smoke -OpenHandsServerUrl http://127.0.0.1:8000 -OpenHandsSessionApiKey "..."
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\live-full-path-smoke.ps1 -Live -LoadLocalEnv -WorkRoot .tmp\live-full-path-smoke -OpenHandsServerUrl http://127.0.0.1:8000
 ```
 
 The script loads local provider credentials only when `-LoadLocalEnv` is passed.
@@ -181,7 +186,42 @@ The script verifies:
 - Review Changes returns a diff for the updated document
 - Undo succeeds or safely reports a supported state
 - serialized API artifacts and stored report/event files do not contain the
-  configured provider or OpenHands session keys
+  configured provider keys or external OpenHands session keys
+
+## Snake Product E2E
+
+`scripts/live-snake-game-smoke.ps1` is the product acceptance path for the
+minimal Snake scenario. Its default mode is managed runtime mode:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\live-snake-game-smoke.ps1 -Live -LoadLocalEnv -Force
+```
+
+The managed path requires only provider credentials. It does not require
+`OPENHANDS_SESSION_API_KEY`, an OpenHands port, an OpenHands profile, or a
+manual OpenHands token. Coder starts or discovers the executor runtime, injects
+the in-memory Executor Runtime Secret, runs Start Work through OpenHands, checks
+the generated files, runs `node --check main.js`, verifies Review Changes and
+the final summary, and scans serialized artifacts for provider or executor
+secret leakage.
+
+Latest validated Snake product run:
+
+```text
+timestamp: 2026-07-02 +08:00
+runtime_mode: managed
+provider: deepseek
+model: deepseek-v4-flash
+session_id: pcs_fb63c8f8-80fc-4457-a362-ac19a49a8c9f
+run_id: 12c52a30-3ab8-45bb-b513-d8509b72311d
+result: status ok, Start Work completed, final report completed
+target_folder: F:\ccc\coder-snake-game
+files: README.md, index.html, main.js, style.css
+node_check: passed
+timeline: 144 items, 140 public ReAct items
+review_changes: 1
+secrets_check: passed
+```
 
 ## Local Live Compatibility Record
 

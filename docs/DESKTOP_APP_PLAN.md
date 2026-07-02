@@ -20,9 +20,9 @@ The desktop app should keep the existing product architecture:
   keychain or an equivalent local secret store before public desktop release.
 - OpenHands remains the required Start Work executor, but it is not a normal
   user setting. Desktop must manage the local executor boundary itself:
-  allocate loopback ports, generate a high-entropy session token, pass the token
-  only to the Coder runtime and OpenHands process, and report failures as local
-  executor startup or connection problems.
+  allocate loopback ports, generate a high-entropy Executor Runtime Secret, pass
+  it only through process memory to the Coder runtime and OpenHands process, and
+  report failures as local executor startup or connection problems.
 
 Normal users should not run `cargo`, run `npm`, or set environment variables.
 Opening the desktop app should start the Rust runtime automatically, load the
@@ -88,8 +88,9 @@ Desktop should hide the OpenHands boundary from normal users:
   automatically.
 - Random loopback port: avoid fixed user-visible ports when Coder owns the
   child process.
-- Random session token: generate per runtime/session, store only in memory or
-  the OS secret store, and never show it in the normal UI.
+- Executor Runtime Secret: generate per launch with OS-backed randomness, store
+  only in memory, inject only into the child executor process, and never show it
+  in the normal UI.
 - Developer/headless override: keep environment variables and scripts for live
   compatibility testing only.
 
@@ -196,4 +197,4 @@ Out of scope for the first desktop path:
 
 Mock workflows and native fallback are useful for deterministic plumbing tests.
 Desktop product confidence still requires live LLM and OpenHands smoke paths
-when provider credentials and an OpenHands Agent Server are available.
+with the managed executor runtime and provider credentials available.
